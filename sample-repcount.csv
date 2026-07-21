@@ -1,0 +1,31 @@
+Date,Workout,Exercise,Set,Weight (kg),Reps,RPE,Warmup,Notes
+2026-07-13,Push Day A,Barbell Bench Press,1,40,10,,Yes,"Bar only, easing in"
+2026-07-13,Push Day A,Barbell Bench Press,2,60,8,7,No,
+2026-07-13,Push Day A,Barbell Bench Press,3,62.5,6,8,No,"Felt strong, good pace"
+2026-07-13,Push Day A,Barbell Bench Press,4,62.5,5,8.5,No,
+2026-07-13,Push Day A,Overhead Press,1,30,8,7,No,
+2026-07-13,Push Day A,Overhead Press,2,32.5,6,8,No,
+2026-07-13,Push Day A,Overhead Press,3,32.5,5,8,No,
+2026-07-13,Push Day A,Lateral Raise,1,10,15,,No,
+2026-07-13,Push Day A,Lateral Raise,2,10,12,,No,
+2026-07-13,Push Day A,Lateral Raise,3,10,12,,No,
+2026-07-13,Push Day A,Triceps Pushdown,1,25,15,,No,
+2026-07-13,Push Day A,Triceps Pushdown,2,27.5,12,,No,"Cable stack rattles, ignore"
+2026-07-15,Pull Day A,Barbell Deadlift,1,60,5,,Yes,Warmup ramp
+2026-07-15,Pull Day A,Barbell Deadlift,2,100,5,7,No,
+2026-07-15,Pull Day A,Barbell Deadlift,3,120,3,8.5,No,"New top set, 3 reps at 120kg"
+2026-07-15,Pull Day A,Barbell Row,1,50,10,7,No,
+2026-07-15,Pull Day A,Barbell Row,2,55,8,7.5,No,
+2026-07-15,Pull Day A,Barbell Row,3,55,8,8,No,
+2026-07-15,Pull Day A,Lat Pulldown,1,45,12,,No,
+2026-07-15,Pull Day A,Lat Pulldown,2,50,10,7,No,
+2026-07-15,Pull Day A,Face Pull,1,15,15,,No,
+2026-07-15,Pull Day A,Face Pull,2,15,15,,No,
+2026-07-18,Leg Day A,Barbell Back Squat,1,50,8,,Yes,Empty-ish warmup
+2026-07-18,Leg Day A,Barbell Back Squat,2,80,6,7,No,
+2026-07-18,Leg Day A,Barbell Back Squat,3,90,5,8,No,
+2026-07-18,Leg Day A,Barbell Back Squat,4,90,5,8.5,No,"Depth was good, knees tracked well"
+2026-07-18,Leg Day A,Leg Press,1,120,12,,No,
+2026-07-18,Leg Day A,Leg Press,2,140,10,7,No,
+2026-07-18,Leg Day A,Nordic Ham Curl Bench,1,0,8,,No,"Bodyweight only, unfamiliar machine"
+2026-07-18,Leg Day A,Nordic Ham Curl Bench,2,0,6,,No,
