@@ -1,0 +1,73 @@
+// Hard offline check: load once (SW precaches), KILL the web server for real,
+// reload — the app must come entirely from the service worker cache.
+import { execSync } from 'node:child_process';
+
+const DEBUG_PORT = 9223;
+const APP_URL = 'http://127.0.0.1:8741/index.html';
+
+const target = await (async () => {
+  for (let i = 0; i < 40; i++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?url=about:blank`, { method: 'PUT' });
+      if (res.ok) return res.json();
+    } catch {}
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error('no debug port');
+})();
+const ws = new WebSocket(target.webSocketDebuggerUrl);
+await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+let nextId = 1;
+const pending = new Map();
+ws.onmessage = (ev) => {
+  const m = JSON.parse(ev.data);
+  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+};
+const send = (method, params = {}) => {
+  const id = nextId++;
+  ws.send(JSON.stringify({ id, method, params }));
+  return new Promise((r) => pending.set(id, r));
+};
+const evalJS = async (expression) => {
+  const m = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+  return m.result?.result?.value;
+};
+const poll = async (expr, ms = 10000) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (await evalJS(expr)) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+};
+
+await send('Page.enable');
+await send('Page.navigate', { url: APP_URL });
+if (!(await poll(`document.querySelector('#s-home .btn-primary') !== null`))) {
+  console.log('FAIL — initial load never rendered'); process.exit(1);
+}
+await poll(`caches.has('healthhub-v1')`);
+await new Promise((r) => setTimeout(r, 500));
+
+// Kill the server — genuinely no network origin any more.
+try { execSync('pkill -f "http.server 8741"'); } catch {}
+await new Promise((r) => setTimeout(r, 500));
+try {
+  await fetch(APP_URL);
+  console.log('FAIL — server still reachable; offline test invalid');
+  process.exit(1);
+} catch { /* good: origin is dead */ }
+
+await send('Page.reload');
+const ok = await poll(`document.querySelector('#s-home .btn-primary') !== null && document.getElementById('s-home').textContent.includes('Recent workouts')`);
+// Prove interactivity offline too: start a workout (writes to IndexedDB).
+let flow = false;
+if (ok) {
+  await evalJS(`window.confirm = () => true; document.querySelector('#s-home .btn-primary').click()`);
+  flow = await poll(`location.hash === '#/workout' && !document.getElementById('s-workout').hidden`);
+}
+console.log(ok && flow
+  ? 'PASS — server killed: app loads from SW cache AND a workout can be started offline'
+  : `FAIL — server killed: rendered=${ok} startFlow=${flow}`);
+ws.close();
+process.exit(ok && flow ? 0 : 1);

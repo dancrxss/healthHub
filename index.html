@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Gym Tracker</title>
+  <meta name="description" content="Personal gym workout tracker — offline-first." />
+  <meta name="theme-color" content="#0f1115" />
+
+  <!-- PWA / installable -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Gym" />
+
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <!-- Screens: all present in the DOM, toggled by the hash router in ui.js.
+       Each is filled by its render function; JS never uses innerHTML with data. -->
+  <main id="app">
+    <section id="s-home" class="screen" hidden></section>
+    <section id="s-workout" class="screen" hidden></section>
+    <section id="s-log" class="screen" hidden></section>
+    <section id="s-pick" class="screen" hidden></section>
+    <section id="s-history" class="screen" hidden></section>
+    <section id="s-detail" class="screen" hidden></section>
+    <section id="s-settings" class="screen" hidden></section>
+  </main>
+
+  <!-- Rest timer bar lives in the shell so it overlays every screen. -->
+  <button id="rest-bar" class="rest-bar" type="button" hidden aria-label="Dismiss rest timer">
+    <span class="rest-bar-label">Rest</span>
+    <span id="rest-bar-time" class="rest-bar-time">0:00</span>
+    <span class="rest-bar-hint">tap to dismiss</span>
+  </button>
+
+  <script type="module" src="js/ui.js"></script>
+</body>
+</html>

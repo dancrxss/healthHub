@@ -25,6 +25,14 @@ Pure-logic tests run in Node with zero dependencies:
 node tests/calc.test.mjs
 ```
 
+The full headless suite (browser unit tests against real IndexedDB, an E2E
+walk of a complete workout, and a hard offline check) drives Chrome over the
+DevTools protocol — plain `--dump-dom` headless mode hangs on this machine:
+
+```bash
+./tests/e2e.sh
+```
+
 Install to a phone home screen from the browser share menu — the service
 worker (`sw.js`) precaches the shell, so the app is fully functional offline.
 Bump `CACHE_VERSION` in `sw.js` in the same commit as any change to cached
