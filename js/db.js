@@ -56,42 +56,205 @@ export const DB_VERSION = 1;
 //   templates
 //   meta       — key/value: settings, seed flag ({ key, value })
 
+let _dbName = DB_NAME;
+let _dbPromise = null;
+
+/**
+ * TEST-ONLY hook: override the IndexedDB database name and reset the cached
+ * connection, so the browser test suite can open a throwaway database. Not part
+ * of the production contract — do not use in app code.
+ */
+export function _setDbNameForTests(name) {
+  _dbName = name;
+  _dbPromise = null;
+}
+
+/** Promisify an IDBRequest. */
+function pr(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** Resolve when a transaction commits (or reject on error/abort). */
+function txDone(t) {
+  return new Promise((resolve, reject) => {
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  });
+}
+
 /** Open (and on first run / version bump, create) the database. Cached. */
 export async function openDb() {
-  throw new Error('TODO: implement');
+  if (_dbPromise) return _dbPromise;
+  _dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(_dbName, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('exercises')) {
+        db.createObjectStore('exercises', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('workouts')) {
+        const s = db.createObjectStore('workouts', { keyPath: 'id' });
+        s.createIndex('by-date', 'date', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('sets')) {
+        const s = db.createObjectStore('sets', { keyPath: 'id' });
+        s.createIndex('by-workout', 'workoutId', { unique: false });
+        s.createIndex('by-exercise', 'exerciseId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('templates')) {
+        db.createObjectStore('templates', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return _dbPromise;
+}
+
+/** Store a record (with syncedAt reset to null) and return it. */
+async function putRecord(storeName, record) {
+  const db = await openDb();
+  const rec = { ...record, syncedAt: null };
+  const t = db.transaction(storeName, 'readwrite');
+  t.objectStore(storeName).put(rec);
+  await txDone(t);
+  return rec;
+}
+
+async function getRecord(storeName, id) {
+  const db = await openDb();
+  return pr(db.transaction(storeName).objectStore(storeName).get(id));
+}
+
+async function getAllRecords(storeName) {
+  const db = await openDb();
+  return pr(db.transaction(storeName).objectStore(storeName).getAll());
+}
+
+async function getAllByIndex(storeName, indexName, key) {
+  const db = await openDb();
+  return pr(
+    db.transaction(storeName).objectStore(storeName).index(indexName).getAll(IDBKeyRange.only(key))
+  );
+}
+
+async function deleteRecord(storeName, id) {
+  const db = await openDb();
+  const t = db.transaction(storeName, 'readwrite');
+  t.objectStore(storeName).delete(id);
+  return txDone(t);
 }
 
 // ---- Exercises ----
 /** Upsert. Sets syncedAt = null. Returns the stored record. */
-export async function putExercise(exercise) { throw new Error('TODO: implement'); }
+export async function putExercise(exercise) {
+  return putRecord('exercises', exercise);
+}
 /** @returns {Promise<ExerciseRecord|undefined>} */
-export async function getExercise(id) { throw new Error('TODO: implement'); }
+export async function getExercise(id) {
+  return getRecord('exercises', id);
+}
 /** All exercises, sorted by name. */
-export async function listExercises() { throw new Error('TODO: implement'); }
+export async function listExercises() {
+  const all = await getAllRecords('exercises');
+  return all.sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // ---- Workouts ----
-export async function putWorkout(workout) { throw new Error('TODO: implement'); }
-export async function getWorkout(id) { throw new Error('TODO: implement'); }
+export async function putWorkout(workout) {
+  return putRecord('workouts', workout);
+}
+export async function getWorkout(id) {
+  return getRecord('workouts', id);
+}
 /** Workouts with date >= sinceDate (ISO date, inclusive; pass '0000' for all), newest first. */
-export async function listWorkouts(sinceDate) { throw new Error('TODO: implement'); }
+export async function listWorkouts(sinceDate) {
+  const db = await openDb();
+  const idx = db.transaction('workouts').objectStore('workouts').index('by-date');
+  const results = [];
+  return new Promise((resolve, reject) => {
+    const req = idx.openCursor(IDBKeyRange.lowerBound(sinceDate), 'prev');
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        results.push(cursor.value);
+        cursor.continue();
+      } else {
+        resolve(results);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
 /** Deletes the workout AND all its sets (user-initiated delete only). */
-export async function deleteWorkout(id) { throw new Error('TODO: implement'); }
+export async function deleteWorkout(id) {
+  const db = await openDb();
+  const t = db.transaction(['workouts', 'sets'], 'readwrite');
+  t.objectStore('workouts').delete(id);
+  const idx = t.objectStore('sets').index('by-workout');
+  const req = idx.openKeyCursor(IDBKeyRange.only(id));
+  req.onsuccess = () => {
+    const cursor = req.result;
+    if (cursor) {
+      t.objectStore('sets').delete(cursor.primaryKey);
+      cursor.continue();
+    }
+  };
+  return txDone(t);
+}
 
 // ---- Sets ----
-export async function putSet(set) { throw new Error('TODO: implement'); }
-export async function getSet(id) { throw new Error('TODO: implement'); }
+export async function putSet(set) {
+  return putRecord('sets', set);
+}
+export async function getSet(id) {
+  return getRecord('sets', id);
+}
 /** All sets for a workout, ordered by exerciseId then setNumber. */
-export async function listSetsForWorkout(workoutId) { throw new Error('TODO: implement'); }
+export async function listSetsForWorkout(workoutId) {
+  const all = await getAllByIndex('sets', 'by-workout', workoutId);
+  return all.sort((a, b) => {
+    if (a.exerciseId !== b.exerciseId) return a.exerciseId < b.exerciseId ? -1 : 1;
+    return a.setNumber - b.setNumber;
+  });
+}
 /** All sets for an exercise across all workouts. */
-export async function listSetsForExercise(exerciseId) { throw new Error('TODO: implement'); }
-export async function deleteSet(id) { throw new Error('TODO: implement'); }
+export async function listSetsForExercise(exerciseId) {
+  return getAllByIndex('sets', 'by-exercise', exerciseId);
+}
+export async function deleteSet(id) {
+  return deleteRecord('sets', id);
+}
 
 // ---- Templates ----
-export async function putTemplate(template) { throw new Error('TODO: implement'); }
-export async function getTemplate(id) { throw new Error('TODO: implement'); }
-export async function listTemplates() { throw new Error('TODO: implement'); }
+export async function putTemplate(template) {
+  return putRecord('templates', template);
+}
+export async function getTemplate(id) {
+  return getRecord('templates', id);
+}
+export async function listTemplates() {
+  const all = await getAllRecords('templates');
+  return all.sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // ---- Meta (settings, seed flag) ----
 /** @returns {Promise<any|undefined>} the stored value for key */
-export async function getMeta(key) { throw new Error('TODO: implement'); }
-export async function setMeta(key, value) { throw new Error('TODO: implement'); }
+export async function getMeta(key) {
+  const rec = await getRecord('meta', key);
+  return rec ? rec.value : undefined;
+}
+export async function setMeta(key, value) {
+  const db = await openDb();
+  const t = db.transaction('meta', 'readwrite');
+  t.objectStore('meta').put({ key, value });
+  await txDone(t);
+  return value;
+}
