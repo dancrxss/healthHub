@@ -274,12 +274,16 @@ cheaper to clarify than to recover.
   no cloud resources exist. When Azure sync lands (Phase 2), create the infra doc
   in that same session. No component catalog — vanilla JS single-file app, no
   shared component library (§4's `COMPONENTS.md` rule dormant).
-- **Deploy path:** No deployment yet — `DEPLOY_LOG.md` starts with the first real
-  deploy. No CI yet; tests are plain assertion scripts (Node / test HTML page)
-  run locally before committing.
-- **Hosted vs local:** New project, runs locally for now (§6.2 exception). The
-  PWA itself is inherently local-first by design; the import script is explicitly
-  a one-off local run against local IndexedDB data (no live DB, no scraping).
+- **Deploy path:** **GitHub Pages** serves the repo root of `main` at
+  https://dancrxss.github.io/healthHub/ — every push to `main` auto-deploys
+  (the repo was made **public** on 21 July 2026 to enable this on the free
+  plan). No CI gate: run `node tests/calc.test.mjs` and `./tests/e2e.sh`
+  locally before pushing, and smoke-check the live URL after (§2.4).
+  `DEPLOY_LOG.md` records production-affecting deploys.
+- **Hosted vs local:** The PWA is hosted on GitHub Pages but inherently
+  local-first — all data lives in on-device IndexedDB; there is no backend.
+  The import script is explicitly a one-off local run (no live DB, no
+  scraping). §6.2's "everything hosted" rule is satisfied by the static host.
 - **Domain rules (must not change silently):**
   - All weights stored in **kg** (numeric). Display units are a client concern.
   - Derived query layer is a **frozen contract** for the future MCP server:

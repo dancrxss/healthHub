@@ -8,6 +8,10 @@ Spec: [`gym-tracker-spec.md`](gym-tracker-spec.md) ·
 Phase 1 scope: [`gym-tracker-claude-code-handoff.md`](gym-tracker-claude-code-handoff.md) ·
 Plan: [`PLAN.md`](PLAN.md)
 
+**Live app:** https://dancrxss.github.io/healthHub/ — open it on your phone
+and add to home screen (Share → "Add to Home Screen" on iOS). Every push to
+`main` auto-deploys via GitHub Pages. Workout data never leaves the device.
+
 ## Local dev
 
 No build step, no dependencies. ES modules + IndexedDB need a real origin, so
