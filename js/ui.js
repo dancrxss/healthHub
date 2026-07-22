@@ -1,53 +1,52 @@
 // ============================================================================
-// ui.js — screens, rendering, event wiring, hash router.
-// The only UI file. Talks to db.js / queries.js / timer.js / seed.js / sync.js
-// through their exported APIs. No data logic lives here beyond glue + display.
+// ui.js — entry module: hyperscript builder, formatting helpers, hash router,
+// bottom-tab bar, bottom-sheet infrastructure, rest-timer wiring and the shared
+// helpers every screen module imports. No screen markup lives here beyond the
+// glue; the screens themselves are in js/screens/*.
+//
 // User-supplied text (notes, custom exercise names) is only ever written via
-// textContent / createElement — never innerHTML.
+// textContent / the h() text prop — never innerHTML.
 // ============================================================================
 
 import {
-  putWorkout, getWorkout, listWorkouts, deleteWorkout,
-  putSet, getSet, listSetsForWorkout, deleteSet,
-  putExercise, getExercise, listExercises,
-  getTemplate, listTemplates,
-  MUSCLE_GROUPS, EQUIPMENT,
+  putWorkout, getWorkout, listWorkouts,
 } from './db.js';
-import { getRecentWorkouts, getLastSession } from './queries.js';
 import { seedIfEmpty } from './seed.js';
-import { getActiveAdapter } from './sync.js';
 import * as timer from './timer.js';
 import { uid, nowISO, todayISO } from './util.js';
 
+import { renderWorkoutScreen } from './screens/workout.js';
+import { renderPick } from './screens/picker.js';
+import { renderLogTab } from './screens/log.js';
+import { renderRoutines } from './screens/routines.js';
+import { renderStats } from './screens/stats.js';
+import { renderProfile } from './screens/profile.js';
+
 // ----------------------------------------------------------------------------
-// Constants & module state
+// Constants
 // ----------------------------------------------------------------------------
 const LB_PER_KG = 2.20462;
-const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
-const WEIGHT_STEP = 2.5;
-const REP_STEP = 1;
+export const WEIGHT_STEP = 2.5; // in DISPLAY units (kg or lb)
+export const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
 
 const state = { currentWorkoutId: null };
 let currentRouteKey = null;
-let activeInterval = null;
-// Transient logging-screen state; null means "rebuild pre-fill from data".
-let logState = null;
-let pickQuery = '';
+let screenCleanup = null; // per-screen teardown (e.g. the elapsed ticker)
 
 const screens = {
-  home: document.getElementById('s-home'),
-  workout: document.getElementById('s-workout'),
   log: document.getElementById('s-log'),
+  routines: document.getElementById('s-routines'),
+  stats: document.getElementById('s-stats'),
+  profile: document.getElementById('s-profile'),
+  workout: document.getElementById('s-workout'),
   pick: document.getElementById('s-pick'),
-  history: document.getElementById('s-history'),
-  detail: document.getElementById('s-detail'),
-  settings: document.getElementById('s-settings'),
 };
+const TABS = ['log', 'routines', 'stats', 'profile'];
 
 // ----------------------------------------------------------------------------
 // Tiny DOM builder (hyperscript). No innerHTML anywhere.
 // ----------------------------------------------------------------------------
-function h(tag, props, ...children) {
+export function h(tag, props, ...children) {
   const e = document.createElement(tag);
   if (props) {
     for (const [k, v] of Object.entries(props)) {
@@ -58,7 +57,8 @@ function h(tag, props, ...children) {
       else if (k === 'oninput') e.addEventListener('input', v);
       else if (k === 'onchange') e.addEventListener('change', v);
       else if (k === 'onblur') e.addEventListener('blur', v);
-      else if (k === 'onsubmit') e.addEventListener('submit', v);
+      else if (k === 'onkeydown') e.addEventListener('keydown', v);
+      else if (k === 'onpointerdown') e.addEventListener('pointerdown', v);
       else if (v === true) e.setAttribute(k, '');
       else e.setAttribute(k, v);
     }
@@ -71,33 +71,88 @@ function h(tag, props, ...children) {
 }
 
 // ----------------------------------------------------------------------------
-// Formatting helpers
+// Inline SVG icons. Each call returns a FRESH node (DOM nodes can't be reused).
 // ----------------------------------------------------------------------------
-function getUnits() {
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl(name, attrs) {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+function svg(children, { size = 24, viewBox = '0 0 24 24', fill = false } = {}) {
+  const el = svgEl('svg', {
+    viewBox, width: size, height: size, 'aria-hidden': 'true',
+    fill: fill ? 'currentColor' : 'none',
+  });
+  if (!fill) {
+    el.setAttribute('stroke', 'currentColor');
+    el.setAttribute('stroke-width', '2');
+    el.setAttribute('stroke-linecap', 'round');
+    el.setAttribute('stroke-linejoin', 'round');
+  }
+  for (const c of children.flat()) el.appendChild(c);
+  return el;
+}
+const p = (d) => svgEl('path', { d });
+
+const ICONS = {
+  check: () => svg([p('M20 6 9 17l-5-5')]),
+  alarm: () => svg([svgEl('circle', { cx: 12, cy: 13, r: 7 }), p('M12 10v3l2 2'), p('M5 3 2 6'), p('M19 3l3 3')]),
+  dots: () => svg([svgEl('circle', { cx: 5, cy: 12, r: 1.6 }), svgEl('circle', { cx: 12, cy: 12, r: 1.6 }), svgEl('circle', { cx: 19, cy: 12, r: 1.6 })], { fill: true }),
+  plus: () => svg([p('M12 5v14M5 12h14')]),
+  minus: () => svg([p('M5 12h14')]),
+  back: () => svg([p('M15 18l-6-6 6-6')]),
+  close: () => svg([p('M18 6 6 18M6 6l12 12')]),
+  search: () => svg([svgEl('circle', { cx: 11, cy: 11, r: 7 }), p('M21 21l-4-4')]),
+  chevron: () => svg([p('M9 6l6 6-6 6')]),
+  history: () => svg([p('M3 12a9 9 0 1 0 3-6.7L3 8'), p('M3 3v5h5'), p('M12 8v4l3 2')]),
+  bars: () => svg([p('M6 20V10M12 20V4M18 20v-7')]),
+  star: () => svg([p('M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z')]),
+  move: () => svg([p('M4 8h16M4 16h16')]),
+  trash: () => svg([p('M4 7h16'), p('M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2'), p('M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13')]),
+  note: () => svg([p('M12 20h9'), p('M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z')]),
+  info: () => svg([svgEl('circle', { cx: 12, cy: 12, r: 9 }), p('M12 11v5'), p('M12 8h.01')]),
+  lock: () => svg([svgEl('rect', { x: 5, y: 11, width: 14, height: 9, rx: 2 }), p('M8 11V8a4 4 0 0 1 8 0v3')]),
+  swap: () => svg([p('M4 8h13l-3-3'), p('M20 16H7l3 3')]),
+};
+
+/** A fresh SVG icon node by name. Unknown names return an empty group. */
+export function Icon(name) {
+  return (ICONS[name] || (() => svg([])))();
+}
+
+// ----------------------------------------------------------------------------
+// Formatting & units
+// ----------------------------------------------------------------------------
+export function getUnits() {
   return localStorage.getItem('settings.units') === 'lb' ? 'lb' : 'kg';
 }
-
-function trimNum(n) {
+export function unitLabel() {
+  return getUnits() === 'lb' ? 'Lb' : 'Kg';
+}
+export function trimNum(n) {
   return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100);
 }
-
-/** Single source of truth for weight display. Storage stays kg; lb is display. */
-function formatWeight(kg) {
+/** Storage kg -> display number (rounded to a sensible step in the display unit). */
+export function kgToDisplay(kg) {
+  if (kg == null || Number.isNaN(kg)) return 0;
+  return getUnits() === 'lb' ? Math.round(kg * LB_PER_KG * 100) / 100 : Math.round(kg * 100) / 100;
+}
+/** Display-unit number -> stored kg (rounded to 2dp per the domain rule). */
+export function displayToKg(v) {
+  if (v == null || Number.isNaN(v)) return 0;
+  return getUnits() === 'lb' ? Math.round((v / LB_PER_KG) * 100) / 100 : Math.round(v * 100) / 100;
+}
+/** Single source of truth for weight display WITH unit (used in history/PR lines). */
+export function formatWeight(kg) {
   if (kg == null || Number.isNaN(kg)) return '—';
-  if (getUnits() === 'lb') {
-    const lb = Math.round(kg * LB_PER_KG * 2) / 2;
-    return `${trimNum(lb)} lb`;
-  }
-  return `${trimNum(kg)} kg`;
+  return `${trimNum(kgToDisplay(kg))} ${getUnits()}`;
 }
-
-function mmss(totalSeconds) {
+export function mmss(totalSeconds) {
   const s = Math.max(0, Math.round(totalSeconds));
-  const m = Math.floor(s / 60);
-  return `${m}:${String(s % 60).padStart(2, '0')}`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
-
-function formatElapsed(ms) {
+export function formatElapsed(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const hh = Math.floor(s / 3600);
   const mm = Math.floor((s % 3600) / 60);
@@ -105,85 +160,195 @@ function formatElapsed(ms) {
   const pad = (n) => String(n).padStart(2, '0');
   return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
 }
-
-function formatDate(iso) {
+export function formatDate(iso) {
   const d = new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso);
   return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 }
-
-function workoutDuration(w) {
-  if (!w.finishedAt) return null;
-  const mins = Math.round((new Date(w.finishedAt) - new Date(w.startedAt)) / 60000);
-  return `${mins} min`;
+/** "Tue 21 Jul at 16:39" */
+export function formatDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const date = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return `${date} at ${time}`;
 }
 
-/** Distinct exercise ids in first-logged order (earliest completedAt first). */
-function exercisesInOrder(sets) {
+/** Display name for a workout: its own name, else derived from start hour. */
+export function displayName(w) {
+  if (w && w.name) return w.name;
+  const hr = new Date(w.startedAt).getHours();
+  return hr < 12 ? 'Morning Workout' : hr < 17 ? 'Afternoon Workout' : 'Evening Workout';
+}
+
+// ----------------------------------------------------------------------------
+// Workout entries (schema v2). entries is the ordered exercise list; for legacy
+// workouts (entries null) we derive it from the sets' first completedAt.
+// ----------------------------------------------------------------------------
+export function getEntries(workout, sets) {
+  if (Array.isArray(workout.entries)) return workout.entries;
   const firstAt = new Map();
   for (const s of sets) {
     const cur = firstAt.get(s.exerciseId);
     if (cur == null || s.completedAt < cur) firstAt.set(s.exerciseId, s.completedAt);
   }
-  return [...firstAt.entries()].sort((a, b) => (a[1] < b[1] ? -1 : 1)).map((e) => e[0]);
+  return [...firstAt.entries()]
+    .sort((a, b) => (a[1] < b[1] ? -1 : 1))
+    .map(([exerciseId]) => ({ exerciseId, supersetGroup: null, note: null }));
 }
-
-function workingCount(sets) {
-  return sets.filter((s) => s.isWarmup !== true).length;
-}
-function totalVolume(sets) {
-  return sets.filter((s) => s.isWarmup !== true).reduce((a, s) => a + s.weightKg * s.reps, 0);
-}
-
-async function exerciseMap() {
-  const list = await listExercises();
-  return new Map(list.map((e) => [e.id, e]));
+/** Persist a new entries array on the workout; returns the stored record. */
+export async function saveEntries(workout, entries) {
+  return putWorkout({ ...workout, entries });
 }
 
 // ----------------------------------------------------------------------------
 // Navigation & current-workout resolution
 // ----------------------------------------------------------------------------
-function go(hash) {
+export function go(hash) {
   if (location.hash === hash) route();
   else location.hash = hash;
 }
 
-function setCurrent(id) {
+export function setCurrent(id) {
   state.currentWorkoutId = id;
   if (id) localStorage.setItem('currentWorkoutId', id);
   else localStorage.removeItem('currentWorkoutId');
 }
 
 /** The in-progress workout (finishedAt null), resolved robustly across reloads. */
-async function currentWorkout() {
+export async function currentWorkout() {
   const id = state.currentWorkoutId || localStorage.getItem('currentWorkoutId');
   if (id) {
     const w = await getWorkout(id);
-    if (w && !w.finishedAt) {
-      state.currentWorkoutId = id;
-      return w;
-    }
+    if (w && !w.finishedAt) { state.currentWorkoutId = id; return w; }
   }
   const all = await listWorkouts('0000');
   const inProgress = all.find((w) => !w.finishedAt);
-  if (inProgress) {
-    setCurrent(inProgress.id);
-    return inProgress;
-  }
+  if (inProgress) { setCurrent(inProgress.id); return inProgress; }
   setCurrent(null);
   return null;
 }
 
-async function startWorkout(templateId = null) {
+/** Create a workout (optionally seeding entries from a template) and open it. */
+export async function startWorkout(template = null) {
+  const entries = template
+    ? (template.entries || []).map((e) => ({ exerciseId: e.exerciseId, supersetGroup: null, note: null }))
+    : [];
   const w = await putWorkout({
     id: uid(),
     date: todayISO(),
     startedAt: nowISO(),
     finishedAt: null,
-    templateId,
+    templateId: template ? template.id : null,
+    name: null,
+    bodyweightKg: null,
     notes: null,
+    entries,
   });
   setCurrent(w.id);
   go('#/workout');
+}
+
+// ----------------------------------------------------------------------------
+// Bottom-sheet infrastructure. Sheets stack: closeSheet() pops the topmost, so a
+// menu can open a confirm/sub-sheet on top of itself. Tapping the backdrop or
+// navigating closes them.
+// ----------------------------------------------------------------------------
+const sheetRoot = document.getElementById('sheet-root');
+
+export function openSheet(content) {
+  const inner = typeof content === 'function' ? content() : content;
+  const sheet = h('div', { class: 'sheet' }, inner);
+  sheet.addEventListener('click', (e) => e.stopPropagation());
+  const backdrop = h('div', { class: 'sheet-backdrop' }, sheet);
+  backdrop.addEventListener('click', () => closeSheet());
+  sheetRoot.append(backdrop);
+  document.body.classList.add('sheet-open');
+  requestAnimationFrame(() => backdrop.classList.add('open'));
+  return backdrop;
+}
+
+export function closeSheet() {
+  const all = sheetRoot.querySelectorAll('.sheet-backdrop');
+  const top = all[all.length - 1];
+  if (!top) return;
+  top.classList.remove('open');
+  const done = () => top.remove();
+  top.addEventListener('transitionend', done, { once: true });
+  setTimeout(done, 260); // fallback if transitionend doesn't fire
+  if (all.length <= 1) document.body.classList.remove('sheet-open');
+}
+
+export function closeAllSheets() {
+  sheetRoot.replaceChildren();
+  document.body.classList.remove('sheet-open');
+}
+
+// ---- reusable sheet building blocks (shared styling for every screen) ----
+export function sheetHeader(title, { onSave, onClose } = {}) {
+  return h('div', { class: 'sheet-head' },
+    onClose ? h('button', { class: 'sheet-x', 'aria-label': 'Close', onclick: onClose }, Icon('close')) : h('span', {}),
+    h('div', { class: 'sheet-title', text: title }),
+    onSave
+      ? h('button', { class: 'sheet-tick', 'data-action': 'save', 'aria-label': 'Save', onclick: onSave }, Icon('check'))
+      : (onClose ? h('span', {}) : h('button', { class: 'sheet-x', 'aria-label': 'Close', onclick: () => closeSheet() }, Icon('close'))),
+  );
+}
+export function sheetGroup(...rows) {
+  return h('div', { class: 'sheet-group' }, ...rows.filter(Boolean));
+}
+export function sheetRow({ label, sub, value, icon, danger, locked, action, chevron, onClick }) {
+  return h('button', {
+    class: 'sheet-row' + (danger ? ' danger' : ''),
+    'data-action': action, type: 'button', onclick: onClick,
+  },
+    icon ? h('span', { class: 'sheet-row-icon' }, icon) : null,
+    h('span', { class: 'sheet-row-label' },
+      h('span', { text: label }),
+      sub ? h('span', { class: 'sheet-row-sub', text: sub }) : null,
+    ),
+    value != null ? h('span', { class: 'sheet-row-value', text: value }) : null,
+    locked ? h('span', { class: 'sheet-row-lock' }, Icon('lock')) : null,
+    chevron ? h('span', { class: 'sheet-row-chev' }, Icon('chevron')) : null,
+  );
+}
+
+/** A confirm bottom sheet. Both buttons close the sheet first. */
+export function confirmSheet({ title, message, confirmLabel = 'Confirm', danger = false, onConfirm }) {
+  openSheet(h('div', {},
+    sheetHeader(title, { onClose: () => closeSheet() }),
+    message ? h('p', { class: 'sheet-message', text: message }) : null,
+    h('div', { class: 'sheet-actions' },
+      h('button', {
+        class: 'sheet-btn' + (danger ? ' danger' : ''), 'data-action': 'confirm', type: 'button',
+        onclick: async () => { closeSheet(); await onConfirm(); },
+      }, confirmLabel),
+      h('button', { class: 'sheet-btn cancel', 'data-action': 'cancel', type: 'button', onclick: () => closeSheet() }, 'Cancel'),
+    ),
+  ));
+}
+
+/** A textarea sheet (notes). onSave(trimmedOrNull). */
+export function textareaSheet({ title, value, placeholder = 'Notes', onSave }) {
+  const ta = h('textarea', { class: 'sheet-textarea', placeholder, rows: '5' });
+  ta.value = value || '';
+  const save = async () => { closeSheet(); await onSave(ta.value.trim() || null); };
+  openSheet(h('div', {},
+    sheetHeader(title, { onSave: save }),
+    h('div', { class: 'sheet-group' }, ta),
+  ));
+  requestAnimationFrame(() => ta.focus());
+}
+
+/** A single-choice option sub-sheet. options: [{value,label,sub}]. */
+export function optionSheet({ title, options, current, onPick }) {
+  openSheet(h('div', {},
+    sheetHeader(title, { onClose: () => closeSheet() }),
+    sheetGroup(...options.map((o) => sheetRow({
+      label: o.label, sub: o.sub,
+      value: current === o.value ? '✓' : null,
+      onClick: () => { closeSheet(); onPick(o.value); },
+    }))),
+  ));
 }
 
 // ----------------------------------------------------------------------------
@@ -191,629 +356,55 @@ async function startWorkout(templateId = null) {
 // ----------------------------------------------------------------------------
 function showScreen(name) {
   for (const [key, el] of Object.entries(screens)) el.hidden = key !== name;
-  window.scrollTo(0, 0);
+}
+function setActiveTab(tab) {
+  for (const btn of document.querySelectorAll('#tabbar button')) {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  }
+}
+/** Registered by a screen to tear down timers when the route changes. */
+export function setScreenCleanup(fn) {
+  screenCleanup = fn;
 }
 
 async function route() {
-  if (activeInterval) { clearInterval(activeInterval); activeInterval = null; }
+  if (screenCleanup) { try { screenCleanup(); } catch (e) { /* ignore */ } screenCleanup = null; }
+  closeAllSheets();
+
   const raw = (location.hash || '#/').replace(/^#/, '');
   const parts = raw.split('/').filter(Boolean);
-  const key = parts.join('/');
-  if (key !== currentRouteKey) {
-    logState = null;
-    pickQuery = '';
-    currentRouteKey = key;
-  }
   const [a, b] = parts;
+  const key = parts.join('/');
+  const changed = key !== currentRouteKey;
+  currentRouteKey = key;
+
+  if (!a) { location.replace('#/log'); return; }
+
+  const tab = TABS.includes(a) ? a : null;
+  document.body.classList.toggle('fullscreen', a === 'workout' || a === 'pick');
+  setActiveTab(tab);
+
   try {
-    if (!a) return await renderHome();
-    if (a === 'workout' && !b) return await renderWorkout();
-    if (a === 'workout' && b) return await renderDetail(b);
-    if (a === 'log' && b) return await renderLog(b);
-    if (a === 'pick') return await renderPick();
-    if (a === 'history') return await renderHistory();
-    if (a === 'settings') return await renderSettings();
-    return await renderHome();
+    if (tab) {
+      showScreen(tab);
+      if (tab === 'log') await renderLogTab();
+      else if (tab === 'routines') await renderRoutines();
+      else if (tab === 'stats') await renderStats();
+      else await renderProfile();
+    } else if (a === 'workout') {
+      showScreen('workout');
+      await renderWorkoutScreen(b || null);
+    } else if (a === 'pick') {
+      showScreen('pick');
+      await renderPick(b || null);
+    } else {
+      location.replace('#/log');
+      return;
+    }
   } catch (err) {
     console.error('route error', err);
   }
-}
-
-// ----------------------------------------------------------------------------
-// Header helper
-// ----------------------------------------------------------------------------
-function header(title, backHash, action) {
-  return h('header', { class: 'app-header' },
-    backHash ? h('a', { class: 'back', href: '#' + backHash }, '‹ Back') : null,
-    h('h1', { class: 'app-title', text: title }),
-    action || null,
-  );
-}
-
-// ----------------------------------------------------------------------------
-// Home (#/)
-// ----------------------------------------------------------------------------
-async function renderHome() {
-  showScreen('home');
-  const inProgress = (await listWorkouts('0000')).find((w) => !w.finishedAt);
-  const templates = await listTemplates();
-  const recent = (await getRecentWorkouts('0000')).slice(0, 5);
-
-  const children = [
-    header('Gym Tracker', null, h('a', { class: 'header-action', href: '#/settings' }, 'Settings')),
-  ];
-
-  if (inProgress) {
-    setCurrent(inProgress.id);
-    children.push(
-      h('button', {
-        class: 'btn btn-primary', onclick: () => go('#/workout'),
-      }, 'Resume workout'),
-      h('p', { class: 'muted', text: `In progress since ${formatDate(inProgress.startedAt)}` }),
-    );
-  } else {
-    children.push(
-      h('button', { class: 'btn btn-primary', onclick: () => startWorkout() }, 'Start workout'),
-    );
-    if (templates.length) {
-      children.push(h('div', { class: 'section-label', text: 'Start from template' }));
-      for (const t of templates) {
-        children.push(h('button', {
-          class: 'btn', onclick: () => startWorkout(t.id),
-        }, t.name));
-      }
-    }
-  }
-
-  children.push(h('div', { class: 'section-label', text: 'Recent workouts' }));
-  if (!recent.length) {
-    children.push(h('p', { class: 'empty', text: 'No workouts yet. Start one above.' }));
-  } else {
-    for (const { workout, sets } of recent) {
-      const exCount = new Set(sets.map((s) => s.exerciseId)).size;
-      children.push(h('a', { class: 'card', href: `#/workout/${workout.id}` },
-        h('div', { class: 'card-title', text: formatDate(workout.date) }),
-        h('div', { class: 'card-sub', text:
-          `${exCount} exercise${exCount === 1 ? '' : 's'} · ${workingCount(sets)} working set${workingCount(sets) === 1 ? '' : 's'}` +
-          (workout.finishedAt ? '' : ' · in progress') }),
-      ));
-    }
-  }
-
-  screens.home.replaceChildren(...children);
-}
-
-// ----------------------------------------------------------------------------
-// Workout in progress (#/workout)
-// ----------------------------------------------------------------------------
-async function renderWorkout() {
-  showScreen('workout');
-  const workout = await currentWorkout();
-  if (!workout) { go('#/'); return; }
-
-  const sets = await listSetsForWorkout(workout.id);
-  const exMap = await exerciseMap();
-  const orderedIds = exercisesInOrder(sets);
-
-  const elapsedEl = h('span', { class: 'elapsed' });
-  const tick = () => { elapsedEl.textContent = formatElapsed(Date.now() - new Date(workout.startedAt)); };
-  tick();
-  activeInterval = setInterval(tick, 1000);
-
-  const children = [
-    header('Workout', '/', elapsedEl),
-  ];
-
-  if (!orderedIds.length && !workout.templateId) {
-    children.push(h('p', { class: 'empty', text: 'No exercises yet. Add one to get going.' }));
-  }
-
-  // Logged exercises, first-logged order.
-  for (const exId of orderedIds) {
-    const exSets = sets.filter((s) => s.exerciseId === exId);
-    const ex = exMap.get(exId);
-    children.push(h('button', { class: 'ex-row', onclick: () => go(`#/log/${exId}`) },
-      h('div', {},
-        h('div', { class: 'ex-name', text: ex ? ex.name : 'Unknown exercise' }),
-        h('div', { class: 'ex-meta', text: `${exSets.length} × done` }),
-      ),
-      h('span', { class: 'chev', text: '›' }),
-    ));
-  }
-
-  // Planned (template) entries not yet logged.
-  if (workout.templateId) {
-    const tpl = await getTemplate(workout.templateId);
-    if (tpl) {
-      const logged = new Set(orderedIds);
-      const planned = tpl.entries.filter((en) => !logged.has(en.exerciseId));
-      if (planned.length) {
-        children.push(h('div', { class: 'section-label', text: `Planned · ${tpl.name}` }));
-        for (const en of planned) {
-          const ex = exMap.get(en.exerciseId);
-          children.push(h('button', { class: 'ex-row planned', onclick: () => go(`#/log/${en.exerciseId}`) },
-            h('div', {},
-              h('div', { class: 'ex-name', text: ex ? ex.name : 'Unknown exercise' }),
-              h('div', { class: 'ex-meta', text: `Target: ${en.targetSets} × ${en.targetRepsLow}-${en.targetRepsHigh}` }),
-            ),
-            h('span', { class: 'chev', text: '›' }),
-          ));
-        }
-      }
-    }
-  }
-
-  children.push(
-    h('div', { class: 'section-label', text: ' ' }),
-    h('button', { class: 'btn', onclick: () => go('#/pick') }, '+ Add exercise'),
-    h('button', { class: 'btn btn-danger', onclick: () => finishWorkout(workout) }, 'Finish workout'),
-  );
-
-  screens.workout.replaceChildren(...children);
-}
-
-async function finishWorkout(workout) {
-  if (!confirm('Finish this workout?')) return;
-  await putWorkout({ ...workout, finishedAt: nowISO() });
-  setCurrent(null);
-  go('#/');
-}
-
-// ----------------------------------------------------------------------------
-// Exercise logging (#/log/:exerciseId) — the make-or-break screen
-// ----------------------------------------------------------------------------
-function topWorkingSet(sets) {
-  const working = sets.filter((s) => s.isWarmup !== true);
-  if (!working.length) return null;
-  return working.reduce((best, s) =>
-    s.weightKg > best.weightKg || (s.weightKg === best.weightKg && s.reps > best.reps) ? s : best);
-}
-
-function buildPrefill(todaySets, last) {
-  let weight = 20;
-  let reps = 8;
-  if (todaySets.length) {
-    // Pre-fill from the LAST logged set today.
-    const lastToday = todaySets.slice().sort((a, b) => (a.completedAt < b.completedAt ? -1 : 1)).pop();
-    weight = lastToday.weightKg;
-    reps = lastToday.reps;
-  } else if (last) {
-    // Else from last session's TOP working set (heaviest).
-    const top = topWorkingSet(last.sets);
-    if (top) { weight = top.weightKg; reps = top.reps; }
-  }
-  return { weight, reps, isWarmup: false, rpe: null, rpeOpen: false, editingSetId: null };
-}
-
-async function renderLog(exerciseId) {
-  showScreen('log');
-  const workout = await currentWorkout();
-  if (!workout) { go('#/'); return; }
-
-  const exercise = await getExercise(exerciseId);
-  const last = await getLastSession(exerciseId);
-  const allSets = await listSetsForWorkout(workout.id);
-  const todaySets = allSets.filter((s) => s.exerciseId === exerciseId)
-    .sort((a, b) => a.setNumber - b.setNumber);
-
-  if (!logState) logState = buildPrefill(todaySets, last);
-  const editing = logState.editingSetId != null;
-
-  // --- Last session panel ---
-  const lastPanel = h('div', { class: 'panel' });
-  lastPanel.append(h('div', { class: 'section-label', text: 'Last session' }));
-  if (last) {
-    lastPanel.append(h('div', { class: 'muted', text: formatDate(last.workout.date) }));
-    for (const s of last.sets) {
-      lastPanel.append(h('div', { class: 'set-line' },
-        `${formatWeight(s.weightKg)} × ${s.reps}`,
-        s.isWarmup ? h('span', { class: 'w', text: 'warmup' }) : null,
-        s.rpe != null ? h('span', { class: 'rpe', text: `RPE ${s.rpe}` }) : null,
-      ));
-    }
-  } else {
-    lastPanel.append(h('div', { class: 'muted', text: 'First time — no history' }));
-  }
-
-  // --- Today's sets (editable) ---
-  const todayWrap = h('div', {});
-  if (todaySets.length) {
-    todayWrap.append(h('div', { class: 'section-label', text: "Today's sets" }));
-    for (const s of todaySets) {
-      todayWrap.append(h('div', { class: 'set-item' + (logState.editingSetId === s.id ? ' editing' : '') },
-        h('span', { class: 'idx', text: s.setNumber }),
-        h('button', { class: 'vals', style: 'text-align:left;background:none;border:none;', onclick: () => editSet(s) },
-          `${formatWeight(s.weightKg)} × ${s.reps}`,
-          s.isWarmup ? h('span', { class: 'w', text: ' W' }) : null,
-          s.rpe != null ? h('span', { class: 'rpe', text: ` RPE ${s.rpe}` }) : null,
-        ),
-        h('button', { class: 'del', 'aria-label': 'Delete set', onclick: () => removeSet(s) }, '🗑'),
-      ));
-    }
-  }
-
-  // --- Input card ---
-  const lbHint = getUnits() === 'lb'
-    ? h('span', { class: 'hint' })
-    : null;
-  const weightInput = h('input', {
-    type: 'number', inputmode: 'decimal', step: String(WEIGHT_STEP),
-    class: 'stepper-input', 'aria-label': 'Weight (kg)', value: trimNum(logState.weight),
-  });
-  const updateLbHint = () => { if (lbHint) lbHint.textContent = formatWeight(logState.weight); };
-  const weightStepper = buildStepper(weightInput, WEIGHT_STEP, 0, (v) => { logState.weight = v; updateLbHint(); });
-  updateLbHint();
-
-  const repsInput = h('input', {
-    type: 'number', inputmode: 'numeric', step: String(REP_STEP),
-    class: 'stepper-input', 'aria-label': 'Reps', value: String(logState.reps),
-  });
-  const repsStepper = buildStepper(repsInput, REP_STEP, 0, (v) => { logState.reps = v; });
-
-  const warmupBtn = h('button', {
-    class: 'toggle', 'aria-pressed': logState.isWarmup ? 'true' : 'false',
-    onclick: () => { logState.isWarmup = !logState.isWarmup; renderLog(exerciseId); },
-  }, 'Warm-up');
-
-  const rpeBtn = h('button', {
-    class: 'toggle', 'aria-pressed': logState.rpeOpen ? 'true' : 'false',
-    onclick: () => { logState.rpeOpen = !logState.rpeOpen; renderLog(exerciseId); },
-  }, logState.rpe != null ? `RPE ${logState.rpe}` : 'RPE');
-
-  const inputCard = h('div', { class: 'input-card' },
-    h('div', { class: 'stepper-group' },
-      h('div', { class: 'stepper-label' }, h('span', { text: 'Weight (kg)' }), lbHint),
-      weightStepper,
-    ),
-    h('div', { class: 'stepper-group' },
-      h('div', { class: 'stepper-label' }, h('span', { text: 'Reps' })),
-      repsStepper,
-    ),
-    h('div', { class: 'control-row' }, warmupBtn, rpeBtn),
-    logState.rpeOpen ? buildRpePanel(exerciseId) : null,
-  );
-
-  // --- Confirm bar (fixed) ---
-  const confirmBtn = h('button', {
-    class: 'confirm-btn' + (editing ? ' confirm-edit' : ''),
-    onclick: () => confirmSet(exerciseId, workout),
-  }, editing ? 'Update set' : 'Confirm');
-  const confirmInner = h('div', { class: 'inner' }, confirmBtn,
-    editing ? h('button', { class: 'cancel-edit', onclick: () => { logState = null; renderLog(exerciseId); } }, 'Cancel edit') : null,
-  );
-  const confirmBar = h('div', { class: 'confirm-bar' }, confirmInner);
-
-  screens.log.replaceChildren(
-    header(exercise ? exercise.name : 'Exercise', '/workout'),
-    lastPanel,
-    todayWrap,
-    inputCard,
-    confirmBar,
-  );
-}
-
-function buildStepper(input, step, min, onChange) {
-  const round = (v) => Math.round(v * 100) / 100;
-  input.addEventListener('input', () => {
-    const v = parseFloat(input.value);
-    if (!Number.isNaN(v)) onChange(v);
-  });
-  const dec = h('button', { class: 'step-btn', type: 'button', 'aria-label': 'decrease' }, '−');
-  const inc = h('button', { class: 'step-btn', type: 'button', 'aria-label': 'increase' }, '+');
-  dec.addEventListener('click', () => {
-    let v = round((parseFloat(input.value) || 0) - step);
-    if (min != null && v < min) v = min;
-    input.value = trimNum(v);
-    onChange(v);
-  });
-  inc.addEventListener('click', () => {
-    const v = round((parseFloat(input.value) || 0) + step);
-    input.value = trimNum(v);
-    onChange(v);
-  });
-  return h('div', { class: 'stepper' }, dec, input, inc);
-}
-
-function buildRpePanel(exerciseId) {
-  const panel = h('div', { class: 'rpe-panel' });
-  for (const val of RPE_VALUES) {
-    panel.append(h('button', {
-      class: 'rpe-chip', 'aria-pressed': logState.rpe === val ? 'true' : 'false',
-      onclick: () => { logState.rpe = logState.rpe === val ? null : val; renderLog(exerciseId); },
-    }, String(val)));
-  }
-  panel.append(h('button', {
-    class: 'rpe-chip', onclick: () => { logState.rpe = null; renderLog(exerciseId); },
-  }, 'Clear'));
-  return panel;
-}
-
-function editSet(set) {
-  logState = {
-    weight: set.weightKg,
-    reps: set.reps,
-    isWarmup: set.isWarmup === true,
-    rpe: set.rpe ?? null,
-    rpeOpen: set.rpe != null,
-    editingSetId: set.id,
-  };
-  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-  renderLog(set.exerciseId);
-}
-
-async function removeSet(set) {
-  if (!confirm('Delete this set?')) return;
-  if (logState && logState.editingSetId === set.id) logState = null;
-  await deleteSet(set.id);
-  renderLog(set.exerciseId);
-}
-
-async function confirmSet(exerciseId, workout) {
-  const weightKg = Number.isFinite(logState.weight) ? Math.max(0, logState.weight) : 0;
-  const reps = Number.isFinite(logState.reps) ? Math.max(0, Math.round(logState.reps)) : 0;
-  const rpe = logState.rpe;
-  const isWarmup = logState.isWarmup === true;
-
-  if (logState.editingSetId) {
-    const existing = await getSet(logState.editingSetId);
-    if (existing) {
-      await putSet({ ...existing, weightKg, reps, rpe, isWarmup });
-    }
-    logState = null;
-    renderLog(exerciseId);
-    return;
-  }
-
-  // New set: setNumber = count of this exercise's sets in this workout + 1.
-  const existing = (await listSetsForWorkout(workout.id)).filter((s) => s.exerciseId === exerciseId);
-  await putSet({
-    id: uid(),
-    workoutId: workout.id,
-    exerciseId,
-    setNumber: existing.length + 1,
-    weightKg,
-    reps,
-    rpe,
-    isWarmup,
-    completedAt: nowISO(),
-  });
-  timer.start(); // auto-start rest timer on set completion
-  logState = null; // reset (warm-up off, rpe cleared); prefill now from just-logged set
-  renderLog(exerciseId);
-}
-
-// ----------------------------------------------------------------------------
-// Exercise picker (#/pick)
-// ----------------------------------------------------------------------------
-async function renderPick() {
-  showScreen('pick');
-  const workout = await currentWorkout();
-  if (!workout) { go('#/'); return; }
-  const exercises = await listExercises();
-
-  const searchInput = h('input', {
-    class: 'search', type: 'search', placeholder: 'Search exercises…',
-    'aria-label': 'Search exercises', value: pickQuery,
-  });
-  const resultsEl = h('div', {});
-  searchInput.addEventListener('input', () => {
-    pickQuery = searchInput.value;
-    renderPickResults(resultsEl, exercises, pickQuery);
-  });
-  renderPickResults(resultsEl, exercises, pickQuery);
-
-  screens.pick.replaceChildren(
-    header('Add exercise', '/workout'),
-    searchInput,
-    resultsEl,
-    buildCustomForm(),
-  );
-}
-
-function renderPickResults(container, exercises, query) {
-  const q = query.trim().toLowerCase();
-  const matches = q ? exercises.filter((e) => e.name.toLowerCase().includes(q)) : exercises;
-  const nodes = [];
-  for (const group of MUSCLE_GROUPS) {
-    const inGroup = matches.filter((e) => e.muscleGroup === group);
-    if (!inGroup.length) continue;
-    nodes.push(h('div', { class: 'group-label', text: group }));
-    for (const ex of inGroup) {
-      nodes.push(h('button', { class: 'pick-item', onclick: () => go(`#/log/${ex.id}`) },
-        h('span', { class: 'ex-name', text: ex.name }),
-        h('span', { class: 'pick-eq', text: ex.equipment }),
-      ));
-    }
-  }
-  if (!nodes.length) nodes.push(h('p', { class: 'empty', text: 'No matches. Create a custom exercise below.' }));
-  container.replaceChildren(...nodes);
-}
-
-function buildCustomForm() {
-  const nameInput = h('input', { type: 'text', placeholder: 'e.g. Landmine Press', 'aria-label': 'Exercise name' });
-  const groupSelect = h('select', { 'aria-label': 'Muscle group' },
-    ...MUSCLE_GROUPS.map((g) => h('option', { value: g }, g)));
-  const equipSelect = h('select', { 'aria-label': 'Equipment' },
-    ...EQUIPMENT.map((eq) => h('option', { value: eq }, eq)));
-
-  const submit = async () => {
-    const name = nameInput.value.trim();
-    if (!name) { nameInput.focus(); return; }
-    const ex = await putExercise({
-      id: uid(),
-      name,
-      muscleGroup: groupSelect.value,
-      equipment: equipSelect.value,
-      isCustom: true,
-      createdAt: nowISO(),
-    });
-    go(`#/log/${ex.id}`);
-  };
-
-  return h('details', { class: 'custom' },
-    h('summary', {}, '+ Create custom exercise'),
-    h('div', { class: 'field' }, h('label', { text: 'Name' }), nameInput),
-    h('div', { class: 'field' }, h('label', { text: 'Muscle group' }), groupSelect),
-    h('div', { class: 'field' }, h('label', { text: 'Equipment' }), equipSelect),
-    h('button', { class: 'btn btn-lg', style: 'margin-top:14px', onclick: submit }, 'Create & log'),
-  );
-}
-
-// ----------------------------------------------------------------------------
-// History (#/history)
-// ----------------------------------------------------------------------------
-async function renderHistory() {
-  showScreen('history');
-  const recent = await getRecentWorkouts('0000');
-  const children = [header('History', '/')];
-  if (!recent.length) {
-    children.push(h('p', { class: 'empty', text: 'No workouts recorded yet.' }));
-  } else {
-    for (const { workout, sets } of recent) {
-      const exCount = new Set(sets.map((s) => s.exerciseId)).size;
-      const dur = workoutDuration(workout);
-      children.push(h('a', { class: 'card', href: `#/workout/${workout.id}` },
-        h('div', { class: 'row-between' },
-          h('div', { class: 'card-title', text: formatDate(workout.date) }),
-          h('div', { class: 'muted', text: dur || (workout.finishedAt ? '' : 'in progress') }),
-        ),
-        h('div', { class: 'card-sub', text:
-          `${exCount} exercise${exCount === 1 ? '' : 's'} · ${workingCount(sets)} working sets · ${formatWeight(totalVolume(sets))} volume` }),
-      ));
-    }
-  }
-  screens.history.replaceChildren(...children);
-}
-
-// ----------------------------------------------------------------------------
-// Workout detail / edit (#/workout/:id)
-// ----------------------------------------------------------------------------
-async function renderDetail(id) {
-  showScreen('detail');
-  const workout = await getWorkout(id);
-  if (!workout) { go('#/history'); return; }
-  const sets = await listSetsForWorkout(id);
-  const exMap = await exerciseMap();
-  const orderedIds = exercisesInOrder(sets);
-
-  const children = [
-    header(formatDate(workout.date), '/history',
-      !workout.finishedAt
-        ? h('button', { class: 'header-action', onclick: () => { setCurrent(workout.id); go('#/workout'); } }, 'Resume')
-        : null),
-  ];
-
-  const dur = workoutDuration(workout);
-  children.push(h('p', { class: 'muted', text:
-    `${new Set(sets.map((s) => s.exerciseId)).size} exercises · ${workingCount(sets)} working sets · ${formatWeight(totalVolume(sets))} volume` +
-    (dur ? ` · ${dur}` : ' · in progress') }));
-
-  if (!orderedIds.length) {
-    children.push(h('p', { class: 'empty', text: 'No sets logged in this workout.' }));
-  }
-
-  for (const exId of orderedIds) {
-    const exSets = sets.filter((s) => s.exerciseId === exId).sort((a, b) => a.setNumber - b.setNumber);
-    const ex = exMap.get(exId);
-    const group = h('div', { class: 'ex-group' }, h('h3', { text: ex ? ex.name : 'Unknown exercise' }));
-    for (const s of exSets) group.append(buildDetailSetRow(s, id));
-    children.push(group);
-  }
-
-  // Notes
-  const notes = h('textarea', { class: 'notes', placeholder: 'Notes…', 'aria-label': 'Workout notes' });
-  notes.value = workout.notes || '';
-  notes.addEventListener('blur', async () => {
-    await putWorkout({ ...workout, notes: notes.value.trim() || null });
-  });
-  children.push(h('div', { class: 'section-label', text: 'Notes' }), notes);
-
-  children.push(h('button', {
-    class: 'btn btn-danger', style: 'margin-top:20px',
-    onclick: () => deleteWholeWorkout(workout),
-  }, 'Delete workout'));
-
-  screens.detail.replaceChildren(...children);
-}
-
-function buildDetailSetRow(set, workoutId) {
-  const wInput = h('input', { type: 'number', inputmode: 'decimal', step: String(WEIGHT_STEP), 'aria-label': 'Weight kg' });
-  wInput.value = trimNum(set.weightKg);
-  const rInput = h('input', { type: 'number', inputmode: 'numeric', step: '1', 'aria-label': 'Reps' });
-  rInput.value = String(set.reps);
-  const warm = h('input', { type: 'checkbox', 'aria-label': 'Warm-up' });
-  warm.checked = set.isWarmup === true;
-
-  const save = async () => {
-    const weightKg = Math.max(0, parseFloat(wInput.value) || 0);
-    const reps = Math.max(0, Math.round(parseFloat(rInput.value) || 0));
-    await putSet({ ...set, weightKg, reps, isWarmup: warm.checked });
-    renderDetail(workoutId);
-  };
-  const del = async () => {
-    if (!confirm('Delete this set?')) return;
-    await deleteSet(set.id);
-    renderDetail(workoutId);
-  };
-
-  return h('div', { class: 'detail-edit' },
-    h('span', { class: 'idx muted', text: `#${set.setNumber}` }),
-    wInput, h('span', { class: 'muted', text: '×' }), rInput,
-    h('label', { class: 'warm' }, warm, 'warm-up'),
-    set.rpe != null ? h('span', { class: 'rpe', text: `RPE ${set.rpe}` }) : null,
-    h('button', { class: 'btn-sm btn', onclick: save }, 'Save'),
-    h('button', { class: 'btn-sm btn btn-danger', onclick: del }, 'Delete'),
-  );
-}
-
-async function deleteWholeWorkout(workout) {
-  if (!confirm('Delete this whole workout and all its sets?')) return;
-  if (!confirm('This cannot be undone. Delete permanently?')) return;
-  await deleteWorkout(workout.id);
-  if (state.currentWorkoutId === workout.id) setCurrent(null);
-  go('#/history');
-}
-
-// ----------------------------------------------------------------------------
-// Settings (#/settings)
-// ----------------------------------------------------------------------------
-async function renderSettings() {
-  showScreen('settings');
-  const status = await getActiveAdapter().status();
-
-  const restInput = h('input', {
-    class: 'num-input', type: 'number', inputmode: 'numeric', min: '5', step: '5',
-    'aria-label': 'Default rest seconds', value: String(timer.getDefaultRestSeconds()),
-  });
-  restInput.addEventListener('change', () => {
-    const v = parseInt(restInput.value, 10);
-    if (Number.isFinite(v) && v > 0) timer.setDefaultRestSeconds(v);
-  });
-
-  const units = getUnits();
-  const kgBtn = h('button', { 'aria-pressed': units === 'kg' ? 'true' : 'false' }, 'kg');
-  const lbBtn = h('button', { 'aria-pressed': units === 'lb' ? 'true' : 'false' }, 'lb');
-  kgBtn.addEventListener('click', () => { localStorage.setItem('settings.units', 'kg'); renderSettings(); });
-  lbBtn.addEventListener('click', () => { localStorage.setItem('settings.units', 'lb'); renderSettings(); });
-
-  screens.settings.replaceChildren(
-    header('Settings', '/'),
-    h('div', { class: 'setting' },
-      h('label', { text: 'Default rest timer (seconds)' }),
-      restInput,
-    ),
-    h('div', { class: 'setting' },
-      h('label', { text: 'Display units' }),
-      h('div', { class: 'seg' }, kgBtn, lbBtn),
-      h('p', { class: 'muted', style: 'margin:8px 0 0', text: 'Weights are always stored in kg; this only changes how they show.' }),
-    ),
-    h('div', { class: 'setting' },
-      h('label', { text: 'Sync' }),
-      h('p', { class: 'muted', style: 'margin:0', text:
-        `Mode: ${status.mode} · ${status.configured ? 'configured' : 'not configured'}` +
-        (status.lastError ? ` · ${status.lastError}` : '') }),
-    ),
-  );
+  if (changed) window.scrollTo(0, 0);
 }
 
 // ----------------------------------------------------------------------------
@@ -833,10 +424,7 @@ function hideRestBar() {
 }
 restBar.addEventListener('click', () => { timer.cancel(); hideRestBar(); });
 
-function onTimerTick(secs) {
-  if (secs > 0) showRestBar(secs);
-  else hideRestBar();
-}
+function onTimerTick(secs) { if (secs > 0) showRestBar(secs); else hideRestBar(); }
 function onTimerDone() { hideRestBar(); }
 
 // ----------------------------------------------------------------------------
@@ -848,6 +436,10 @@ async function init() {
   }
   try { await seedIfEmpty(); } catch (e) { console.error('seed failed', e); }
   timer.bind({ tick: onTimerTick, done: onTimerDone });
+
+  for (const btn of document.querySelectorAll('#tabbar button')) {
+    btn.addEventListener('click', () => go('#/' + btn.dataset.tab));
+  }
   window.addEventListener('hashchange', route);
   await route();
 }

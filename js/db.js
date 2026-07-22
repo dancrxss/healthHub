@@ -6,6 +6,11 @@
 // Record shapes (per gym-tracker-spec.md — every record also carries
 // `syncedAt: string|null`, set to null on any local write, used for delta sync):
 //
+// Schema v2 (22 July 2026, PLAN.md §"Phase 1.5") is ALL ADDITIVE: DB_VERSION
+// stays 1 — no store/index changes, records are schemaless so new fields just
+// appear on new/updated records. Every added field is optional with a stated
+// default, so legacy v1 records keep working unchanged.
+//
 // @typedef {Object} ExerciseRecord
 //   {string} id            uuid (seed exercises use stable "seed-<slug>" ids)
 //   {string} name          e.g. "Barbell Bench Press"
@@ -14,6 +19,9 @@
 //   {boolean} isCustom
 //   {string} createdAt     ISO datetime
 //   {string|null} syncedAt
+//   v2 additions:
+//   {'strength'|'cardio'} exerciseType   absent ⇒ 'strength'
+//   {boolean} isUnilateral               absent ⇒ false ("Single Leg / Single Arm")
 //
 // @typedef {Object} WorkoutRecord
 //   {string} id
@@ -23,6 +31,14 @@
 //   {string|null} templateId
 //   {string|null} notes
 //   {string|null} syncedAt
+//   v2 additions:
+//   {string|null} name          display name; null ⇒ derived from startedAt hour
+//   {number|null} bodyweightKg  logged bodyweight for the session
+//   {Array<{exerciseId:string, supersetGroup:number|null, note:string|null}>|null} entries
+//                               ordered exercise list (exists before any set is
+//                               logged); null/absent ⇒ legacy workout, derive
+//                               order from sets' completedAt. Consecutive entries
+//                               sharing a supersetGroup integer are one superset.
 //
 // @typedef {Object} SetRecord
 //   {string} id
@@ -35,6 +51,13 @@
 //   {boolean} isWarmup     excluded from PR/volume calcs
 //   {string} completedAt   ISO datetime — drives the auto rest timer
 //   {string|null} syncedAt
+//   v2 additions (all optional):
+//   {'strength'|'cardio'} setType   absent ⇒ 'strength'
+//   {string|null} notes
+//   {number|null} durationSeconds   cardio field
+//   {number|null} distanceM         cardio field
+//   {number|null} kcal              cardio field
+//   Cardio sets store weightKg: 0, reps: 0 so legacy code paths stay safe.
 //
 // @typedef {Object} TemplateRecord
 //   {string} id
@@ -43,7 +66,7 @@
 //           targetRepsHigh:number}>} entries   ordered
 //   {string|null} syncedAt
 
-export const MUSCLE_GROUPS = ['chest', 'back', 'legs', 'shoulders', 'arms', 'core', 'other'];
+export const MUSCLE_GROUPS = ['chest', 'back', 'legs', 'shoulders', 'biceps', 'triceps', 'abs', 'cardio', 'accessory', 'rehab', 'other'];
 export const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'other'];
 
 export const DB_NAME = 'healthhub';
@@ -160,6 +183,14 @@ export async function putExercise(exercise) {
 /** @returns {Promise<ExerciseRecord|undefined>} */
 export async function getExercise(id) {
   return getRecord('exercises', id);
+}
+/**
+ * Delete an exercise. User-initiated only; callers must ensure it is a custom
+ * exercise with no logged sets (the UI gates on both) — seed data and anything
+ * referenced by history must never be deleted.
+ */
+export async function deleteExercise(id) {
+  return deleteRecord('exercises', id);
 }
 /** All exercises, sorted by name. */
 export async function listExercises() {

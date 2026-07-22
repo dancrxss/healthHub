@@ -36,8 +36,11 @@ import {
   getTrainingFrequency,
 } from '../js/queries.js';
 import { isoWeekOf, epley1RM } from '../js/calc.js';
+import { seedIfEmpty, SEED_EXERCISES } from '../js/seed.js';
 
 const TEST_DB = 'healthhub-test';
+const SEED_DB = 'healthhub-seed-test';
+const UPGRADE_DB = 'healthhub-upgrade-test';
 
 let root;
 let summaryEl;
@@ -212,8 +215,84 @@ export async function runTests(rootEl, summaryElement) {
     ok('getTrainingFrequency: arms counts (curl warmup still counts for frequency)', freq[1].perMuscleGroup.arms === 1);
     ok('getTrainingFrequency: chest + legs each 1', freq[1].perMuscleGroup.chest === 1 && freq[1].perMuscleGroup.legs === 1);
 
+    // ---- Schema v2: workout entries[] + cardio set roundtrip ----
+    await putWorkout({
+      id: 'wv2', date: today, startedAt: `${today}T12:00:00Z`, finishedAt: null,
+      templateId: null, notes: null,
+      name: 'Morning Workout', bodyweightKg: 82.5,
+      entries: [
+        { exerciseId: 'ex-bench', supersetGroup: 1, note: null },
+        { exerciseId: 'ex-squat', supersetGroup: 1, note: 'paired' },
+        { exerciseId: 'ex-run', supersetGroup: null, note: null },
+      ],
+      syncedAt: null,
+    });
+    const gotV2 = await getWorkout('wv2');
+    eq('workout v2: entries[] round-trips', gotV2.entries.map((e) => e.exerciseId), ['ex-bench', 'ex-squat', 'ex-run']);
+    ok('workout v2: name + bodyweightKg round-trip', gotV2.name === 'Morning Workout' && gotV2.bodyweightKg === 82.5);
+    ok('workout v2: supersetGroup + note preserved', gotV2.entries[0].supersetGroup === 1 && gotV2.entries[1].note === 'paired' && gotV2.entries[2].supersetGroup === null);
+
+    const cardioSet = await putSet({
+      id: 'wv2-cardio', workoutId: 'wv2', exerciseId: 'ex-run', setNumber: 1,
+      weightKg: 0, reps: 0, rpe: null, isWarmup: false,
+      setType: 'cardio', notes: 'steady', durationSeconds: 600, distanceM: 2000, kcal: 150,
+      completedAt: `${today}T12:20:00Z`, syncedAt: 'STALE',
+    });
+    ok('cardio set: syncedAt reset to null', cardioSet.syncedAt === null);
+    const gotCardio = await getSet('wv2-cardio');
+    ok('cardio set: setType stored', gotCardio.setType === 'cardio');
+    ok('cardio set: cardio fields round-trip', gotCardio.durationSeconds === 600 && gotCardio.distanceM === 2000 && gotCardio.kcal === 150);
+    ok('cardio set: notes round-trip', gotCardio.notes === 'steady');
+    ok('cardio set: weight/reps zeroed', gotCardio.weightKg === 0 && gotCardio.reps === 0);
+
     // ---- cleanup ----
     await deleteDb(TEST_DB);
+
+    // ---- Seed v2: fresh install seeds straight to v2 ----
+    _setDbNameForTests(SEED_DB);
+    await deleteDb(SEED_DB);
+    await openDb();
+    const seededFresh = await seedIfEmpty();
+    ok('seedIfEmpty: performs work on first run', seededFresh === true);
+    ok('seedIfEmpty: seeded-v1 flag set', (await getMeta('seeded-v1')) === true);
+    ok('seedIfEmpty: seeded-v2 flag set', (await getMeta('seeded-v2')) === true);
+
+    const seededEx = await listExercises();
+    eq('seed: exercise count matches SEED_EXERCISES', seededEx.length, SEED_EXERCISES.length);
+    const cardioEx = seededEx.filter((e) => e.exerciseType === 'cardio');
+    eq('seed: 6 cardio exercises present', cardioEx.length, 6);
+    ok('seed: cardio have muscleGroup cardio + equipment other', cardioEx.every((e) => e.muscleGroup === 'cardio' && e.equipment === 'other'));
+    ok('seed: assault bike stable id + name', seededEx.some((e) => e.id === 'seed-assault-bike' && e.name === 'Assault Bike'));
+    ok('seed: core remapped to abs (plank)', (await getExercise('seed-plank')).muscleGroup === 'abs');
+    ok('seed: arms curl remapped to biceps (barbell-curl)', (await getExercise('seed-barbell-curl')).muscleGroup === 'biceps');
+    ok('seed: arms extension remapped to triceps (triceps-pushdown)', (await getExercise('seed-triceps-pushdown')).muscleGroup === 'triceps');
+    ok('seed: unilateral flag set where true (dumbbell-row)', (await getExercise('seed-dumbbell-row')).isUnilateral === true);
+    ok('seed: unilateral defaults false (barbell-bench-press)', (await getExercise('seed-barbell-bench-press')).isUnilateral === false);
+    ok('seed: exerciseType strength on lifts (barbell-bench-press)', (await getExercise('seed-barbell-bench-press')).exerciseType === 'strength');
+
+    const seededAgain = await seedIfEmpty();
+    ok('seedIfEmpty: idempotent — no work on second run', seededAgain === false);
+    eq('seed: count unchanged after second call', (await listExercises()).length, SEED_EXERCISES.length);
+    await deleteDb(SEED_DB);
+
+    // ---- Seed v2 upgrade: existing v1 install is repaired in place ----
+    _setDbNameForTests(UPGRADE_DB);
+    await deleteDb(UPGRADE_DB);
+    await openDb();
+    // Simulate a v1 install: old-shape seed records + seeded-v1 flag, no v2 flag.
+    await putExercise({ id: 'seed-plank', name: 'Plank', muscleGroup: 'core', equipment: 'bodyweight', isCustom: false, createdAt: '2026-07-21T00:00:00.000Z', syncedAt: null });
+    await putExercise({ id: 'seed-barbell-curl', name: 'Barbell Curl', muscleGroup: 'arms', equipment: 'barbell', isCustom: false, createdAt: '2026-07-21T00:00:00.000Z', syncedAt: null });
+    await putExercise({ id: 'my-custom', name: 'My Special Lift', muscleGroup: 'arms', equipment: 'other', isCustom: true, createdAt: '2026-07-21T00:00:00.000Z', syncedAt: null });
+    await setMeta('seeded-v1', true);
+    const upgraded = await seedIfEmpty();
+    ok('upgrade: seedIfEmpty performs the v2 upgrade', upgraded === true);
+    ok('upgrade: seeded-v2 flag set', (await getMeta('seeded-v2')) === true);
+    ok('upgrade: legacy core -> abs remapped', (await getExercise('seed-plank')).muscleGroup === 'abs');
+    ok('upgrade: legacy arms -> biceps remapped', (await getExercise('seed-barbell-curl')).muscleGroup === 'biceps');
+    ok('upgrade: cardio seeds added', (await getExercise('seed-assault-bike')) !== undefined);
+    const custom = await getExercise('my-custom');
+    ok('upgrade: custom (isCustom) record untouched', custom.muscleGroup === 'arms' && custom.isCustom === true);
+    await deleteDb(UPGRADE_DB);
   } catch (err) {
     fail += 1;
     line(false, 'suite threw', err && err.message ? err.message : String(err));

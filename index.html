@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Gym Tracker</title>
   <meta name="description" content="Personal gym workout tracker — offline-first." />
-  <meta name="theme-color" content="#0f1115" />
+  <meta name="theme-color" content="#0b0d0f" />
 
   <!-- PWA / installable -->
   <link rel="manifest" href="manifest.webmanifest" />
@@ -17,19 +17,56 @@
   <meta name="apple-mobile-web-app-title" content="Gym" />
 
   <link rel="stylesheet" href="css/app.css" />
+  <link rel="stylesheet" href="css/screens.css" />
 </head>
 <body>
   <!-- Screens: all present in the DOM, toggled by the hash router in ui.js.
-       Each is filled by its render function; JS never uses innerHTML with data. -->
+       Each is filled by its render function; JS never uses innerHTML with data.
+       Tab screens (#s-log … #s-profile) show the bottom tab bar; the fullscreen
+       screens (#s-workout, #s-pick) hide it via the `fullscreen` body class. -->
   <main id="app">
-    <section id="s-home" class="screen" hidden></section>
-    <section id="s-workout" class="screen" hidden></section>
     <section id="s-log" class="screen" hidden></section>
+    <section id="s-routines" class="screen" hidden></section>
+    <section id="s-stats" class="screen" hidden></section>
+    <section id="s-profile" class="screen" hidden></section>
+    <section id="s-workout" class="screen" hidden></section>
     <section id="s-pick" class="screen" hidden></section>
-    <section id="s-history" class="screen" hidden></section>
-    <section id="s-detail" class="screen" hidden></section>
-    <section id="s-settings" class="screen" hidden></section>
   </main>
+
+  <!-- Bottom tab bar. ui.js wires clicks by data-tab and marks the active one.
+       Hidden on fullscreen routes. -->
+  <nav id="tabbar" aria-label="Primary">
+    <button type="button" data-tab="log" aria-label="Log">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 5a2 2 0 0 1 2-2h11a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a2 2 0 0 1-2-2z" />
+        <path d="M8 3v18" />
+      </svg>
+      <span>Log</span>
+    </button>
+    <button type="button" data-tab="routines" aria-label="Routines">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="5" y="4" width="14" height="16" rx="2" />
+        <path d="M9 8h6M9 12h6M9 16h4" />
+      </svg>
+      <span>Routines</span>
+    </button>
+    <button type="button" data-tab="stats" aria-label="Statistics">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 20V10M12 20V4M18 20v-7" />
+      </svg>
+      <span>Statistics</span>
+    </button>
+    <button type="button" data-tab="profile" aria-label="Profile">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" />
+      </svg>
+      <span>Profile</span>
+    </button>
+  </nav>
+
+  <!-- Bottom sheets render here (dimmed backdrop + slide-up sheet). -->
+  <div id="sheet-root"></div>
 
   <!-- Rest timer bar lives in the shell so it overlays every screen. -->
   <button id="rest-bar" class="rest-bar" type="button" hidden aria-label="Dismiss rest timer">
