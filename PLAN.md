@@ -102,3 +102,107 @@ orchestrator verifies and commits.
   mapping isolated in `mapRow`.
 - Bodyweight volume: `weightKg = added load` (0 for strict bodyweight) as
   specced; noted in README as a known simplification.
+
+---
+
+## Phase 1.5 — RepCount-style UI rework (22 July 2026)
+
+Dan supplied reference screenshots (`sample_screenshots/`) of the RepCount UI and
+asked for the app to be reworked to that structure. Decisions taken with Dan:
+
+- **Exercise types:** Strength (kg × reps) **and Cardio** (minutes/seconds,
+  distance, kcal). Cardio sets are excluded from PR and volume calculations.
+- **Tabs:** all four — Log, Routines, Statistics, Profile — basic versions.
+- **Supersets:** supported.
+- **RPE + warm-up:** kept, exposed via the per-set “…” menu (not the main grid).
+
+The frozen query contract (`getLastSession`, `getRecentWorkouts`, `getPRs`,
+`getWeeklyVolume`, `getTrainingFrequency`) is **unchanged** in names, signatures
+and return shapes.
+
+### Schema v2 (all additive; DB_VERSION stays 1 — no store/index changes)
+
+`ExerciseRecord` additions:
+- `exerciseType`: `'strength' | 'cardio'` — absent ⇒ `'strength'`.
+- `isUnilateral`: boolean — absent ⇒ false (“Single Leg / Single Arm”).
+- `MUSCLE_GROUPS` v2 (display categories, this order):
+  `['chest','back','legs','shoulders','biceps','triceps','abs','cardio','accessory','rehab','other']`.
+  Seed v2 (meta flag `seeded-v2`, idempotent, upsert-only) remaps existing seed
+  exercises (`arms` → `biceps`/`triceps` per exercise, `core` → `abs`) and adds
+  cardio seeds (Assault Bike, Rowing Machine, Treadmill Run, Incline Walk,
+  Stationary Bike, Stair Climber). Custom/user records are never touched.
+
+`WorkoutRecord` additions:
+- `name`: string|null — null ⇒ display name derived from `startedAt` hour
+  (<12 “Morning Workout”, <17 “Afternoon Workout”, else “Evening Workout”).
+- `bodyweightKg`: number|null.
+- `entries`: `Array<{exerciseId: string, supersetGroup: number|null, note: string|null}> | null`
+  — the ordered exercise list of the workout (exists even before any set is
+  logged). null/absent ⇒ legacy workout: derive order from sets’ `completedAt`.
+  Consecutive entries sharing a `supersetGroup` integer render as one superset.
+
+`SetRecord` additions (all optional):
+- `setType`: `'strength' | 'cardio'` — absent ⇒ `'strength'`.
+- `notes`: string|null.
+- `durationSeconds`, `distanceM`, `kcal`: number|null (cardio fields).
+- Cardio sets store `weightKg: 0, reps: 0` so legacy code paths stay safe.
+
+`calc.js` behaviour extension (signatures unchanged): `prsFrom` and
+`weeklyVolumeFrom` **skip** sets with `setType === 'cardio'`;
+`trainingFrequencyFrom` and the session listings still include them.
+
+### Route map
+
+- `#/` → redirects to `#/log`.
+- Tabs (tab bar visible): `#/log`, `#/routines`, `#/stats`, `#/profile`.
+- Fullscreen (tab bar hidden): `#/workout` (active), `#/workout/:id` (past,
+  same screen in view/edit mode), `#/pick` (category list), `#/pick/:group`
+  (exercise list within category).
+
+### Module map
+
+- `js/ui.js` — entry: `h()`, formatting, router, tab bar, bottom-sheet infra
+  (`openSheet`/`closeSheet`), rest bar, `startWorkout(templateId?)` (seeds
+  `entries` from the template), exported shared helpers.
+- `js/screens/workout.js` — the workout screen (meta card, exercise cards with
+  inline set grid, add-set duplication, per-set/per-exercise sheets, finish).
+- `js/screens/picker.js` — category → exercise list → search; Regular/Superset
+  toggle (superset = multi-select then confirm); custom exercise create/edit
+  sheet (name, category, type, unilateral, delete-if-unused).
+- `js/screens/log.js` — Log tab: month groups (“July 2026 · 2 Workouts”),
+  workout cards (day badge, name, duration, “3× Face Pulls” lines).
+- `js/screens/routines.js` — templates list, start routine, basic create/edit/delete.
+- `js/screens/stats.js` — CSS-bar charts from the frozen queries: sessions/week,
+  weekly volume per muscle group, per-exercise PRs.
+- `js/screens/profile.js` — units, default rest, sync status, about.
+- `css/app.css` (core + workout/picker) and `css/screens.css` (tab screens).
+
+### Interaction contract (acceptance criteria unchanged)
+
+- **Add Set** on an exercise card appends a set pre-filled from the previous set
+  (or last session’s top set) — **repeat set = 1 tap**. Tapping a value opens an
+  inline editor (numeric input + steppers) — adjusted set ≤2 taps + presses.
+- Adding a set auto-starts the rest timer (unchanged `timer.js`); alarm icon in
+  the workout header opens the timer sheet.
+- Finishing = header tick → confirm sheet. Past workouts open in the same
+  screen for viewing/editing.
+
+### Stable DOM hooks (for the CDP e2e suite — implement exactly)
+
+- Tab bar: `nav#tabbar button[data-tab="log"|"routines"|"stats"|"profile"]`.
+- Screens: `#s-log`, `#s-routines`, `#s-stats`, `#s-profile`, `#s-workout`,
+  `#s-pick`.
+- Workout: finish `[data-action="finish"]`, meta card `.wmeta`, exercise card
+  `.ex-card[data-exercise-id]`, add set `.add-set[data-exercise-id]`, set row
+  `.set-row[data-set-id]`, field `.set-field[data-field]` (weight, reps,
+  minutes, seconds, distance, kcal), add exercise `[data-action="add-exercise"]`.
+- Log tab: `.month-group`, `.workout-card[data-workout-id]`, start
+  `[data-action="start-workout"]`.
+- Sheets: `#sheet-root .sheet`, actions via `[data-action]`.
+
+### Out of scope for this rework
+
+Charts per exercise beyond basic stats, Transfer Exercise Data, Replace
+exercise, Log-tab bulk Edit mode, template supersets. The spec’s screen-flow
+sections are superseded by the screenshots; every domain rule in CLAUDE.md §10
+still stands.

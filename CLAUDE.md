@@ -263,7 +263,14 @@ cheaper to clarify than to recover.
 - **Authoritative build spec:** `gym-tracker-spec.md` (the spec), with
   `gym-tracker-claude-code-handoff.md` defining Phase 1 session scope. **Where
   they conflict, the spec wins** (per the handoff itself). `PLAN.md` is the
-  Phase 1 implementation plan derived from both.
+  Phase 1 implementation plan derived from both. **UI structure exception
+  (22 Jul 2026):** Dan supplied RepCount reference screenshots
+  (`sample_screenshots/`) and asked for the UI to be reworked to that
+  structure — 4 tabs (Log/Routines/Statistics/Profile), per-exercise set-grid
+  cards, category-based picker, supersets, and Strength+Cardio exercise types.
+  For screen flow/layout the screenshots + `PLAN.md` §“Phase 1.5” now win over
+  the spec; all domain rules below still stand (cardio sets are additionally
+  excluded from PR/volume calcs, alongside warmups).
 - **Stack:** Vanilla JS, no framework, no build step; single-file or
   near-single-file HTML PWA with IndexedDB as the local source of truth (same
   pattern as Odds IQ). No external runtime dependencies in the PWA. A standalone
