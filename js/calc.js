@@ -9,6 +9,10 @@
 // - Warmup sets (isWarmup === true) are EXCLUDED from PRs and volume,
 //   per the spec. They still count towards "the workout happened" for
 //   frequency, and appear in session listings.
+// - Cardio sets (setType === 'cardio') are likewise EXCLUDED from PRs and
+//   volume (they carry no weight/reps load). Like warmups, they still count
+//   towards frequency and appear in session listings. setType absent ⇒
+//   'strength'.
 // - Estimated 1RM is Epley: weightKg * (1 + reps / 30).
 // - ISO weeks are formatted 'YYYY-Www' (e.g. '2026-W30'), ISO 8601 week
 //   numbering (weeks start Monday; week 1 contains the first Thursday).
@@ -148,7 +152,7 @@ export function prsFrom(dataset, exerciseId) {
   // Working sets for this exercise, decorated with their workout date, sorted
   // ascending by (date, setNumber) so the FIRST occurrence at any tie is earliest.
   const working = (dataset.sets || [])
-    .filter((s) => s.exerciseId === exerciseId && s.isWarmup !== true)
+    .filter((s) => s.exerciseId === exerciseId && s.isWarmup !== true && s.setType !== 'cardio')
     .map((s) => ({ set: s, date: (workouts.get(s.workoutId) || {}).date || '' }))
     .sort((a, b) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
@@ -199,6 +203,7 @@ export function weeklyVolumeFrom(dataset, weeks, today) {
 
   for (const s of dataset.sets || []) {
     if (s.isWarmup === true) continue;
+    if (s.setType === 'cardio') continue;
     const workout = workouts.get(s.workoutId);
     if (!workout) continue;
     const wk = isoWeekOf(workout.date);

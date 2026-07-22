@@ -1,0 +1,231 @@
+/* ============================================================================
+   css/screens.css — styles for the four tab screens (Log, Routines,
+   Statistics, Profile). Reuses css/app.css tokens (--bg, --card, --accent,
+   etc.) and shared classes (.round-btn, .seg-toggle/.seg-btn, .sheet-*,
+   .pr-table/.pr-row, .add-exercise, .timer-val). Only what those screens need
+   beyond app.css lives here.
+   ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+   Shared tab-screen header row + generic card
+   ---------------------------------------------------------------------------- */
+.tab-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.tab-head .tab-title { margin: 8px 0; }
+.tab-head-btn { flex: 0 0 auto; }
+
+.tab-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+button.tab-card {
+  display: block;
+  width: 100%;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.log-empty, .stat-empty {
+  padding: 8px 4px;
+  font-size: 15px;
+}
+
+/* ----------------------------------------------------------------------------
+   Log tab
+   ---------------------------------------------------------------------------- */
+.log-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 15px 16px;
+  border: 0; border-radius: var(--radius);
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 15px; font-weight: 700;
+  margin-bottom: 16px;
+  cursor: pointer;
+}
+.log-banner-chev { display: inline-flex; }
+.log-banner-chev svg { width: 18px; height: 18px; }
+
+.month-group {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px;
+  padding: 6px 4px 10px;
+}
+.month-group-name { font-size: 20px; font-weight: 800; }
+.month-group-count { font-size: 13px; color: var(--muted); }
+
+.month-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.workout-card {
+  display: flex; align-items: flex-start; gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 14px 16px;
+  border: 0; border-bottom: 1px solid var(--line);
+  background: none; color: inherit; text-align: left;
+  cursor: pointer;
+}
+.month-card > .workout-card:last-child { border-bottom: 0; }
+
+.wc-badge {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px;
+  width: 46px; height: 46px;
+  border-radius: 12px;
+  background: var(--card-2);
+}
+.wc-badge-day { font-size: 10.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.02em; }
+.wc-badge-num { font-size: 17px; font-weight: 800; color: var(--text); }
+
+.wc-main { flex: 1; min-width: 0; }
+.wc-title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.wc-name { font-size: 16px; font-weight: 700; }
+.wc-duration { flex: 0 0 auto; font-size: 13px; color: var(--muted); }
+.wc-line { display: block; font-size: 14px; color: var(--muted); margin-top: 4px; }
+
+/* ----------------------------------------------------------------------------
+   Routines tab
+   ---------------------------------------------------------------------------- */
+/* .routine-card is a button.tab-card — element+class beats a bare class
+   selector, so spacing here uses margins rather than relying on flex/gap. */
+.routine-card-name { display: block; font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+.routine-card-line { display: block; font-size: 14px; color: var(--muted); margin-top: 4px; }
+
+.tpl-entries { margin-bottom: 12px; }
+.tpl-entry-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.tpl-entries .tpl-entry-row:last-child { border-bottom: 0; }
+.tpl-entry-main { flex: 1; min-width: 0; }
+.tpl-entry-name { display: block; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.tpl-entry-fields { display: flex; gap: 10px; }
+.tpl-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.tpl-num-input {
+  width: 52px; min-height: 36px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--field); color: var(--text);
+  font-size: 15px; font-weight: 600; text-align: center;
+  padding: 6px 2px;
+}
+.tpl-entry-remove {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; flex: 0 0 auto;
+  border: 0; border-radius: 999px;
+  background: none; color: var(--faint);
+  cursor: pointer;
+}
+.tpl-entry-remove svg { width: 18px; height: 18px; }
+.sheet-message.danger { color: var(--danger); }
+
+/* ----------------------------------------------------------------------------
+   Statistics tab
+   ---------------------------------------------------------------------------- */
+.stat-card-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.stat-card-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.stat-card-headline { font-size: 20px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+
+.bar-chart {
+  display: flex; align-items: flex-end; gap: 6px;
+  height: 132px;
+  padding-top: 4px;
+}
+.bar-col {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 0;
+  height: 100%;
+}
+.bar-track {
+  flex: 1;
+  width: 100%; max-width: 26px;
+  display: flex; align-items: flex-end;
+  border-radius: 6px;
+  background: var(--card-2);
+  overflow: hidden;
+}
+.bar-fill {
+  width: 100%;
+  min-height: 2px;
+  background: var(--faint);
+  border-radius: 6px 6px 0 0;
+  transition: height 0.2s ease;
+}
+.bar-fill.current { background: var(--accent); }
+.bar-val {
+  margin-top: 6px;
+  font-size: 12px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.bar-val.small { font-size: 9.5px; font-weight: 600; color: var(--muted); }
+.bar-label {
+  margin-top: 2px;
+  font-size: 10.5px; color: var(--muted);
+}
+
+.vol-breakdown { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+.vol-row { display: flex; align-items: center; gap: 10px; }
+.vol-row-label { flex: 0 0 74px; font-size: 13px; color: var(--text); }
+.vol-row-track { flex: 1; height: 8px; border-radius: 999px; background: var(--card-2); overflow: hidden; }
+.vol-row-fill { height: 100%; min-width: 3px; border-radius: 999px; background: var(--accent); }
+.vol-row-val { flex: 0 0 auto; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.pr-picker-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 0; border-radius: 12px;
+  background: var(--card-2); color: var(--text);
+  font-size: 15px; font-weight: 600;
+  cursor: pointer;
+}
+.pr-picker-chev { display: inline-flex; color: var(--faint); }
+.pr-picker-chev svg { width: 18px; height: 18px; }
+.pr-headline { text-align: center; padding: 6px 0 16px; }
+.pr-headline-val { font-size: 19px; font-weight: 700; color: var(--accent); }
+
+/* ----------------------------------------------------------------------------
+   Profile tab
+   ---------------------------------------------------------------------------- */
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 0;
+}
+.settings-card .settings-row + .settings-note { margin-top: -4px; }
+.settings-label { font-size: 15px; color: var(--text); }
+.settings-value { font-size: 15px; color: var(--muted); }
+.settings-note { font-size: 12.5px; padding: 0 0 10px; }
+.settings-card .settings-row:last-of-type,
+.sync-card .settings-row:last-of-type { padding-bottom: 8px; }
+
+.rest-stepper { display: flex; align-items: center; gap: 10px; }
+.timer-val.small { font-size: 16px; min-width: 52px; }
+
+.about-card { text-align: center; }
+.about-name { font-size: 17px; font-weight: 800; margin-bottom: 6px; }
+.about-line { font-size: 13.5px; }

@@ -217,5 +217,62 @@ check('trainingFrequencyFrom: distinct workouts, warmups count for frequency', (
   ]);
 });
 
+// ---------------------------------------------------------------------------
+// Cardio sets (schema v2) — excluded from PRs/volume, included in frequency and
+// session listings. Uses a SEPARATE dataset so the assertions above (which
+// deep-equal perMuscleGroup maps built from the exercise library) stay green.
+// ---------------------------------------------------------------------------
+
+const cardioExercises = [
+  { id: 'ex-bench', name: 'Bench', muscleGroup: 'chest', equipment: 'barbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: '2025-01-01T00:00:00Z', syncedAt: null },
+  { id: 'ex-run', name: 'Treadmill Run', muscleGroup: 'cardio', equipment: 'other', exerciseType: 'cardio', isUnilateral: false, isCustom: false, createdAt: '2025-01-01T00:00:00Z', syncedAt: null },
+];
+const cardioWorkouts = [
+  { id: 'cw1', date: '2026-07-20', startedAt: '2026-07-20T10:00:00Z', finishedAt: '2026-07-20T11:00:00Z', templateId: null, notes: null, name: null, bodyweightKg: 80, entries: null, syncedAt: null }, // 2026-W30
+];
+const cardioSets = [
+  // Strength working set — the only thing that should score for PR/volume.
+  { id: 'cs1', workoutId: 'cw1', exerciseId: 'ex-bench', setNumber: 1, weightKg: 100, reps: 5, rpe: null, isWarmup: false, setType: 'strength', completedAt: '2026-07-20T10:10:00Z', syncedAt: null },
+  // Cardio set — weightKg/reps zeroed per the v2 contract; must NOT create a PR
+  // or add volume, but still counts for frequency and appears in listings.
+  { id: 'cs2', workoutId: 'cw1', exerciseId: 'ex-run', setNumber: 1, weightKg: 0, reps: 0, rpe: null, isWarmup: false, setType: 'cardio', durationSeconds: 1200, distanceM: 5000, kcal: 300, completedAt: '2026-07-20T10:40:00Z', syncedAt: null },
+];
+const cardioDS = { workouts: cardioWorkouts, sets: cardioSets, exercises: cardioExercises };
+
+check('prsFrom: cardio sets excluded — cardio exercise yields no PR', () => {
+  const res = prsFrom(cardioDS, 'ex-run');
+  // Without the exclusion, epley(0,0)=0 would seed a bogus bestE1RM of {value:0}.
+  assert.deepEqual(res.byReps, []);
+  assert.equal(res.bestE1RM, null);
+});
+check('prsFrom: strength set in same workout still scores normally', () => {
+  const res = prsFrom(cardioDS, 'ex-bench');
+  assert.deepEqual(res.byReps, [{ reps: 5, weightKg: 100, date: '2026-07-20', setId: 'cs1' }]);
+  assert.ok(Math.abs(res.bestE1RM.value - epley1RM(100, 5)) < 1e-9);
+});
+check('weeklyVolumeFrom: cardio set contributes zero volume', () => {
+  const res = weeklyVolumeFrom(cardioDS, 1, '2026-07-20');
+  assert.deepEqual(res, [
+    { isoWeek: '2026-W30', perMuscleGroup: { cardio: 0, chest: 500 } },
+  ]);
+});
+check('trainingFrequencyFrom: cardio set still counts towards frequency', () => {
+  const res = trainingFrequencyFrom(cardioDS, 1, '2026-07-20');
+  assert.deepEqual(res, [
+    { isoWeek: '2026-W30', sessionsTotal: 1, perMuscleGroup: { cardio: 1, chest: 1 } },
+  ]);
+});
+check('lastSessionFrom: cardio exercise session is returned with its cardio set', () => {
+  const res = lastSessionFrom(cardioDS, 'ex-run');
+  assert.ok(res);
+  assert.equal(res.workout.id, 'cw1');
+  assert.deepEqual(res.sets.map((s) => s.id), ['cs2']);
+});
+check('recentWorkoutsFrom: cardio set appears in the session listing', () => {
+  const res = recentWorkoutsFrom(cardioDS, '0000');
+  assert.equal(res.length, 1);
+  assert.deepEqual(res[0].sets.map((s) => s.id), ['cs1', 'cs2']); // ordered by exerciseId
+});
+
 console.log(`\nAll ${passed} assertions passed.`);
 process.exit(0);
