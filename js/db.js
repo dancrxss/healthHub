@@ -275,6 +275,10 @@ export async function listTemplates() {
   const all = await getAllRecords('templates');
   return all.sort((a, b) => a.name.localeCompare(b.name));
 }
+/** Delete a template. User-initiated only (Routines tab, after confirm). */
+export async function deleteTemplate(id) {
+  return deleteRecord('templates', id);
+}
 
 // ---- Meta (settings, seed flag) ----
 /** @returns {Promise<any|undefined>} the stored value for key */
