@@ -6,4 +6,5 @@ smoke check passes.
 ```
 2026-07-21 14:59 UTC · site · d76f89b · "first deploy: GitHub Pages enabled, repo made public" · Claude
 2026-07-22 14:22 UTC · frontend · c65cb15 · "RepCount-style UI rework: 4 tabs, exercise types, supersets, SW v2" · Claude (for Dan)
+2026-07-23 10:18 UTC · frontend · f89982e · "usability rework: direct set inputs + placeholders, auto first set, full exercise types, minimise/resume, SW v3" · Claude (for Dan)
 ```
