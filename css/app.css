@@ -59,7 +59,7 @@ input, textarea, select { font-family: inherit; }
 .sheet-btn, .sheet-row, .sheet-x, .sheet-tick, .rpe-chip, .seg-btn,
 .rest-bar, .resume-bar, .workout-card, .tab-card, .pick-row, .pick-cat,
 .pick-row-info, .pick-cancel, .superset-confirm, .meta-notes,
-.set-field.note-field, .tab-head-btn {
+.tab-head-btn {
   transition: opacity 0.12s ease, transform 0.12s ease;
 }
 .round-btn:active, .w-finish:active, .add-set:active, .add-exercise:active,
@@ -68,7 +68,7 @@ input, textarea, select { font-family: inherit; }
 .seg-btn:active, .rest-bar:active, .resume-bar:active, .workout-card:active,
 .tab-card:active, .pick-row:active, .pick-cat:active, .pick-row-info:active,
 .pick-cancel:active, .superset-confirm:active, .meta-notes:active,
-.set-field.note-field:active, .tab-head-btn:active {
+.tab-head-btn:active {
   opacity: 0.6;
 }
 #tabbar button { transition: color 0.15s ease; }
@@ -331,6 +331,8 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
 .set-input::placeholder { color: var(--faint); font-weight: 500; }
 .set-input:focus { outline: none; }
 .set-field:focus-within { background: var(--field); }
+/* Notes input: muted free text (still 16px so iOS doesn't zoom on focus). */
+.set-input.note-input { color: var(--muted); font-weight: 400; font-size: 16px; }
 
 /* Card footer: Add Set + icon row */
 .ex-card-foot {

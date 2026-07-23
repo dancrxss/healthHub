@@ -253,6 +253,16 @@ try {
   const bbp6 = await evalJS(setsExpr(BBP));
   check('edit: set input commits 20 kg to set 2 without a re-render', bbp6[1]?.weightKg === 20 && bbp6[1]?.reps === 8, JSON.stringify(bbp6[1]));
 
+  // Notes are a direct inline input too — no sheet.
+  await setField('bench s2 note', bbpCard, 1, 'notes', 'felt easy');
+  await poll('bench set 2 note (db)', `(async () => {
+    const db = await import('./js/db.js');
+    const wid = localStorage.getItem('currentWorkoutId');
+    const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
+    return !!(s[1] && s[1].notes === 'felt easy');
+  })()`);
+  check('edit: inline notes input commits free text to the set', true);
+
   // --- 7. Per-set sheet: flag the (edited) first set as Warm-up ---
   await clickSel('set 1 menu (…)', `${bbpCard} .set-row .set-menu`);
   await clickText('Warm-up row', '#sheet-root .sheet-row', 'Warm-up');

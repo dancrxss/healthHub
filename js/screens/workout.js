@@ -430,17 +430,32 @@ function buildSetRow(s, workout, exercise, refSets, isActive) {
     badge, h('div', { class: 'set-fields' + (lines.length > 1 ? ' multi' : '') }, ...lines), menuBtn);
 }
 
+// Notes is a direct inline input like Kg/Reps — no sheet. Free text, commits
+// on blur; caret goes to the end on focus (append, don't replace).
 function noteField(s) {
-  return h('button', {
-    class: 'set-field note-field', type: 'button',
-    onclick: () => textareaSheet({
-      title: 'Set note', value: s.notes,
-      onSave: async (v) => { await mutateSet(s.id, { notes: v }); s.notes = v; reRender(); },
-    }),
-  },
-    h('span', { class: 'fl', text: 'Notes' }),
-    h('span', { class: 'fv muted', text: s.notes || '' }),
-  );
+  const input = h('input', {
+    class: 'set-input note-input', 'data-field': 'notes',
+    type: 'text', enterkeyhint: 'done', autocomplete: 'off',
+    'aria-label': 'Set notes',
+  });
+  input.value = s.notes || '';
+
+  let atFocus = input.value;
+  input.addEventListener('focus', () => {
+    atFocus = input.value;
+    requestAnimationFrame(() => { try { input.setSelectionRange(input.value.length, input.value.length); } catch { /* noop */ } });
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+  input.addEventListener('blur', () => {
+    if (input.value === atFocus) return;
+    const v = input.value.trim() || null;
+    s.notes = v;
+    input.value = v || '';
+    mutateSet(s.id, { notes: v }); // persist quietly — no re-render
+  });
+
+  return h('label', { class: 'set-field note-field' },
+    h('span', { class: 'fl', text: 'Notes' }), input);
 }
 
 // ---- add set ---------------------------------------------------------------
