@@ -1,10 +1,13 @@
 // ============================================================================
 // screens/workout.js — the workout screen (#/workout active, #/workout/:id past).
-// Meta card, one card per exercise entry with an inline-editable set grid,
-// one-tap Add Set (with rest-timer auto-start for the active workout), and the
-// per-set / per-exercise bottom sheets. Past workouts are fully editable too.
+// Meta card, one card per exercise entry with a set grid of ALWAYS-PRESENT
+// inputs (RepCount-style: type straight in, last-session values shown as grey
+// placeholders), one-tap Add Set (duplicates the previous set, auto rest timer
+// on the active workout), and the per-set / per-exercise bottom sheets.
 //
-// Matches screenshots 1 & 5 (cards + meta), sheets in 3–4.
+// Smoothness rules: numeric commits and Add Set touch the DOM surgically —
+// no full-screen re-render, no focus/scroll loss. Structural changes (delete,
+// reorder, warmup toggle) still re-render the screen.
 // User text only ever via textContent / h() — never innerHTML.
 // ============================================================================
 
@@ -15,19 +18,22 @@ import {
 } from '../db.js';
 import { getPRs, getLastSession } from '../queries.js';
 import * as timer from '../timer.js';
-import { uid } from '../util.js';
+import { nowISO } from '../util.js';
 import {
   h, Icon, go, setCurrent,
   currentWorkout, getEntries, saveEntries, displayName,
   formatWeight, formatDate, formatDateTime, mmss, formatElapsed,
   kgToDisplay, displayToKg, unitLabel, trimNum,
-  WEIGHT_STEP, RPE_VALUES,
+  RPE_VALUES,
   openSheet, closeSheet, sheetHeader, sheetGroup, sheetRow,
   confirmSheet, textareaSheet, setScreenCleanup,
 } from '../ui.js';
+import { normalizeExerciseType, blankSet } from '../exercise-types.js';
+import { editExerciseSheet } from './picker.js';
 
-// The screen re-renders itself after every mutation; renderTarget remembers
-// which workout (null = the active one) so re-renders resolve the same target.
+// The screen re-renders itself after every structural mutation; renderTarget
+// remembers which workout (null = the active one) so re-renders resolve the
+// same target.
 let renderTarget = null;
 let elapsedTimer = null; // the active-workout elapsed ticker (one at a time)
 const reRender = () => renderWorkoutScreen(renderTarget);
@@ -50,17 +56,12 @@ async function renumberExercise(workoutId, exerciseId) {
   let n = 1;
   for (const s of sets) { if (s.setNumber !== n) await putSet({ ...s, setNumber: n }); n++; }
 }
-function topWorkingSet(sets) {
-  const working = (sets || []).filter((s) => s.isWarmup !== true && s.setType !== 'cardio');
-  if (!working.length) return null;
-  return working.reduce((best, s) =>
-    (s.weightKg > best.weightKg || (s.weightKg === best.weightKg && s.reps > best.reps)) ? s : best);
-}
 function setSummaryLine(s) {
-  if (s.setType === 'cardio') {
+  if (s.setType === 'cardio' || (s.durationSeconds != null && !s.reps)) {
     const parts = [mmss(s.durationSeconds || 0)];
     if (s.distanceM) parts.push(`${trimNum(s.distanceM)} m`);
     if (s.kcal) parts.push(`${trimNum(s.kcal)} kcal`);
+    if (s.weightKg) parts.unshift(formatWeight(s.weightKg));
     return parts.join(' · ');
   }
   return `${formatWeight(s.weightKg)} × ${s.reps}`
@@ -92,6 +93,13 @@ export async function renderWorkoutScreen(workoutId) {
 
   const entries = getEntries(workout, sets);
 
+  // Last-session reference sets per exercise — the grey placeholders.
+  const lastByEx = new Map();
+  await Promise.all([...new Set(entries.map((e) => e.exerciseId))].map(async (id) => {
+    const last = await getLastSession(id);
+    lastByEx.set(id, last && last.workout.id !== workout.id ? last.sets : null);
+  }));
+
   const children = [
     buildHeader(workout, isActive),
     buildMetaCard(workout),
@@ -107,10 +115,10 @@ export async function renderWorkoutScreen(workoutId) {
       while (i < entries.length && entries[i].supersetGroup === g) { run.push({ entry: entries[i], index: i }); i++; }
       children.push(h('div', { class: 'superset' },
         h('div', { class: 'superset-label', text: 'Superset' }),
-        ...run.map((r) => buildEntryCard(r.entry, r.index, workout, entries, setsByEx, exMap, isActive)),
+        ...run.map((r) => buildEntryCard(r.entry, r.index, workout, entries, setsByEx, exMap, lastByEx, isActive)),
       ));
     } else {
-      children.push(buildEntryCard(e, i, workout, entries, setsByEx, exMap, isActive));
+      children.push(buildEntryCard(e, i, workout, entries, setsByEx, exMap, lastByEx, isActive));
       i++;
     }
   }
@@ -124,12 +132,12 @@ export async function renderWorkoutScreen(workoutId) {
 
 // ---- header ----------------------------------------------------------------
 function buildHeader(workout, isActive) {
-  const tick = h('button', {
-    class: 'w-tick', 'data-action': 'finish', 'aria-label': isActive ? 'Finish workout' : 'Done', type: 'button',
-    onclick: () => isActive ? finishFlow(workout) : go('#/log'),
-  }, Icon('check'));
-
   const centre = h('div', { class: 'w-head-centre' }, h('div', { class: 'w-date', text: formatDate(workout.date) }));
+  const actions = h('div', { class: 'w-head-actions' },
+    isActive ? h('button', { class: 'round-btn', 'aria-label': 'Rest timer', type: 'button', onclick: () => timerSheet() }, Icon('alarm')) : null,
+    h('button', { class: 'round-btn', 'aria-label': 'Workout menu', type: 'button', onclick: () => workoutMenu(workout, isActive) }, Icon('dots')),
+  );
+
   if (isActive) {
     const el = h('span', { class: 'w-elapsed' });
     const tickFn = () => { el.textContent = formatElapsed(Date.now() - new Date(workout.startedAt)); };
@@ -137,15 +145,28 @@ function buildHeader(workout, isActive) {
     elapsedTimer = setInterval(tickFn, 1000);
     setScreenCleanup(stopElapsed); // route change tears the ticker down
     centre.append(el);
+
+    return h('header', { class: 'w-head' },
+      h('button', {
+        class: 'round-btn', 'data-action': 'minimise', 'aria-label': 'Minimise workout', type: 'button',
+        onclick: () => go('#/log'), // workout keeps running; the resume bar takes over
+      }, Icon('down')),
+      h('button', {
+        class: 'w-finish', 'data-action': 'finish', type: 'button',
+        onclick: () => finishFlow(workout),
+      }, 'Finish'),
+      centre,
+      actions,
+    );
   }
 
   return h('header', { class: 'w-head' },
-    tick,
+    h('button', {
+      class: 'round-btn', 'data-action': 'finish', 'aria-label': 'Back to log', type: 'button',
+      onclick: () => go('#/log'),
+    }, Icon('back')),
     centre,
-    h('div', { class: 'w-head-actions' },
-      h('button', { class: 'round-btn', 'aria-label': 'Rest timer', type: 'button', onclick: () => timerSheet() }, Icon('alarm')),
-      h('button', { class: 'round-btn', 'aria-label': 'Workout menu', type: 'button', onclick: () => workoutMenu(workout, isActive) }, Icon('dots')),
-    ),
+    actions,
   );
 }
 
@@ -220,10 +241,11 @@ function buildMetaCard(workout) {
   nameInput.value = workout.name || '';
   nameInput.addEventListener('blur', () => mutateWorkout(workout.id, { name: nameInput.value.trim() || null }));
 
-  const bwInput = h('input', { class: 'meta-bw-input', type: 'number', inputmode: 'decimal', step: '0.1', 'aria-label': 'Bodyweight in kilograms', placeholder: '—' });
+  const bwInput = h('input', { class: 'meta-bw-input', type: 'text', inputmode: 'decimal', enterkeyhint: 'done', 'aria-label': 'Bodyweight in kilograms', placeholder: '—' });
   bwInput.value = workout.bodyweightKg != null ? trimNum(workout.bodyweightKg) : '';
+  bwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); bwInput.blur(); } });
   bwInput.addEventListener('blur', () => {
-    const v = parseFloat(bwInput.value);
+    const v = parseFloat(bwInput.value.replace(',', '.'));
     mutateWorkout(workout.id, { bodyweightKg: Number.isFinite(v) ? v : null });
   });
 
@@ -250,11 +272,11 @@ function metaRow(label, valueEl) {
 }
 
 // ---- exercise card ---------------------------------------------------------
-function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, isActive) {
+function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, lastByEx, isActive) {
   const exercise = exMap.get(entry.exerciseId);
   const name = exercise ? exercise.name : 'Unknown exercise';
   const exSets = setsByEx.get(entry.exerciseId) || [];
-  const isCardio = exercise ? exercise.exerciseType === 'cardio' : false;
+  const refSets = lastByEx.get(entry.exerciseId) || null;
 
   const card = h('div', { class: 'ex-card', 'data-exercise-id': entry.exerciseId });
 
@@ -267,13 +289,20 @@ function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, isActiv
   ));
   if (entry.note) card.append(h('div', { class: 'ex-note', text: entry.note }));
 
-  for (const s of exSets) card.append(buildSetRow(s, workout, exercise, isCardio, isActive));
+  for (const s of exSets) card.append(buildSetRow(s, workout, exercise, refSets, isActive));
+
+  const addBtn = h('button', {
+    class: 'add-set', 'data-exercise-id': entry.exerciseId, type: 'button',
+  }, Icon('plus'), h('span', { text: 'Add Set' }));
+  addBtn.addEventListener('click', async () => {
+    if (addBtn.disabled) return; // no duplicate sets from a double-tap
+    addBtn.disabled = true;
+    try { await addSet(workout, exercise, entry.exerciseId, exSets, refSets, isActive, card); }
+    finally { addBtn.disabled = false; }
+  });
 
   card.append(h('div', { class: 'ex-card-foot' },
-    h('button', {
-      class: 'add-set', 'data-exercise-id': entry.exerciseId, type: 'button',
-      onclick: () => addSet(workout, exercise, entry.exerciseId, exSets, isCardio, isActive),
-    }, Icon('plus'), h('span', { text: 'Add Set' })),
+    addBtn,
     h('div', { class: 'ex-icons' },
       h('button', { class: 'ex-icon', 'aria-label': 'History', type: 'button', onclick: () => historySheet(exercise, entry) }, Icon('history')),
       h('button', { class: 'ex-icon', 'aria-label': 'Personal records', type: 'button', onclick: () => prSheet(exercise) }, Icon('bars')),
@@ -284,55 +313,121 @@ function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, isActiv
   return card;
 }
 
-// ---- set row + inline editing ----------------------------------------------
-function buildSetRow(s, workout, exercise, isCardio, isActive) {
+// ---- set grid: always-present inputs ----------------------------------------
+// Per-type field layout. Each inner array is one .set-line; 'notes' is the
+// notes button, 'spacer' pads the second line so columns align.
+const LAYOUTS = {
+  weight_reps: [['weight', 'reps', 'notes']],
+  bw_weight_reps: [['weight', 'reps', 'notes']],
+  bw_assisted_reps: [['weight', 'reps', 'notes']],
+  reps: [['reps', 'notes']],
+  time: [['minutes', 'seconds', 'notes']],
+  weight_time: [['weight', 'minutes', 'seconds', 'notes']],
+  weight_distance: [['weight', 'distance', 'notes']],
+  weight_distance_time: [['weight', 'distance', 'notes'], ['minutes', 'seconds', 'spacer']],
+  cardio: [['minutes', 'seconds', 'notes'], ['distance', 'kcal', 'spacer']],
+  notes: [['notes']],
+};
+
+/**
+ * Field definitions bound to a live set record `s`. `text` renders the stored
+ * value ('' when untouched/zero, so the grey placeholder shows through);
+ * `commit(n)` returns the SetRecord changes for a typed number; `ref` renders
+ * the placeholder from the matching last-session set.
+ */
+function cellDef(field, s, exercise) {
+  const assisted = exercise && normalizeExerciseType(exercise.exerciseType) === 'bw_assisted_reps';
+  switch (field) {
+    case 'weight': return {
+      label: assisted ? `- ${unitLabel()}` : unitLabel(), decimal: true,
+      text: () => (s.weightKg > 0 ? trimNum(kgToDisplay(s.weightKg)) : ''),
+      commit: (n) => ({ weightKg: displayToKg(Math.max(0, n)) }),
+      ref: (r) => trimNum(kgToDisplay((r && r.weightKg) || 0)),
+    };
+    case 'reps': return {
+      label: 'Reps', decimal: false,
+      text: () => (s.reps > 0 ? String(s.reps) : ''),
+      commit: (n) => ({ reps: Math.max(0, Math.round(n)) }),
+      ref: (r) => String((r && r.reps) || 0),
+    };
+    case 'minutes': return {
+      label: 'Min', decimal: false,
+      text: () => { const m = Math.floor((s.durationSeconds || 0) / 60); return m > 0 ? String(m) : ''; },
+      commit: (n) => ({ durationSeconds: Math.max(0, Math.round(n)) * 60 + ((s.durationSeconds || 0) % 60) }),
+      ref: (r) => String(Math.floor(((r && r.durationSeconds) || 0) / 60)),
+    };
+    case 'seconds': return {
+      label: 'Sec', decimal: false,
+      text: () => { const v = (s.durationSeconds || 0) % 60; return v > 0 ? String(v) : ''; },
+      commit: (n) => ({ durationSeconds: Math.floor((s.durationSeconds || 0) / 60) * 60 + Math.min(59, Math.max(0, Math.round(n))) }),
+      ref: (r) => String(((r && r.durationSeconds) || 0) % 60),
+    };
+    case 'distance': return {
+      label: 'Metres', decimal: false,
+      text: () => (s.distanceM > 0 ? trimNum(s.distanceM) : ''),
+      commit: (n) => ({ distanceM: Math.max(0, Math.round(n)) }),
+      ref: (r) => trimNum((r && r.distanceM) || 0),
+    };
+    case 'kcal': return {
+      label: 'Kcal', decimal: false,
+      text: () => (s.kcal > 0 ? trimNum(s.kcal) : ''),
+      commit: (n) => ({ kcal: Math.max(0, Math.round(n)) }),
+      ref: (r) => trimNum((r && r.kcal) || 0),
+    };
+    default: return null;
+  }
+}
+
+function setInputCell(field, s, refSet, exercise) {
+  const def = cellDef(field, s, exercise);
+  const input = h('input', {
+    class: 'set-input', 'data-field': field,
+    type: 'text', inputmode: def.decimal ? 'decimal' : 'numeric',
+    enterkeyhint: 'done', autocomplete: 'off',
+    placeholder: def.ref(refSet), 'aria-label': def.label,
+  });
+  input.value = def.text();
+
+  let atFocus = input.value;
+  input.addEventListener('focus', () => {
+    atFocus = input.value;
+    // iOS drops the caret at position 0 — select everything so typing replaces.
+    requestAnimationFrame(() => { try { input.setSelectionRange(0, input.value.length); } catch { /* type mismatch */ } });
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+  input.addEventListener('blur', () => {
+    if (input.value === atFocus) return; // untouched — no write, no churn
+    const raw = input.value.trim().replace(',', '.');
+    const n = raw === '' ? 0 : parseFloat(raw);
+    const changes = def.commit(Number.isFinite(n) ? n : 0);
+    Object.assign(s, changes); // keep the in-memory record current for Add Set duplication
+    input.value = def.text(); // canonical display (blanks a zero back to placeholder)
+    mutateSet(s.id, changes); // persist quietly — no re-render, keyboard stays put
+  });
+
+  return h('label', { class: 'set-field' }, h('span', { class: 'fl', text: def.label }), input);
+}
+
+function buildSetRow(s, workout, exercise, refSets, isActive) {
+  const type = normalizeExerciseType(exercise ? exercise.exerciseType : null);
+  const layout = LAYOUTS[type] || LAYOUTS.weight_reps;
+  // Placeholder source: same set number last session, else its final set.
+  const ref = refSets && refSets.length ? (refSets[s.setNumber - 1] || refSets[refSets.length - 1]) : null;
+
   const badge = h('span', { class: 'set-badge' + (s.isWarmup ? ' warm' : '') }, s.isWarmup ? 'W' : String(s.setNumber));
   const menuBtn = h('button', {
     class: 'set-menu', 'aria-label': 'Set options', type: 'button',
     onclick: () => setSheet(s, workout),
   }, Icon('dots'));
 
-  let fields;
-  if (isCardio) {
-    fields = h('div', { class: 'set-fields cardio' },
-      h('div', { class: 'set-line' },
-        numField('Minutes', 'minutes', {
-          value: Math.floor((s.durationSeconds || 0) / 60), step: 1, min: 0, integer: true,
-          onCommit: async (v) => { await mutateSet(s.id, { durationSeconds: v * 60 + ((s.durationSeconds || 0) % 60) }); reRender(); },
-        }),
-        numField('Seconds', 'seconds', {
-          value: (s.durationSeconds || 0) % 60, step: 5, min: 0, integer: true,
-          onCommit: async (v) => { await mutateSet(s.id, { durationSeconds: Math.floor((s.durationSeconds || 0) / 60) * 60 + v }); reRender(); },
-        }),
-        noteField(s),
-      ),
-      h('div', { class: 'set-line' },
-        numField('Distance', 'distance', {
-          value: s.distanceM || 0, step: 100, min: 0, integer: true,
-          onCommit: async (v) => { await mutateSet(s.id, { distanceM: v }); reRender(); },
-        }),
-        numField('Kcal', 'kcal', {
-          value: s.kcal || 0, step: 5, min: 0, integer: true,
-          onCommit: async (v) => { await mutateSet(s.id, { kcal: v }); reRender(); },
-        }),
-        h('span', { class: 'set-field spacer' }),
-      ),
-    );
-  } else {
-    fields = h('div', { class: 'set-fields' },
-      numField(unitLabel(), 'weight', {
-        value: kgToDisplay(s.weightKg), step: WEIGHT_STEP, min: 0, integer: false,
-        onCommit: async (v) => { await mutateSet(s.id, { weightKg: displayToKg(v) }); reRender(); },
-      }),
-      numField('Reps', 'reps', {
-        value: s.reps, step: 1, min: 0, integer: true,
-        onCommit: async (v) => { await mutateSet(s.id, { reps: v }); reRender(); },
-      }),
-      noteField(s),
-    );
-  }
+  const lines = layout.map((cells) => h('div', { class: 'set-line' }, ...cells.map((c) => {
+    if (c === 'notes') return noteField(s);
+    if (c === 'spacer') return h('span', { class: 'set-field spacer' });
+    return setInputCell(c, s, ref, exercise);
+  })));
 
-  return h('div', { class: 'set-row' + (s.isWarmup ? ' warm' : ''), 'data-set-id': s.id }, badge, fields, menuBtn);
+  return h('div', { class: 'set-row' + (s.isWarmup ? ' warm' : ''), 'data-set-id': s.id },
+    badge, h('div', { class: 'set-fields' + (lines.length > 1 ? ' multi' : '') }, ...lines), menuBtn);
 }
 
 function noteField(s) {
@@ -340,7 +435,7 @@ function noteField(s) {
     class: 'set-field note-field', type: 'button',
     onclick: () => textareaSheet({
       title: 'Set note', value: s.notes,
-      onSave: async (v) => { await mutateSet(s.id, { notes: v }); reRender(); },
+      onSave: async (v) => { await mutateSet(s.id, { notes: v }); s.notes = v; reRender(); },
     }),
   },
     h('span', { class: 'fl', text: 'Notes' }),
@@ -348,70 +443,25 @@ function noteField(s) {
   );
 }
 
-function numField(label, dataField, { value, step, min, integer, onCommit }) {
-  const fv = h('span', { class: 'fv' }, trimNum(value));
-  const btn = h('button', { class: 'set-field', 'data-field': dataField, type: 'button' },
-    h('span', { class: 'fl', text: label }), fv);
-  btn.addEventListener('click', () => {
-    if (fv.querySelector('.feditor')) return;
-    editNumber(fv, { value, step, min, integer, onCommit });
-  });
-  return btn;
-}
-
-function editNumber(fv, { value, step, min = 0, integer = false, onCommit }) {
-  const input = h('input', { class: 'fedit', type: 'text', inputmode: integer ? 'numeric' : 'decimal' });
-  input.value = trimNum(value);
-  const round = (v) => (integer ? Math.round(v) : Math.round(v * 100) / 100);
-  const clamp = (v) => (min != null && v < min ? min : v);
-  const adjust = (delta) => {
-    let v = parseFloat(input.value); if (!Number.isFinite(v)) v = 0;
-    v = clamp(round(v + delta));
-    input.value = trimNum(v);
-    input.focus();
-  };
-  const dec = h('button', { class: 'fstep', type: 'button', 'aria-label': 'decrease', onpointerdown: (e) => { e.preventDefault(); adjust(-step); } }, Icon('minus'));
-  const inc = h('button', { class: 'fstep', type: 'button', 'aria-label': 'increase', onpointerdown: (e) => { e.preventDefault(); adjust(step); } }, Icon('plus'));
-  let done = false;
-  const commit = () => {
-    if (done) return; done = true;
-    let v = parseFloat(input.value); if (!Number.isFinite(v)) v = 0;
-    onCommit(clamp(round(v)));
-  };
-  input.addEventListener('blur', commit);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
-  fv.replaceChildren(h('span', { class: 'feditor' }, dec, input, inc));
-  requestAnimationFrame(() => { input.focus(); input.select(); });
-}
-
 // ---- add set ---------------------------------------------------------------
-async function addSet(workout, exercise, exerciseId, exSets, isCardio, isActive) {
+// One tap duplicates the previous set (values already committed by its inputs);
+// the new row is inserted in place — no full re-render, no scroll jump.
+async function addSet(workout, exercise, exerciseId, exSets, refSets, isActive, card) {
   const prev = exSets[exSets.length - 1];
-  const base = { id: uid(),
-    workoutId: workout.id, exerciseId, setNumber: exSets.length + 1,
-    rpe: null, isWarmup: false, notes: null, completedAt: new Date().toISOString() };
-
-  if (isCardio) {
-    Object.assign(base, {
-      setType: 'cardio', weightKg: 0, reps: 0,
-      durationSeconds: prev ? (prev.durationSeconds || 0) : 0,
-      distanceM: prev ? (prev.distanceM || 0) : 0,
-      kcal: prev ? (prev.kcal || 0) : 0,
-    });
-  } else {
-    let weightKg = 20; let reps = 8;
-    if (prev) { weightKg = prev.weightKg; reps = prev.reps; }
-    else if (exercise) {
-      const last = await getLastSession(exercise.id);
-      const top = last ? topWorkingSet(last.sets) : null;
-      if (top) { weightKg = top.weightKg; reps = top.reps; }
-    }
-    Object.assign(base, { setType: 'strength', weightKg, reps, durationSeconds: null, distanceM: null, kcal: null });
+  const base = blankSet(workout.id, exercise || { id: exerciseId, exerciseType: null }, exSets.length + 1);
+  base.completedAt = nowISO();
+  if (prev) {
+    base.weightKg = prev.weightKg;
+    base.reps = prev.reps;
+    base.durationSeconds = prev.durationSeconds;
+    base.distanceM = prev.distanceM;
+    base.kcal = prev.kcal;
   }
-
   await putSet(base);
+  exSets.push(base);
+  const row = buildSetRow(base, workout, exercise, refSets, isActive);
+  card.querySelector('.ex-card-foot').before(row);
   if (isActive) timer.start(); // auto rest timer for the active workout only
-  reRender();
 }
 
 // ---- per-set sheet ---------------------------------------------------------
@@ -425,11 +475,11 @@ function setSheet(set, workout) {
   const chipWrap = h('div', { class: 'rpe-chips' });
   const chips = RPE_VALUES.map((v) => h('button', {
     class: 'rpe-chip', type: 'button', 'aria-pressed': curRpe === v ? 'true' : 'false',
-    onclick: async () => { curRpe = curRpe === v ? null : v; await mutateSet(set.id, { rpe: curRpe }); repaint(); reRender(); },
+    onclick: async () => { curRpe = curRpe === v ? null : v; set.rpe = curRpe; await mutateSet(set.id, { rpe: curRpe }); repaint(); },
   }, String(v)));
   const clearChip = h('button', {
     class: 'rpe-chip clear', type: 'button',
-    onclick: async () => { curRpe = null; await mutateSet(set.id, { rpe: null }); repaint(); reRender(); },
+    onclick: async () => { curRpe = null; set.rpe = null; await mutateSet(set.id, { rpe: null }); repaint(); },
   }, 'Clear');
   const repaint = () => chips.forEach((c, i) => c.setAttribute('aria-pressed', curRpe === RPE_VALUES[i] ? 'true' : 'false'));
   chipWrap.append(...chips, clearChip);
@@ -438,7 +488,7 @@ function setSheet(set, workout) {
     label: 'Note', icon: Icon('note'),
     onClick: () => textareaSheet({
       title: 'Set note', value: set.notes,
-      onSave: async (v) => { await mutateSet(set.id, { notes: v }); reRender(); },
+      onSave: async (v) => { await mutateSet(set.id, { notes: v }); set.notes = v; reRender(); },
     }),
   });
 
@@ -476,8 +526,8 @@ function exerciseMenu(entry, index, workout, entries, exercise, isActive) {
   };
 
   const rows = [
-    sheetRow({ label: 'Move Up', icon: Icon('move'), onClick: () => move(-1) }),
-    sheetRow({ label: 'Move Down', icon: Icon('move'), onClick: () => move(1) }),
+    sheetRow({ label: 'Move Up', icon: Icon('up'), onClick: () => move(-1) }),
+    sheetRow({ label: 'Move Down', icon: Icon('down'), onClick: () => move(1) }),
     sheetRow({
       label: 'Delete', icon: Icon('trash'), danger: true,
       onClick: () => {
@@ -510,6 +560,13 @@ function exerciseMenu(entry, index, workout, entries, exercise, isActive) {
     }),
   });
 
+  // Settings opens the SAME edit sheet as the exercise library (name, category,
+  // type, equipment-agnostic flags); a type change re-renders the set grid.
+  const settings = exercise ? sheetRow({
+    label: 'Settings', icon: Icon('info'), action: 'exercise-settings',
+    onClick: () => { closeSheet(); editExerciseSheet(exercise, () => reRender()); },
+  }) : null;
+
   const info = [
     sheetRow({ label: 'History', icon: Icon('history'), onClick: () => { closeSheet(); historySheet(exercise, entry); } }),
     sheetRow({ label: 'Personal Records', icon: Icon('bars'), onClick: () => { closeSheet(); prSheet(exercise); } }),
@@ -519,6 +576,7 @@ function exerciseMenu(entry, index, workout, entries, exercise, isActive) {
     sheetHeader(exercise ? exercise.name : 'Exercise', { onClose: () => closeSheet() }),
     sheetGroup(...rows),
     sheetGroup(addNote),
+    settings ? sheetGroup(settings) : null,
     sheetGroup(...info),
   ));
 }

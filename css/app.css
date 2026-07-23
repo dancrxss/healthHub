@@ -34,11 +34,44 @@ html, body {
   -webkit-font-smoothing: antialiased;
   font-size: 16px;
   overscroll-behavior-y: none;
+  -webkit-text-size-adjust: 100%;
 }
-body { min-height: 100dvh; }
+body {
+  min-height: 100dvh;
+  /* App-like feel: no long-press text selection / callouts on chrome, no grey
+     tap flash, no double-tap zoom. Inputs & textareas re-enable selection. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
 button { font-family: inherit; color: inherit; }
 input, textarea, select { font-family: inherit; }
 .muted { color: var(--muted); }
+
+/* Tactile press feedback on every tappable surface. */
+.round-btn, .w-finish, .add-set, .add-exercise, .ex-icon, .ex-menu, .set-menu,
+.sheet-btn, .sheet-row, .sheet-x, .sheet-tick, .rpe-chip, .seg-btn,
+.rest-bar, .resume-bar, .workout-card, .tab-card, .pick-row, .pick-cat,
+.pick-row-info, .pick-cancel, .superset-confirm, .meta-notes,
+.set-field.note-field, .tab-head-btn {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.round-btn:active, .w-finish:active, .add-set:active, .add-exercise:active,
+.ex-icon:active, .ex-menu:active, .set-menu:active, .sheet-btn:active,
+.sheet-row:active, .sheet-x:active, .sheet-tick:active, .rpe-chip:active,
+.seg-btn:active, .rest-bar:active, .resume-bar:active, .workout-card:active,
+.tab-card:active, .pick-row:active, .pick-cat:active, .pick-row-info:active,
+.pick-cancel:active, .superset-confirm:active, .meta-notes:active,
+.set-field.note-field:active, .tab-head-btn:active {
+  opacity: 0.6;
+}
+#tabbar button { transition: color 0.15s ease; }
 
 /* Centre on desktop, mobile-first width. */
 #app { max-width: 560px; margin: 0 auto; }
@@ -108,6 +141,34 @@ body.fullscreen .rest-bar { bottom: calc(var(--safe-bottom) + 14px); }
 .rest-bar[hidden] { display: none; }
 
 /* ----------------------------------------------------------------------------
+   Resume bar (minimised workout)
+   ---------------------------------------------------------------------------- */
+.resume-bar {
+  position: fixed;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 10px);
+  z-index: 44;
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 22px;
+  border: 0; border-radius: 999px;
+  background: var(--card-2);
+  color: var(--accent);
+  font-size: 16px; font-weight: 700;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+.resume-bar-chev {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink);
+}
+.resume-bar-time { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.resume-bar[hidden] { display: none; }
+/* When both bars are up (resting while minimised), stack the rest bar above. */
+body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 72px); }
+
+/* ----------------------------------------------------------------------------
    Round header buttons (shared)
    ---------------------------------------------------------------------------- */
 .round-btn {
@@ -131,14 +192,14 @@ body.fullscreen .rest-bar { bottom: calc(var(--safe-bottom) + 14px); }
   padding: calc(var(--safe-top) + 8px) 0 10px;
   background: linear-gradient(var(--bg) 72%, rgba(11, 13, 15, 0));
 }
-.w-tick {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 42px; height: 42px; flex: 0 0 auto;
+.w-finish {
+  flex: 0 0 auto;
+  padding: 10px 20px; min-height: 42px;
   border: 0; border-radius: 999px;
   background: var(--accent); color: var(--accent-ink);
+  font-size: 16px; font-weight: 700;
   cursor: pointer;
 }
-.w-tick svg { width: 22px; height: 22px; stroke-width: 2.5; }
 .w-head-centre { flex: 1; text-align: center; }
 .w-date { font-weight: 600; font-size: 16px; }
 .w-elapsed { display: block; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -172,8 +233,11 @@ body.fullscreen .rest-bar { bottom: calc(var(--safe-bottom) + 14px); }
 .meta-val { margin-left: auto; color: var(--muted); font-size: 15px; text-align: right; }
 .meta-bw-input {
   margin-left: auto; width: 120px; text-align: right;
-  border: 0; background: none; color: var(--text); font-size: 15px;
+  border: 0; background: none; color: var(--text);
+  font-size: 16px; /* ≥16px so iOS doesn't zoom the viewport on focus */
+  caret-color: var(--accent);
 }
+.meta-bw-input:focus { outline: none; }
 .meta-notes { cursor: pointer; }
 .notes-val { color: var(--faint); }
 .meta-notes .meta-val:not(.notes-val) { color: var(--muted); }
@@ -235,9 +299,8 @@ body.fullscreen .rest-bar { bottom: calc(var(--safe-bottom) + 14px); }
   font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
 }
 .set-badge.warm { border-color: var(--accent); color: var(--accent); }
-.set-fields { flex: 1; display: flex; gap: 6px; align-items: stretch; }
-.set-fields.cardio { flex-direction: column; gap: 4px; }
-.set-fields.cardio .set-line { display: flex; gap: 6px; }
+.set-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.set-line { display: flex; gap: 6px; align-items: stretch; }
 .set-field {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 1px;
@@ -256,23 +319,18 @@ body.fullscreen .rest-bar { bottom: calc(var(--safe-bottom) + 14px); }
 .set-field .fv.muted { color: var(--muted); font-weight: 400; font-size: 14px; }
 .note-field { flex: 1.2; }
 
-/* Inline numeric editor */
-.feditor { display: inline-flex; align-items: center; gap: 6px; }
-.fedit {
-  width: 62px;
-  border: 1px solid var(--accent); border-radius: 8px;
-  background: var(--field); color: var(--text);
+/* Always-present set inputs: type straight in, grey last-session placeholder. */
+.set-input {
+  width: 100%; min-width: 0;
+  border: 0; background: none; color: var(--text);
   font-size: 17px; font-weight: 600;
-  padding: 4px 6px; text-align: center;
+  padding: 0; margin: 0;
+  caret-color: var(--accent);
+  min-height: 22px;
 }
-.fstep {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px;
-  border: 0; border-radius: 8px;
-  background: var(--card-2); color: var(--accent);
-  cursor: pointer;
-}
-.fstep svg { width: 16px; height: 16px; }
+.set-input::placeholder { color: var(--faint); font-weight: 500; }
+.set-input:focus { outline: none; }
+.set-field:focus-within { background: var(--field); }
 
 /* Card footer: Add Set + icon row */
 .ex-card-foot {
@@ -323,11 +381,13 @@ body.fullscreen .rest-bar { bottom: calc(var(--safe-bottom) + 14px); }
 .sheet {
   width: 100%; max-width: 560px;
   max-height: 86vh; overflow-y: auto;
+  overscroll-behavior: contain; /* sheet scroll never drags the page */
   background: #16191c;
   border-radius: 20px 20px 0 0;
   padding: 8px 14px calc(20px + var(--safe-bottom));
   transform: translateY(100%);
   transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
 }
 .sheet-backdrop.open .sheet { transform: translateY(0); }
 
@@ -376,6 +436,9 @@ body.fullscreen .rest-bar { bottom: calc(var(--safe-bottom) + 14px); }
 .sheet-row-lock svg { width: 17px; height: 17px; }
 .sheet-row-chev { color: var(--faint); display: inline-flex; }
 .sheet-row-chev svg { width: 18px; height: 18px; }
+.sheet-row-tick { color: var(--accent); display: inline-flex; }
+.sheet-row-tick svg { width: 20px; height: 20px; stroke-width: 2.5; }
+.sheet-note { font-size: 13px; line-height: 1.45; padding: 0 6px 14px; margin: -6px 0 0; }
 
 .sheet-input-row { padding: 6px 16px; border-bottom: 1px solid var(--line); }
 .sheet-input {

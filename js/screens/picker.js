@@ -12,10 +12,11 @@ import * as db from '../db.js';
 import { uid, nowISO } from '../util.js';
 import {
   h, Icon, go,
-  currentWorkout, getEntries, saveEntries,
+  currentWorkout, getEntries, saveEntries, createInitialSet,
   openSheet, closeSheet, sheetHeader, sheetGroup, sheetRow,
-  confirmSheet, optionSheet,
+  confirmSheet, optionSheet, exerciseTypeSheet,
 } from '../ui.js';
+import { normalizeExerciseType, typeLabel } from '../exercise-types.js';
 
 // Transient picker state. Persists across the two sub-screens except that query
 // and superset selection reset when the category (route key) changes.
@@ -150,9 +151,13 @@ function toggleSelect(id) {
 async function addRegular(id) {
   const w = await currentWorkout();
   if (!w) return;
-  const entries = getEntries(w, await db.listSetsForWorkout(w.id)).slice();
+  const sets = await db.listSetsForWorkout(w.id);
+  const entries = getEntries(w, sets).slice();
   entries.push({ exerciseId: id, supersetGroup: null, note: null });
   await saveEntries(w, entries);
+  // Selecting an exercise means at least one set — auto-create a blank set 1
+  // (unless this exercise already has sets in the workout, e.g. re-added).
+  if (!sets.some((s) => s.exerciseId === id)) await createInitialSet(w.id, id);
   go('#/workout');
 }
 
@@ -164,10 +169,14 @@ function nextGroup(entries) {
 async function confirmSuperset() {
   const w = await currentWorkout();
   if (!w || !ps.selected.length) return;
-  const entries = getEntries(w, await db.listSetsForWorkout(w.id)).slice();
+  const sets = await db.listSetsForWorkout(w.id);
+  const entries = getEntries(w, sets).slice();
   const g = nextGroup(entries);
   for (const id of ps.selected) entries.push({ exerciseId: id, supersetGroup: g, note: null });
   await saveEntries(w, entries);
+  for (const id of ps.selected) {
+    if (!sets.some((s) => s.exerciseId === id)) await createInitialSet(w.id, id);
+  }
   ps.selected = [];
   go('#/workout');
 }
@@ -180,15 +189,14 @@ function editRow(label, valueNode, onClick, danger) {
     h('span', { class: 'sheet-row-chev' }, Icon('chevron')),
   );
 }
-const typeOptions = [
-  { value: 'strength', label: 'Strength', sub: 'Weight, Reps' },
-  { value: 'cardio', label: 'Cardio', sub: 'Time, Distance' },
-];
-
-async function editExerciseSheet(ex) {
+/**
+ * Edit-exercise sheet — shared: the picker's ⓘ buttons AND the workout screen's
+ * per-exercise Settings row open this. onSaved re-renders the caller's screen.
+ */
+export async function editExerciseSheet(ex, onSaved = reRenderPick) {
   const work = {
     name: ex.name, muscleGroup: ex.muscleGroup,
-    exerciseType: ex.exerciseType || 'strength', isUnilateral: ex.isUnilateral === true,
+    exerciseType: normalizeExerciseType(ex.exerciseType), isUnilateral: ex.isUnilateral === true,
   };
   const usedCount = (await db.listSetsForExercise(ex.id)).length;
   const canDelete = ex.isCustom === true && usedCount === 0 && typeof db.deleteExercise === 'function';
@@ -203,10 +211,10 @@ async function editExerciseSheet(ex) {
     current: work.muscleGroup, onPick: (v) => { work.muscleGroup = v; catVal.textContent = titleCase(v); },
   }));
 
-  const typeVal = h('span', { class: 'sheet-row-value', text: titleCase(work.exerciseType) });
-  const typeRow = editRow('Exercise Type', typeVal, () => optionSheet({
-    title: 'Exercise Type', options: typeOptions, current: work.exerciseType,
-    onPick: (v) => { work.exerciseType = v; typeVal.textContent = titleCase(v); },
+  const typeVal = h('span', { class: 'sheet-row-value', text: typeLabel(work.exerciseType) });
+  const typeRow = editRow('Exercise Type', typeVal, () => exerciseTypeSheet({
+    current: work.exerciseType,
+    onPick: (v) => { work.exerciseType = v; typeVal.textContent = typeLabel(v); },
   }));
 
   const uniVal = h('span', { class: 'sheet-row-value', text: work.isUnilateral ? 'Yes' : 'Default(No)' });
@@ -218,7 +226,7 @@ async function editExerciseSheet(ex) {
   const save = async () => {
     closeSheet();
     await db.putExercise({ ...ex, name: work.name.trim() || ex.name, muscleGroup: work.muscleGroup, exerciseType: work.exerciseType, isUnilateral: work.isUnilateral });
-    reRenderPick();
+    onSaved();
   };
 
   const groups = [
@@ -234,18 +242,18 @@ async function editExerciseSheet(ex) {
         confirmSheet({
           title: 'Delete exercise?', message: 'Only unused custom exercises can be deleted.',
           confirmLabel: 'Delete', danger: true,
-          onConfirm: async () => { await db.deleteExercise(ex.id); reRenderPick(); },
+          onConfirm: async () => { await db.deleteExercise(ex.id); onSaved(); },
         });
       },
     })));
   }
 
-  openSheet(h('div', {}, sheetHeader('Edit Exercise', { onSave: save }), ...groups));
+  openSheet(h('div', {}, sheetHeader('Edit Exercise', { onSave: save, onClose: () => closeSheet() }), ...groups));
 }
 
 // ---- create custom exercise sheet ------------------------------------------
 async function createCustomSheet() {
-  const work = { name: '', muscleGroup: currentGroup || 'other', exerciseType: 'strength', isUnilateral: false, equipment: 'other' };
+  const work = { name: '', muscleGroup: currentGroup || 'other', exerciseType: 'weight_reps', isUnilateral: false, equipment: 'other' };
 
   const nameInput = h('input', { class: 'sheet-input', type: 'text', 'aria-label': 'Exercise name', placeholder: 'Name' });
   nameInput.addEventListener('input', () => { work.name = nameInput.value; });
@@ -256,10 +264,10 @@ async function createCustomSheet() {
     current: work.muscleGroup, onPick: (v) => { work.muscleGroup = v; catVal.textContent = titleCase(v); },
   }));
 
-  const typeVal = h('span', { class: 'sheet-row-value', text: titleCase(work.exerciseType) });
-  const typeRow = editRow('Exercise Type', typeVal, () => optionSheet({
-    title: 'Exercise Type', options: typeOptions, current: work.exerciseType,
-    onPick: (v) => { work.exerciseType = v; typeVal.textContent = titleCase(v); },
+  const typeVal = h('span', { class: 'sheet-row-value', text: typeLabel(work.exerciseType) });
+  const typeRow = editRow('Exercise Type', typeVal, () => exerciseTypeSheet({
+    current: work.exerciseType,
+    onPick: (v) => { work.exerciseType = v; typeVal.textContent = typeLabel(v); },
   }));
 
   const equipVal = h('span', { class: 'sheet-row-value', text: titleCase(work.equipment) });
@@ -288,7 +296,7 @@ async function createCustomSheet() {
   };
 
   openSheet(h('div', {},
-    sheetHeader('New Exercise', { onSave: save }),
+    sheetHeader('New Exercise', { onSave: save, onClose: () => closeSheet() }),
     sheetGroup(h('div', { class: 'sheet-input-row' }, nameInput), catRow),
     sheetGroup(typeRow),
     sheetGroup(equipRow),

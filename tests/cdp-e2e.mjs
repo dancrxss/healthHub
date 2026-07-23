@@ -123,15 +123,23 @@ async function pickSearch(value) {
   await evalJS(`(() => { const s = document.querySelector('#s-pick .pick-search'); s.value = ${J(value)}; s.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
 }
 
-// Tap a numeric set-field to open its inline editor, type `value`, commit (blur).
-// `sel` targets the .set-field button; the spawned input is `${sel} input.fedit`.
-async function inlineEdit(name, sel, value) {
-  await clickSel(`${name} field`, sel);
-  await poll(`${name} inline editor`, `document.querySelector(${J(sel + ' input.fedit')}) != null`);
-  await evalJS(`(() => { const i = document.querySelector(${J(sel + ' input.fedit')}); i.value = ${J(String(value))}; i.dispatchEvent(new Event('blur')); return true; })()`);
-  // Blur commits -> mutateSet -> re-render. Wait for the editor to close (the card
-  // is rebuilt) so the next interaction runs against the settled DOM + persisted DB.
-  await poll(`${name} committed (editor closed)`, `document.querySelector(${J(sel + ' input.fedit')}) == null`);
+// Type into the always-present set input (row `idx` within `cardSel`, by
+// data-field) and commit via blur. The commit persists quietly (no re-render),
+// so callers must poll the DB for the new value before moving on.
+async function setField(name, cardSel, idx, field, value) {
+  await poll(`${name} input present`, `(() => {
+    const rows = document.querySelectorAll(${J(cardSel + ' .set-row')});
+    return rows[${idx}] && rows[${idx}].querySelector('input.set-input[data-field=${J(field)}]') != null;
+  })()`);
+  const ok = await evalJS(`(() => {
+    const row = document.querySelectorAll(${J(cardSel + ' .set-row')})[${idx}];
+    const i = row && row.querySelector('input.set-input[data-field=${J(field)}]');
+    if (!i) return false;
+    i.value = ${J(String(value))};
+    i.dispatchEvent(new Event('blur'));
+    return true;
+  })()`);
+  if (!ok) throw new Error(`setField failed: ${name}`);
 }
 
 // Load the current in-progress workout's sets for one exercise (sorted by setNumber).
@@ -202,26 +210,48 @@ try {
   await poll('back on #/workout with bench card', `location.hash === '#/workout' && document.querySelector(${J(bbpCard)}) != null`);
   check('picker: tapping a .pick-row appends an exercise card', await exists(bbpCard));
 
-  // --- 5. One-tap logging: Add Set twice -> two identical sets (duplication) ---
-  await clickSel('add set 1', `${bbpCard} .add-set`);
-  await poll('bench set 1 saved', `document.querySelectorAll(${J(bbpCard + ' .set-row')}).length === 1`);
-  await clickSel('add set 2', `${bbpCard} .add-set`);
-  await poll('bench set 2 saved', `document.querySelectorAll(${J(bbpCard + ' .set-row')}).length === 2`);
-  const bbp5 = await evalJS(setsExpr(BBP));
-  check('log: two .set-rows after two Add Set taps', bbp5.length === 2, `got ${bbp5.length}`);
-  check('log: default prefill 20 kg × 8 on the first set', bbp5[0]?.weightKg === 20 && bbp5[0]?.reps === 8, JSON.stringify(bbp5[0]));
-  check('log: second set duplicates the first (weight & reps)', bbp5[1]?.weightKg === bbp5[0]?.weightKg && bbp5[1]?.reps === bbp5[0]?.reps, JSON.stringify(bbp5[1]));
+  // --- 5. Auto set 1 + one-tap duplication via Add Set ---
+  await poll('bench auto set 1 rendered', `document.querySelectorAll(${J(bbpCard + ' .set-row')}).length === 1`);
+  const bbpAuto = await evalJS(setsExpr(BBP));
+  check('log: adding an exercise auto-creates one blank set (0 kg × 0)',
+    bbpAuto.length === 1 && bbpAuto[0]?.weightKg === 0 && bbpAuto[0]?.reps === 0, JSON.stringify(bbpAuto));
+  check('log: blank set renders empty inputs with a grey placeholder',
+    await evalJS(`(() => {
+      const i = document.querySelector(${J(bbpCard + ' .set-row input.set-input[data-field="weight"]')});
+      return i && i.value === '' && i.placeholder !== '';
+    })()`));
 
-  // --- 6. Inline edit: first set's weight -> 60 kg (units default kg) ---
-  await inlineEdit('bench weight', `${bbpCard} .set-row .set-field[data-field="weight"]`, 60);
+  // Type set 1's values straight into the grid (60 kg × 8), then duplicate it.
+  await setField('bench s1 weight', bbpCard, 0, 'weight', 60);
   await poll('bench set 1 -> 60kg (db)', `(async () => {
     const db = await import('./js/db.js');
     const wid = localStorage.getItem('currentWorkoutId');
     const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
     return !!(s[0] && s[0].weightKg === 60);
   })()`);
+  await setField('bench s1 reps', bbpCard, 0, 'reps', 8);
+  await poll('bench set 1 -> 8 reps (db)', `(async () => {
+    const db = await import('./js/db.js');
+    const wid = localStorage.getItem('currentWorkoutId');
+    const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
+    return !!(s[0] && s[0].reps === 8);
+  })()`);
+  await clickSel('add set 2', `${bbpCard} .add-set`);
+  await poll('bench set 2 saved', `document.querySelectorAll(${J(bbpCard + ' .set-row')}).length === 2`);
+  const bbp5 = await evalJS(setsExpr(BBP));
+  check('log: Add Set duplicates the previous set (60 kg × 8)',
+    bbp5.length === 2 && bbp5[1]?.weightKg === 60 && bbp5[1]?.reps === 8, JSON.stringify(bbp5[1]));
+
+  // --- 6. Retype set 2's weight -> 20 kg (working set for the PR checks) ---
+  await setField('bench s2 weight', bbpCard, 1, 'weight', 20);
+  await poll('bench set 2 -> 20kg (db)', `(async () => {
+    const db = await import('./js/db.js');
+    const wid = localStorage.getItem('currentWorkoutId');
+    const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
+    return !!(s[1] && s[1].weightKg === 20);
+  })()`);
   const bbp6 = await evalJS(setsExpr(BBP));
-  check('edit: inline weight editor commits 60 kg to set 1', bbp6[0]?.weightKg === 60, JSON.stringify(bbp6[0]));
+  check('edit: set input commits 20 kg to set 2 without a re-render', bbp6[1]?.weightKg === 20 && bbp6[1]?.reps === 8, JSON.stringify(bbp6[1]));
 
   // --- 7. Per-set sheet: flag the (edited) first set as Warm-up ---
   await clickSel('set 1 menu (…)', `${bbpCard} .set-row .set-menu`);
@@ -242,18 +272,17 @@ try {
   await pickSearch('Assault');
   await clickSel('pick Assault Bike', `#s-pick .pick-row[data-exercise-id="${ASSAULT}"]`);
   await poll('assault card on #/workout', `location.hash === '#/workout' && document.querySelector(${J(assaultCard)}) != null`);
-  await clickSel('add cardio set', `${assaultCard} .add-set`);
-  await poll('cardio set row present', `document.querySelectorAll(${J(assaultCard + ' .set-row')}).length === 1`);
-  const cardioFields = await evalJS(`['minutes','seconds','distance','kcal'].every(f => document.querySelector(${J(assaultCard)} + ' .set-field[data-field="' + f + '"]') != null)`);
-  check('cardio: set exposes minutes/seconds/distance/kcal fields', cardioFields);
-  await inlineEdit('cardio minutes', `${assaultCard} .set-field[data-field="minutes"]`, 4);
+  await poll('cardio auto set row present', `document.querySelectorAll(${J(assaultCard + ' .set-row')}).length === 1`);
+  const cardioFields = await evalJS(`['minutes','seconds','distance','kcal'].every(f => document.querySelector(${J(assaultCard)} + ' input.set-input[data-field="' + f + '"]') != null)`);
+  check('cardio: set exposes minutes/seconds/distance/kcal inputs', cardioFields);
+  await setField('cardio minutes', assaultCard, 0, 'minutes', 4);
   await poll('cardio durationSeconds -> 240 (db)', `(async () => {
     const db = await import('./js/db.js');
     const wid = localStorage.getItem('currentWorkoutId');
     const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(ASSAULT)});
     return !!(s[0] && s[0].durationSeconds === 240);
   })()`);
-  await inlineEdit('cardio kcal', `${assaultCard} .set-field[data-field="kcal"]`, 20);
+  await setField('cardio kcal', assaultCard, 0, 'kcal', 20);
   await poll('cardio kcal -> 20 (db)', `(async () => {
     const db = await import('./js/db.js');
     const wid = localStorage.getItem('currentWorkoutId');
@@ -304,6 +333,25 @@ try {
   await poll('rest bar dismissed', `document.getElementById('rest-bar').hidden`);
   check('timer: tapping the rest bar dismisses it', true);
 
+  // --- 10b. Minimise -> resume bar on the tabs -> tap to resume ---
+  await clickSel('minimise workout', '#s-workout [data-action="minimise"]');
+  await poll('minimise lands on #/log', `location.hash === '#/log' && !document.getElementById('s-log').hidden`);
+  check('minimise: resume bar appears with elapsed time',
+    await poll('resume bar visible', `!document.getElementById('resume-bar').hidden && /\\d/.test(document.getElementById('resume-bar-time').textContent)`) && true);
+  await clickSel('resume via resume bar', '#resume-bar');
+  await poll('resume returns to #/workout', `location.hash === '#/workout' && !document.getElementById('s-workout').hidden`);
+  check('minimise: tapping the resume bar returns to the workout', true);
+  await poll('resume bar hidden on workout screen', `document.getElementById('resume-bar').hidden`);
+  check('minimise: resume bar hides on the workout screen', true);
+
+  // --- 10c. Exercise menu -> Settings opens the shared Edit Exercise sheet ---
+  await clickSel('bench exercise menu', `${bbpCard} .ex-menu`);
+  await clickSel('settings row', '#sheet-root [data-action="exercise-settings"]');
+  await poll('edit-exercise sheet open', `[...document.querySelectorAll('#sheet-root .sheet-title')].some(t => t.textContent === 'Edit Exercise')`);
+  check('menu: Settings opens the same Edit Exercise sheet as the picker', true);
+  await clickSel('close edit-exercise sheet', '#sheet-root .sheet-x');
+  await poll('edit-exercise sheet closed', `![...document.querySelectorAll('#sheet-root .sheet-title')].some(t => t.textContent === 'Edit Exercise')`);
+
   // --- 11. Finish workout -> #/log shows a month group + a card for it ---
   await finishActiveWorkout();
   check('finish: workout finishedAt is set in the DB', await evalJS(`import('./js/db.js').then(m => m.getWorkout(${J(w1id)})).then(w => w && w.finishedAt != null)`));
@@ -329,12 +377,14 @@ try {
   await clickSel('open template detail', '#s-routines [data-template-id="seed-template-push-day-a"]');
   await clickSel('start routine', '[data-action="start-routine"]');
   await poll('routine started on #/workout', `location.hash === '#/workout' && !document.getElementById('s-workout').hidden`);
-  check('routines: starting the template pre-seeds 5 exercise cards (zero sets)',
+  check('routines: starting the template pre-seeds 5 exercise cards',
     (await poll('five ex-cards', `document.querySelectorAll('#s-workout .ex-card').length === 5`)) && true,
     `ex-cards=${await count('#s-workout .ex-card')}`);
-  check('routines: pre-seeded routine has no sets logged yet', (await count('#s-workout .set-row')) === 0, `set-rows=${await count('#s-workout .set-row')}`);
+  check('routines: each pre-seeded exercise auto-gets one blank set',
+    (await poll('five auto set-rows', `document.querySelectorAll('#s-workout .set-row').length === 5`)) && true,
+    `set-rows=${await count('#s-workout .set-row')}`);
   await finishActiveWorkout();
-  check('routines: a zero-set routine workout can be finished', await poll('two workout cards', `document.querySelectorAll('#s-log .workout-card').length === 2`));
+  check('routines: an untouched routine workout can be finished', await poll('two workout cards', `document.querySelectorAll('#s-log .workout-card').length === 2`));
 
   // --- 14. Stats: at least one stat card; frequency reflects 2 sessions this week ---
   await clickSel('stats tab', '#tabbar button[data-tab="stats"]');
@@ -344,7 +394,7 @@ try {
 
   // --- 15. Frozen query contract holds over the logged data ---
   const prs = await evalJS(`import('./js/queries.js').then(m => m.getPRs(${J(BBP)}))`);
-  const expectedE1RM = 20 * (1 + 8 / 30); // untouched duplicate (20kg×8); 60kg set is warm-up (excluded)
+  const expectedE1RM = 20 * (1 + 8 / 30); // working set 2 (20kg×8); 60kg set 1 is warm-up (excluded)
   check('queries: getPRs bestE1RM comes from the 20 kg × 8 working set (warm-up 60 kg excluded)',
     prs?.bestE1RM && Math.abs(prs.bestE1RM.value - expectedE1RM) < 1e-3 && prs.bestE1RM.weightKg === 20 && prs.bestE1RM.reps === 8,
     JSON.stringify(prs?.bestE1RM));

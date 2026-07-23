@@ -186,6 +186,21 @@ check('prsFrom: unused exercise -> empty/null', () => {
   assert.deepEqual(res.byReps, []);
   assert.equal(res.bestE1RM, null);
 });
+check('prsFrom: reps-0 sets (blank / time- or distance-only) never make a PR', () => {
+  // A heavy weighted carry logged as weight+distance stores reps 0 — without
+  // the reps >= 1 guard it would fake an Epley "1RM" of its carry weight.
+  const ds = {
+    workouts: [{ id: 'wz', date: '2026-07-22', startedAt: '2026-07-22T10:00:00Z', finishedAt: '2026-07-22T11:00:00Z', templateId: null, notes: null, syncedAt: null }],
+    exercises: [{ id: 'ex-carry', name: 'Carry', muscleGroup: 'other', equipment: 'other', isCustom: false, createdAt: '2026-07-21T00:00:00Z', syncedAt: null }],
+    sets: [
+      { id: 'wzs1', workoutId: 'wz', exerciseId: 'ex-carry', setNumber: 1, weightKg: 80, reps: 0, rpe: null, isWarmup: false, completedAt: '2026-07-22T10:10:00Z', syncedAt: null, distanceM: 40 },
+      { id: 'wzs2', workoutId: 'wz', exerciseId: 'ex-carry', setNumber: 2, weightKg: 20, reps: 5, rpe: null, isWarmup: false, completedAt: '2026-07-22T10:20:00Z', syncedAt: null },
+    ],
+  };
+  const res = prsFrom(ds, 'ex-carry');
+  assert.deepEqual(res.byReps, [{ reps: 5, weightKg: 20, date: '2026-07-22', setId: 'wzs2' }]);
+  assert.equal(res.bestE1RM.setId, 'wzs2'); // the 80 kg reps-0 carry is ignored
+});
 
 // ---------------------------------------------------------------------------
 // weeklyVolumeFrom

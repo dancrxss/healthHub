@@ -1,8 +1,8 @@
 // ============================================================================
 // screens/log.js — Log tab (#/log). Workouts grouped by calendar month, newest
 // first, each month rendered as one rounded card of workout rows (day badge,
-// name, duration, "Nx Exercise" summary lines). A teal banner links to the
-// in-progress workout when one exists; the header "+" starts or resumes one.
+// name, duration, "Nx Exercise" summary lines). The shell's resume bar links
+// to the in-progress workout; the header "+" starts or resumes one.
 //
 // Matches screenshot 2 (month groups, day-badge workout cards).
 // User text only ever via textContent / h() — never innerHTML.
@@ -42,8 +42,6 @@ export async function renderLogTab() {
     ),
   ];
 
-  if (active) children.push(progressBanner());
-
   if (!sessions.length) {
     children.push(h('p', { class: 'log-empty muted', text: 'No workouts yet. Tap + to start your first.' }));
   } else {
@@ -51,16 +49,6 @@ export async function renderLogTab() {
   }
 
   screen.replaceChildren(h('div', { class: 'tab-screen' }, ...children));
-}
-
-// ---- banner ------------------------------------------------------------
-function progressBanner() {
-  return h('button', {
-    class: 'log-banner', type: 'button', onclick: () => go('#/workout'),
-  },
-    h('span', { class: 'log-banner-text', text: 'Workout in progress — tap to resume' }),
-    h('span', { class: 'log-banner-chev' }, Icon('chevron')),
-  );
 }
 
 // ---- month grouping ------------------------------------------------------

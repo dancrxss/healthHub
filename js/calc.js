@@ -151,8 +151,10 @@ export function prsFrom(dataset, exerciseId) {
   const workouts = workoutIndex(dataset);
   // Working sets for this exercise, decorated with their workout date, sorted
   // ascending by (date, setNumber) so the FIRST occurrence at any tie is earliest.
+  // reps >= 1: untouched blank sets and time/distance-only sets store reps 0
+  // and must not manufacture an Epley estimate (w × (1 + 0/30) = w).
   const working = (dataset.sets || [])
-    .filter((s) => s.exerciseId === exerciseId && s.isWarmup !== true && s.setType !== 'cardio')
+    .filter((s) => s.exerciseId === exerciseId && s.isWarmup !== true && s.setType !== 'cardio' && s.reps >= 1)
     .map((s) => ({ set: s, date: (workouts.get(s.workoutId) || {}).date || '' }))
     .sort((a, b) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;

@@ -9,11 +9,12 @@
 // ============================================================================
 
 import {
-  putWorkout, getWorkout, listWorkouts,
+  putWorkout, getWorkout, listWorkouts, putSet, getExercise,
 } from './db.js';
 import { seedIfEmpty } from './seed.js';
 import * as timer from './timer.js';
 import { uid, nowISO, todayISO } from './util.js';
+import { EXERCISE_TYPE_GROUPS, blankSet } from './exercise-types.js';
 
 import { renderWorkoutScreen } from './screens/workout.js';
 import { renderPick } from './screens/picker.js';
@@ -105,6 +106,8 @@ const ICONS = {
   close: () => svg([p('M18 6 6 18M6 6l12 12')]),
   search: () => svg([svgEl('circle', { cx: 11, cy: 11, r: 7 }), p('M21 21l-4-4')]),
   chevron: () => svg([p('M9 6l6 6-6 6')]),
+  down: () => svg([p('M6 9l6 6 6-6')]),
+  up: () => svg([p('M6 15l6-6 6 6')]),
   history: () => svg([p('M3 12a9 9 0 1 0 3-6.7L3 8'), p('M3 3v5h5'), p('M12 8v4l3 2')]),
   bars: () => svg([p('M6 20V10M12 20V4M18 20v-7')]),
   star: () => svg([p('M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.2l5.9-.9z')]),
@@ -228,6 +231,17 @@ export async function currentWorkout() {
   return null;
 }
 
+/**
+ * Auto-create the first (blank) set for a just-added workout entry — selecting
+ * an exercise means you'll do at least one set. Values start at zero and render
+ * as empty inputs with grey last-session placeholders. No rest timer here.
+ */
+export async function createInitialSet(workoutId, exerciseId, setNumber = 1) {
+  const exercise = await getExercise(exerciseId);
+  if (!exercise) return null;
+  return putSet(blankSet(workoutId, exercise, setNumber));
+}
+
 /** Create a workout (optionally seeding entries from a template) and open it. */
 export async function startWorkout(template = null) {
   const entries = template
@@ -244,6 +258,7 @@ export async function startWorkout(template = null) {
     notes: null,
     entries,
   });
+  for (const e of entries) await createInitialSet(w.id, e.exerciseId);
   setCurrent(w.id);
   go('#/workout');
 }
@@ -351,6 +366,33 @@ export function optionSheet({ title, options, current, onPick }) {
   ));
 }
 
+/**
+ * The grouped exercise-type picker (matches the RepCount reference screens):
+ * one section per EXERCISE_TYPE_GROUPS entry, options carry grey example
+ * lines, the current type shows a teal tick, and group notes render beneath.
+ */
+export function exerciseTypeSheet({ current, onPick }) {
+  const sections = [];
+  for (const group of EXERCISE_TYPE_GROUPS) {
+    sections.push(h('div', { class: 'sheet-label', text: group.label }));
+    sections.push(sheetGroup(...group.types.map((t) => h('button', {
+      class: 'sheet-row', type: 'button', 'data-type-id': t.id,
+      onclick: () => { closeSheet(); onPick(t.id); },
+    },
+      h('span', { class: 'sheet-row-label' },
+        h('span', { text: t.label }),
+        h('span', { class: 'sheet-row-sub', text: `Examples: ${t.examples}` }),
+      ),
+      current === t.id ? h('span', { class: 'sheet-row-tick' }, Icon('check')) : null,
+    ))));
+    if (group.note) sections.push(h('p', { class: 'sheet-note muted', text: group.note }));
+  }
+  openSheet(h('div', {},
+    sheetHeader('Exercise Type', { onClose: () => closeSheet() }),
+    ...sections,
+  ));
+}
+
 // ----------------------------------------------------------------------------
 // Router
 // ----------------------------------------------------------------------------
@@ -404,6 +446,7 @@ async function route() {
   } catch (err) {
     console.error('route error', err);
   }
+  updateResumeBar(a); // fire-and-forget; hides itself when nothing is in progress
   if (changed) window.scrollTo(0, 0);
 }
 
@@ -426,6 +469,38 @@ restBar.addEventListener('click', () => { timer.cancel(); hideRestBar(); });
 
 function onTimerTick(secs) { if (secs > 0) showRestBar(secs); else hideRestBar(); }
 function onTimerDone() { hideRestBar(); }
+
+// ----------------------------------------------------------------------------
+// Resume bar (shell): when a workout is in progress but minimised (any route
+// except the workout screen itself / the picker), a pill above the tab bar
+// shows "Resume Workout" + live elapsed time. Tap returns to the workout.
+// ----------------------------------------------------------------------------
+const resumeBar = document.getElementById('resume-bar');
+const resumeBarTime = document.getElementById('resume-bar-time');
+let resumeTimer = null;
+
+resumeBar.addEventListener('click', () => go('#/workout'));
+
+function hideResumeBar() {
+  if (resumeTimer) { clearInterval(resumeTimer); resumeTimer = null; }
+  resumeBar.hidden = true;
+  document.body.classList.remove('resume-active');
+}
+
+let resumeBarSeq = 0;
+async function updateResumeBar(routeHead) {
+  const seq = ++resumeBarSeq;
+  if (routeHead === 'workout' || routeHead === 'pick') { hideResumeBar(); return; }
+  const w = await currentWorkout();
+  if (seq !== resumeBarSeq) return; // a newer route already decided
+  if (!w) { hideResumeBar(); return; }
+  const tickFn = () => { resumeBarTime.textContent = formatElapsed(Date.now() - new Date(w.startedAt)); };
+  tickFn();
+  if (resumeTimer) clearInterval(resumeTimer);
+  resumeTimer = setInterval(tickFn, 1000);
+  resumeBar.hidden = false;
+  document.body.classList.add('resume-active');
+}
 
 // ----------------------------------------------------------------------------
 // Startup

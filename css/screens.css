@@ -40,21 +40,6 @@ button.tab-card {
 /* ----------------------------------------------------------------------------
    Log tab
    ---------------------------------------------------------------------------- */
-.log-banner {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  min-height: 44px;
-  padding: 15px 16px;
-  border: 0; border-radius: var(--radius);
-  background: var(--accent); color: var(--accent-ink);
-  font-size: 15px; font-weight: 700;
-  margin-bottom: 16px;
-  cursor: pointer;
-}
-.log-banner-chev { display: inline-flex; }
-.log-banner-chev svg { width: 18px; height: 18px; }
-
 .month-group {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 8px;
@@ -120,7 +105,7 @@ button.tab-card {
   width: 52px; min-height: 36px;
   border: 1px solid var(--line); border-radius: 8px;
   background: var(--field); color: var(--text);
-  font-size: 15px; font-weight: 600; text-align: center;
+  font-size: 16px; font-weight: 600; text-align: center; /* ≥16px: no iOS zoom */
   padding: 6px 2px;
 }
 .tpl-entry-remove {

@@ -35,8 +35,8 @@ export const SEED_EXERCISES = [
   { id: 'seed-dumbbell-fly', name: 'Dumbbell Fly', muscleGroup: 'chest', equipment: 'dumbbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-cable-fly', name: 'Cable Fly', muscleGroup: 'chest', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-chest-press-machine', name: 'Chest Press Machine', muscleGroup: 'chest', equipment: 'machine', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-push-up', name: 'Push Up', muscleGroup: 'chest', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-dip', name: 'Dip', muscleGroup: 'chest', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-push-up', name: 'Push Up', muscleGroup: 'chest', equipment: 'bodyweight', exerciseType: 'reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-dip', name: 'Dip', muscleGroup: 'chest', equipment: 'bodyweight', exerciseType: 'bw_weight_reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 
   // ---- Back ----
   { id: 'seed-barbell-deadlift', name: 'Barbell Deadlift', muscleGroup: 'back', equipment: 'barbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
@@ -46,8 +46,8 @@ export const SEED_EXERCISES = [
   { id: 'seed-lat-pulldown', name: 'Lat Pulldown', muscleGroup: 'back', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-seated-cable-row', name: 'Seated Cable Row', muscleGroup: 'back', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-t-bar-row', name: 'T-Bar Row', muscleGroup: 'back', equipment: 'machine', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-pull-up', name: 'Pull Up', muscleGroup: 'back', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-chin-up', name: 'Chin Up', muscleGroup: 'back', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-pull-up', name: 'Pull Up', muscleGroup: 'back', equipment: 'bodyweight', exerciseType: 'bw_weight_reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-chin-up', name: 'Chin Up', muscleGroup: 'back', equipment: 'bodyweight', exerciseType: 'bw_weight_reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 
   // ---- Legs ----
   { id: 'seed-barbell-back-squat', name: 'Barbell Back Squat', muscleGroup: 'legs', equipment: 'barbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
@@ -62,7 +62,7 @@ export const SEED_EXERCISES = [
   { id: 'seed-bulgarian-split-squat', name: 'Bulgarian Split Squat', muscleGroup: 'legs', equipment: 'dumbbell', exerciseType: 'strength', isUnilateral: true, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-goblet-squat', name: 'Goblet Squat', muscleGroup: 'legs', equipment: 'dumbbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-cable-pull-through', name: 'Cable Pull Through', muscleGroup: 'legs', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-bodyweight-squat', name: 'Bodyweight Squat', muscleGroup: 'legs', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-bodyweight-squat', name: 'Bodyweight Squat', muscleGroup: 'legs', equipment: 'bodyweight', exerciseType: 'reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 
   // ---- Shoulders ----
   { id: 'seed-overhead-press', name: 'Overhead Press', muscleGroup: 'shoulders', equipment: 'barbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
@@ -72,7 +72,7 @@ export const SEED_EXERCISES = [
   { id: 'seed-shoulder-press-machine', name: 'Shoulder Press Machine', muscleGroup: 'shoulders', equipment: 'machine', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-face-pull', name: 'Face Pull', muscleGroup: 'shoulders', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-cable-rear-delt-fly', name: 'Cable Rear Delt Fly', muscleGroup: 'shoulders', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-pike-push-up', name: 'Pike Push Up', muscleGroup: 'shoulders', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-pike-push-up', name: 'Pike Push Up', muscleGroup: 'shoulders', equipment: 'bodyweight', exerciseType: 'reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 
   // ---- Biceps (was 'arms') ----
   { id: 'seed-barbell-curl', name: 'Barbell Curl', muscleGroup: 'biceps', equipment: 'barbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
@@ -85,18 +85,18 @@ export const SEED_EXERCISES = [
   { id: 'seed-close-grip-bench-press', name: 'Close-Grip Bench Press', muscleGroup: 'triceps', equipment: 'barbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-overhead-triceps-extension', name: 'Overhead Triceps Extension', muscleGroup: 'triceps', equipment: 'dumbbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-triceps-pushdown', name: 'Triceps Pushdown', muscleGroup: 'triceps', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-bench-dip', name: 'Bench Dip', muscleGroup: 'triceps', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-bench-dip', name: 'Bench Dip', muscleGroup: 'triceps', equipment: 'bodyweight', exerciseType: 'reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 
   // ---- Abs (was 'core') ----
-  { id: 'seed-plank', name: 'Plank', muscleGroup: 'abs', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-hanging-leg-raise', name: 'Hanging Leg Raise', muscleGroup: 'abs', equipment: 'bodyweight', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-plank', name: 'Plank', muscleGroup: 'abs', equipment: 'bodyweight', exerciseType: 'time', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-hanging-leg-raise', name: 'Hanging Leg Raise', muscleGroup: 'abs', equipment: 'bodyweight', exerciseType: 'reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-cable-crunch', name: 'Cable Crunch', muscleGroup: 'abs', equipment: 'cable', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
   { id: 'seed-russian-twist', name: 'Russian Twist', muscleGroup: 'abs', equipment: 'dumbbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-ab-wheel-rollout', name: 'Ab Wheel Rollout', muscleGroup: 'abs', equipment: 'other', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-ab-wheel-rollout', name: 'Ab Wheel Rollout', muscleGroup: 'abs', equipment: 'other', exerciseType: 'reps', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 
   // ---- Other ----
-  { id: 'seed-farmers-carry', name: "Farmer's Carry", muscleGroup: 'other', equipment: 'dumbbell', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
-  { id: 'seed-sled-push', name: 'Sled Push', muscleGroup: 'other', equipment: 'other', exerciseType: 'strength', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-farmers-carry', name: "Farmer's Carry", muscleGroup: 'other', equipment: 'dumbbell', exerciseType: 'weight_distance', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
+  { id: 'seed-sled-push', name: 'Sled Push', muscleGroup: 'other', equipment: 'other', exerciseType: 'weight_distance', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 
   // ---- Cardio (v2) ----
   { id: 'seed-assault-bike', name: 'Assault Bike', muscleGroup: 'cardio', equipment: 'other', exerciseType: 'cardio', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
@@ -139,8 +139,28 @@ async function applyV2Upgrade() {
 }
 
 /**
- * Idempotent: seeds exercises + template once (v1), then applies the v2 upgrade
- * exactly once. Returns true if any seeding/upgrade work was performed.
+ * v3 upgrade (23 July 2026): the exercise-type taxonomy widened (see
+ * js/exercise-types.js) and SEED_EXERCISES now carry proper types for
+ * bodyweight / time / carry movements. Existing installs hold 'strength' for
+ * those ids; retype ONLY records still on the legacy value ('strength' or
+ * absent) so any type the user has since chosen is preserved. Upsert-only,
+ * never deletes, never touches isCustom records.
+ */
+async function applyV3Upgrade() {
+  const existing = await listExercises();
+  const byId = new Map(existing.map((e) => [e.id, e]));
+  for (const seedEx of SEED_EXERCISES) {
+    if (seedEx.exerciseType === 'strength' || seedEx.exerciseType === 'cardio') continue;
+    const cur = byId.get(seedEx.id);
+    if (!cur || cur.isCustom === true) continue;
+    if (cur.exerciseType && cur.exerciseType !== 'strength') continue; // user already retyped
+    await putExercise({ ...cur, exerciseType: seedEx.exerciseType });
+  }
+}
+
+/**
+ * Idempotent: seeds exercises + template once (v1), then applies the v2 and v3
+ * upgrades exactly once each. Returns true if any work was performed.
  */
 export async function seedIfEmpty() {
   let didWork = false;
@@ -159,6 +179,13 @@ export async function seedIfEmpty() {
   if (!(await getMeta('seeded-v2'))) {
     if (!firstRun) await applyV2Upgrade();
     await setMeta('seeded-v2', true);
+    didWork = true;
+  }
+
+  // v3 upgrade — same pattern: fresh installs already seed v3 types.
+  if (!(await getMeta('seeded-v3'))) {
+    if (!firstRun) await applyV3Upgrade();
+    await setMeta('seeded-v3', true);
     didWork = true;
   }
 

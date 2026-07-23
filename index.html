@@ -68,6 +68,16 @@
   <!-- Bottom sheets render here (dimmed backdrop + slide-up sheet). -->
   <div id="sheet-root"></div>
 
+  <!-- Resume bar: shown above the tab bar when a workout is in progress but
+       minimised (i.e. on any tab screen). Tap to return to the workout. -->
+  <button id="resume-bar" class="resume-bar" type="button" hidden>
+    <span class="resume-bar-chev" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6" /></svg>
+    </span>
+    <span class="resume-bar-label">Resume Workout</span>
+    <span id="resume-bar-time" class="resume-bar-time">0:00</span>
+  </button>
+
   <!-- Rest timer bar lives in the shell so it overlays every screen. -->
   <button id="rest-bar" class="rest-bar" type="button" hidden aria-label="Dismiss rest timer">
     <span class="rest-bar-label">Rest</span>
