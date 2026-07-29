@@ -471,6 +471,112 @@ try {
   check('queries: getPRs byReps @8 = 20 kg (only the working set counts)',
     prs?.byReps?.find((r) => r.reps === 8)?.weightKg === 20, JSON.stringify(prs?.byReps));
 
+  // --- 15b. CSV import (Profile tab): preview -> confirm -> done -------------
+  // The walk has two real workouts dated TODAY, so the fixture's "today" row is
+  // guaranteed to collide and must be skipped by default. The 2024 rows are far
+  // enough in the past that nothing else in the suite can be disturbed by them.
+  await clickSel('profile tab', '#tabbar button[data-tab="profile"]');
+  await poll('import row rendered', `document.querySelector('#s-profile [data-action="import-csv"]') != null`);
+  check('profile: the Data card exposes an import row', await exists('#s-profile [data-action="import-csv"]'));
+
+  // Fixture: one OLD workout (2 exercises — a seeded name + a novel one) and one
+  // workout dated TODAY (the deliberate collision). Injected through a real
+  // DataTransfer so the change handler runs exactly as it would from a tap.
+  const injectCSV = `(() => {
+    const pad = (n) => String(n).padStart(2, '0');
+    const d = new Date();
+    const today = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    const csv = [
+      'Workout Start,Workout End,Exercise,Weight,Reps,Notes,Category',
+      '2024-01-05 10:00,2024-01-05 11:00,Barbell Bench Press,60,8,,Chest',
+      '2024-01-05 10:00,2024-01-05 11:00,Barbell Bench Press,65,6,,Chest',
+      '2024-01-05 10:00,2024-01-05 11:00,Zercher Carry Test,40,5,,Legs',
+      today + ' 09:00,' + today + ' 09:30,Barbell Bench Press,50,10,,Chest',
+    ].join('\\n');
+    const dt = new DataTransfer();
+    dt.items.add(new File([csv], 'test.csv', { type: 'text/csv' }));
+    const inp = document.querySelector('#import-file');
+    if (!inp) return false;
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`;
+  // Reads the preview sheet's stat rows + the collision toggle's current value.
+  const previewExpr = `(() => {
+    const root = document.querySelector('[data-action="import-preview"]');
+    if (!root) return null;
+    const rows = {};
+    for (const r of root.querySelectorAll('.sheet-row.readonly')) {
+      rows[r.querySelector('.sheet-row-label').textContent.trim()] = r.querySelector('.sheet-row-value').textContent.trim();
+    }
+    const skip = root.querySelector('[data-action="import-skip-collisions"]');
+    return { rows, skip: skip ? skip.querySelector('.sheet-row-value').textContent.trim() : null };
+  })()`;
+  // Whole-DB snapshot: imported records, the old workout's sets, and totals.
+  const importStateExpr = `(async () => {
+    const db = await import('./js/db.js');
+    const pad = (n) => String(n).padStart(2, '0');
+    const d = new Date();
+    const today = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    const ws = await db.listWorkouts('0000');
+    const imported = ws.filter((w) => w.id.startsWith('import-'));
+    const old = ws.find((w) => w.id.indexOf('import-w-20240105-1000') === 0);
+    const oldSets = old ? await db.listSetsForWorkout(old.id) : [];
+    const exs = await db.listExercises();
+    const all = await Promise.all(ws.map((w) => db.listSetsForWorkout(w.id)));
+    return {
+      importedWorkouts: imported.length,
+      oldId: old ? old.id : null,
+      oldDate: old ? old.date : null,
+      oldSetCount: oldSets.length,
+      oldWeights: oldSets.map((s) => s.weightKg).sort((a, b) => a - b),
+      zercher: exs.some((e) => e.id === 'import-zercher-carry-test'),
+      importedToday: imported.filter((w) => w.date === today).length,
+      totalWorkouts: ws.length,
+      totalSets: all.reduce((n, s) => n + s.length, 0),
+      totalExercises: exs.length,
+    };
+  })()`;
+
+  await evalJS(injectCSV);
+  await poll('import preview sheet open', `document.querySelector('[data-action="import-preview"]') != null`, 12000);
+  const preview = await evalJS(previewExpr);
+  check('import: preview counts 2 workouts from the fixture', preview?.rows?.Workouts === '2', JSON.stringify(preview?.rows));
+  check('import: preview counts 4 sets and 1 new exercise',
+    preview?.rows?.Sets === '4' && preview?.rows?.['New exercises'] === '1', JSON.stringify(preview?.rows));
+  check('import: collision toggle is offered and defaults to skipping', preview?.skip === 'Yes', JSON.stringify(preview));
+
+  await clickSel('confirm import', '[data-action="import-confirm"]');
+  await poll('import done sheet', `document.querySelector('[data-action="import-done"]') != null`, 20000);
+  const after1 = await evalJS(importStateExpr);
+  check('import: the 2024-01-05 workout lands with a deterministic id',
+    after1.oldId?.startsWith('import-w-20240105-1000') && after1.oldDate === '2024-01-05', JSON.stringify({ id: after1.oldId, date: after1.oldDate }));
+  check('import: its three sets persist with the CSV weights (40/60/65 kg)',
+    after1.oldSetCount === 3 && JSON.stringify(after1.oldWeights) === JSON.stringify([40, 60, 65]), JSON.stringify(after1.oldWeights));
+  check('import: the novel exercise is created as import-zercher-carry-test', after1.zercher === true);
+  check('import: the colliding TODAY workout was skipped', after1.importedToday === 0 && after1.importedWorkouts === 1,
+    `importedToday=${after1.importedToday} importedWorkouts=${after1.importedWorkouts}`);
+
+  await clickSel('close import result', '[data-action="import-done-close"]');
+  await poll('import sheet dismissed', `document.querySelector('[data-action="import-done"]') == null`);
+  await clickSel('log tab', '#tabbar button[data-tab="log"]');
+  check('import: the imported session shows as a January 2024 month group',
+    await poll('January 2024 month group', `[...document.querySelectorAll('#s-log .month-group-name')].some(e => e.textContent.trim() === 'January 2024')`));
+
+  // Idempotency: the identical file a second time must upsert in place, never duplicate.
+  await clickSel('profile tab (re-import)', '#tabbar button[data-tab="profile"]');
+  await poll('import row rendered again', `document.querySelector('#s-profile [data-action="import-csv"]') != null`);
+  await evalJS(injectCSV);
+  await poll('import preview sheet open (2nd)', `document.querySelector('[data-action="import-preview"]') != null`, 12000);
+  await clickSel('confirm import (2nd)', '[data-action="import-confirm"]');
+  await poll('import done sheet (2nd)', `document.querySelector('[data-action="import-done"]') != null`, 20000);
+  const after2 = await evalJS(importStateExpr);
+  check('import: re-importing the same file changes no counts (idempotent)',
+    after2.totalWorkouts === after1.totalWorkouts && after2.totalSets === after1.totalSets && after2.totalExercises === after1.totalExercises,
+    `first=${JSON.stringify([after1.totalWorkouts, after1.totalSets, after1.totalExercises])} second=${JSON.stringify([after2.totalWorkouts, after2.totalSets, after2.totalExercises])}`);
+  await clickSel('close import result (2nd)', '[data-action="import-done-close"]');
+  await poll('import sheet dismissed (2nd)', `document.querySelector('[data-action="import-done"]') == null`);
+
   // --- 16. No uncaught exceptions / console errors across the whole walk ---
   check('pwa: no uncaught exceptions or console errors during the walk', jsErrors.length === 0, jsErrors.join(' | '));
 } catch (err) {

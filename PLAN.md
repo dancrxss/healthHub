@@ -258,3 +258,40 @@ app is ever wrapped natively.
 `tests/cdp-e2e.mjs` now enables `Emulation.setFocusEmulationEnabled`. Headless
 Chrome treats the page as unfocused, so `element.focus()` dispatches no focus
 event — without this, every focus-driven assertion silently passes on a no-op.
+
+## Phase 1.7 — In-app CSV import (29 July 2026)
+
+Dan's full RepCount history (`sample/export_29 Jul 2026.csv`: 6,628 set rows,
+350 workouts, Mar 2022 → Jul 2026) imports directly in the app — Profile tab →
+"Import workout history". The importer is GENERIC: header-synonym column
+detection over an RFC 4180 parser (delimiter sniffed), so other apps' exports
+(Strong, Hevy…) map too; the RepCount file is the reference format.
+
+### Module split
+
+- `js/csv-import.js` — PURE (no DOM/IDB): `parseCSV`, `sniffDelimiter`,
+  `detectColumns`, `buildImportPlan(text, existingExercises, existingWorkouts)`.
+  The file's JSDoc is the pinned contract.
+- `js/db.js` — additive `bulkImport({exercises, workouts, sets}, onProgress)`:
+  chunked readwrite transactions (500/chunk), upsert-only, syncedAt nulled.
+- `js/screens/profile.js` — Data card, file picker, preview sheet (stats,
+  warnings, duplicate-day skip toggle), progress, result sheet.
+
+### Import semantics (decisions of record)
+
+- **Deterministic ids** from natural keys — workouts `import-w-<YYYYMMDD-HHMM>`,
+  sets `import-s-<…>-<kebab-exercise>-<n>`, new exercises `import-<kebab-name>`
+  — so re-importing the same file upserts in place: **idempotent, never deletes**.
+- Exercise names match the existing library trim/case-insensitively; unmatched
+  become custom exercises with muscleGroup from the Category column and
+  exerciseType inferred from the data (cardio / bw_assisted_reps on negative
+  weights / weight_reps / reps / time).
+- Negative weights = assisted bodyweight (RepCount convention): stored abs.
+- All weights kg (lb only if the header says so); durations seconds; naked
+  local ISO timestamps; set completedAt spread across the start→end window.
+- Row notes land on SETS (the app's inline set-notes field); Name → workout
+  name; Bodyweight → workout.bodyweightKg.
+- **Duplicate-day guard**: imported workouts landing on a date that already has
+  an app-logged workout are flagged; the preview defaults to skipping them
+  (Dan dual-logged in RepCount while testing this app, so the export overlaps
+  21–28 Jul). Toggleable in the preview sheet.

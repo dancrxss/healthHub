@@ -1,7 +1,7 @@
 // Service worker: precache the app shell, cache-first. Bump CACHE_VERSION in
 // the same commit as any change to cached asset patterns or request/response
 // shapes (CLAUDE.md §3).
-const CACHE_VERSION = 'v5';
+const CACHE_VERSION = 'v6';
 const CACHE_NAME = `healthhub-${CACHE_VERSION}`;
 
 const SHELL = [
@@ -13,6 +13,7 @@ const SHELL = [
   './js/util.js',
   './js/exercise-types.js',
   './js/inputs.js',
+  './js/csv-import.js',
   './js/db.js',
   './js/calc.js',
   './js/queries.js',
