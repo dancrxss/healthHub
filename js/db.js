@@ -280,6 +280,37 @@ export async function deleteTemplate(id) {
   return deleteRecord('templates', id);
 }
 
+// ---- Bulk import (additive API, 29 Jul 2026 — used by js/csv-import.js) ----
+/**
+ * Bulk upsert for the CSV importer. Batches puts into chunked readwrite
+ * transactions so thousands of records don't pay one transaction each.
+ * Upsert-only — never deletes; existing ids are overwritten in place, which is
+ * what makes a re-import of the same file a no-op. Every record is stored with
+ * syncedAt: null (same rule as putRecord). onProgress(done, total) fires after
+ * each committed chunk.
+ * @param {{exercises?: ExerciseRecord[], workouts?: WorkoutRecord[], sets?: SetRecord[]}} payload
+ * @param {(done: number, total: number) => void} [onProgress]
+ * @returns {Promise<{exercises: number, workouts: number, sets: number}>} counts written
+ */
+export async function bulkImport({ exercises = [], workouts = [], sets = [] }, onProgress = null) {
+  const db = await openDb();
+  const total = exercises.length + workouts.length + sets.length;
+  let done = 0;
+  const CHUNK = 500;
+  for (const [storeName, records] of [['exercises', exercises], ['workouts', workouts], ['sets', sets]]) {
+    for (let i = 0; i < records.length; i += CHUNK) {
+      const slice = records.slice(i, i + CHUNK);
+      const t = db.transaction(storeName, 'readwrite');
+      const store = t.objectStore(storeName);
+      for (const r of slice) store.put({ ...r, syncedAt: null });
+      await txDone(t);
+      done += slice.length;
+      if (onProgress) onProgress(done, total);
+    }
+  }
+  return { exercises: exercises.length, workouts: workouts.length, sets: sets.length };
+}
+
 // ---- Meta (settings, seed flag) ----
 /** @returns {Promise<any|undefined>} the stored value for key */
 export async function getMeta(key) {
