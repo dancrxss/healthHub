@@ -14,6 +14,7 @@ import {
   h, Icon, startWorkout,
   openSheet, closeSheet, sheetHeader, sheetGroup, sheetRow, confirmSheet,
 } from '../ui.js';
+import { enhanceInput } from '../inputs.js';
 
 const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -103,8 +104,9 @@ async function openTemplateEditor(existing) {
     ? { id: existing.id, name: existing.name, entries: existing.entries.map((e) => ({ ...e })) }
     : { id: null, name: '', entries: [] };
 
-  const nameInput = h('input', { class: 'sheet-input', type: 'text', placeholder: 'Routine name', 'aria-label': 'Routine name' });
+  const nameInput = h('input', { class: 'sheet-input', type: 'text', placeholder: 'Routine name', 'aria-label': 'Routine name', autocomplete: 'off' });
   nameInput.value = work.name;
+  enhanceInput(nameInput);
   nameInput.addEventListener('input', () => { work.name = nameInput.value; errorMsg.hidden = true; });
 
   const errorMsg = h('p', { class: 'sheet-message danger', text: 'Give the routine a name and at least one exercise.' });
@@ -167,8 +169,11 @@ async function openTemplateEditor(existing) {
 }
 
 function tplField(label, value, onCommit) {
-  const input = h('input', { class: 'tpl-num-input', type: 'number', inputmode: 'numeric', min: '1', 'aria-label': label });
+  // type=text + inputmode=numeric (not type=number) so the caret helpers in
+  // inputs.js can drive it — setSelectionRange throws on number inputs.
+  const input = h('input', { class: 'tpl-num-input', type: 'text', inputmode: 'numeric', enterkeyhint: 'done', autocomplete: 'off', 'aria-label': label });
   input.value = String(value);
+  enhanceInput(input, { replaceOnType: true });
   const commit = () => {
     let v = parseInt(input.value, 10);
     if (!Number.isFinite(v) || v < 1) v = 1;
@@ -176,7 +181,6 @@ function tplField(label, value, onCommit) {
     onCommit(v);
   };
   input.addEventListener('blur', commit);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
   return h('label', { class: 'tpl-field' }, h('span', { class: 'tpl-field-label', text: label }), input);
 }
 

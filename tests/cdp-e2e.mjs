@@ -164,6 +164,11 @@ async function finishActiveWorkout() {
 
 await send('Page.enable');
 await send('Runtime.enable');
+// Headless Chrome treats the page as unfocused, so element.focus() never
+// dispatches a focus event — which would silently no-op every focus-driven
+// assertion (caret placement, first-keystroke-replaces). Emulate focus so the
+// text-entry behaviour in js/inputs.js is genuinely exercised.
+await send('Emulation.setFocusEmulationEnabled', { enabled: true });
 // window.confirm is no longer used (sheets replaced it) — keep a harmless shim anyway.
 await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.confirm = () => true;' });
 await send('Page.navigate', { url: APP_URL });
@@ -252,6 +257,61 @@ try {
   })()`);
   const bbp6 = await evalJS(setsExpr(BBP));
   check('edit: set input commits 20 kg to set 2 without a re-render', bbp6[1]?.weightKg === 20 && bbp6[1]?.reps === 8, JSON.stringify(bbp6[1]));
+
+  // --- 6b. Text-entry behaviour (js/inputs.js) -----------------------------
+  // Numeric fields: focus puts the caret at the END (never at 0, never a
+  // select-all — that is what raised iOS's drag handles), and the FIRST typed
+  // character replaces the value so overwriting a duplicated set is one action.
+  const caret = await evalJS(`(async () => {
+    const row = document.querySelectorAll(${J(bbpCard + ' .set-row')})[1];
+    const i = row.querySelector('input.set-input[data-field="weight"]');
+    i.focus();
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 80)));
+    return { start: i.selectionStart, end: i.selectionEnd, len: i.value.length, val: i.value };
+  })()`);
+  check('input: focus puts the caret at the end with nothing selected',
+    caret.start === caret.len && caret.end === caret.len && caret.len > 0, JSON.stringify(caret));
+
+  const replaced = await evalJS(`(() => {
+    const row = document.querySelectorAll(${J(bbpCard + ' .set-row')})[1];
+    const i = row.querySelector('input.set-input[data-field="weight"]');
+    const before = i.value;
+    i.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: '7', bubbles: true, cancelable: true }));
+    return { before, after: i.value };
+  })()`);
+  check('input: first keystroke replaces the value (no prepending)',
+    replaced.before === '20' && replaced.after === '7', JSON.stringify(replaced));
+
+  // A second keystroke appends normally — pristine mode is one-shot.
+  const appended = await evalJS(`(() => {
+    const row = document.querySelectorAll(${J(bbpCard + ' .set-row')})[1];
+    const i = row.querySelector('input.set-input[data-field="weight"]');
+    i.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: '5', bubbles: true, cancelable: true }));
+    i.value = '75'; // the (uncancelled) native insert the browser would have done
+    i.blur();
+    return i.value;
+  })()`);
+  check('input: later keystrokes append (pristine mode is one-shot)', appended === '75', appended);
+  await poll('bench set 2 -> 75kg (db)', `(async () => {
+    const db = await import('./js/db.js');
+    const wid = localStorage.getItem('currentWorkoutId');
+    const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
+    return !!(s[1] && s[1].weightKg === 75);
+  })()`);
+  // Restore 20 kg — the PR assertions in step 15 expect it as the working set.
+  // Focus first: the blur handler skips the write when the value is unchanged
+  // since focus, and this field's focus snapshot is currently '75'.
+  await evalJS(`(() => {
+    const row = document.querySelectorAll(${J(bbpCard + ' .set-row')})[1];
+    const i = row.querySelector('input.set-input[data-field="weight"]');
+    i.focus(); i.value = '20'; i.blur(); return true;
+  })()`);
+  await poll('bench set 2 back to 20kg (db)', `(async () => {
+    const db = await import('./js/db.js');
+    const wid = localStorage.getItem('currentWorkoutId');
+    const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
+    return !!(s[1] && s[1].weightKg === 20);
+  })()`);
 
   // Notes are a direct inline input too — no sheet.
   await setField('bench s2 note', bbpCard, 1, 'notes', 'felt easy');

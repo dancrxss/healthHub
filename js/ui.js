@@ -270,6 +270,23 @@ export async function startWorkout(template = null) {
 // ----------------------------------------------------------------------------
 const sheetRoot = document.getElementById('sheet-root');
 
+// Background scroll lock. Without it the page scrolls behind an open sheet,
+// which reads as jank. position:fixed + a restored offset is the only thing
+// iOS honours; a counter keeps stacked sheets from unlocking early.
+let scrollLockY = 0;
+function lockScroll() {
+  if (document.body.classList.contains('scroll-locked')) return;
+  scrollLockY = window.scrollY;
+  document.body.style.top = `-${scrollLockY}px`;
+  document.body.classList.add('scroll-locked');
+}
+function unlockScroll() {
+  if (!document.body.classList.contains('scroll-locked')) return;
+  document.body.classList.remove('scroll-locked');
+  document.body.style.top = '';
+  window.scrollTo(0, scrollLockY);
+}
+
 export function openSheet(content) {
   const inner = typeof content === 'function' ? content() : content;
   const sheet = h('div', { class: 'sheet' }, inner);
@@ -277,8 +294,13 @@ export function openSheet(content) {
   const backdrop = h('div', { class: 'sheet-backdrop' }, sheet);
   backdrop.addEventListener('click', () => closeSheet());
   sheetRoot.append(backdrop);
+  if (!document.body.classList.contains('sheet-open')) lockScroll();
   document.body.classList.add('sheet-open');
-  requestAnimationFrame(() => backdrop.classList.add('open'));
+  // Force a layout pass so the browser has painted the off-screen start state
+  // before .open flips it — a single rAF is too early on iOS and the sheet
+  // pops in instead of sliding.
+  void sheet.offsetHeight;
+  backdrop.classList.add('open');
   return backdrop;
 }
 
@@ -290,12 +312,13 @@ export function closeSheet() {
   const done = () => top.remove();
   top.addEventListener('transitionend', done, { once: true });
   setTimeout(done, 260); // fallback if transitionend doesn't fire
-  if (all.length <= 1) document.body.classList.remove('sheet-open');
+  if (all.length <= 1) { document.body.classList.remove('sheet-open'); unlockScroll(); }
 }
 
 export function closeAllSheets() {
   sheetRoot.replaceChildren();
   document.body.classList.remove('sheet-open');
+  unlockScroll();
 }
 
 // ---- reusable sheet building blocks (shared styling for every screen) ----

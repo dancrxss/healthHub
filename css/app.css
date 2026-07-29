@@ -26,6 +26,22 @@
 
 * { box-sizing: border-box; }
 
+/* App-like feel: nothing outside a real input is selectable, so a long-press
+   can never drag a selection across the screen (reported from testing), and
+   there is no grey tap flash or double-tap zoom. Set on the universal selector
+   rather than just body — iOS lets selection escape a body-only rule. */
+*, *::before, *::after {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
 html, body {
   margin: 0;
   background: var(--bg);
@@ -37,30 +53,39 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 body {
-  min-height: 100dvh;
-  /* App-like feel: no long-press text selection / callouts on chrome, no grey
-     tap flash, no double-tap zoom. Inputs & textareas re-enable selection. */
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
-  -webkit-tap-highlight-color: transparent;
+  /* svh, not dvh: the small-viewport unit is static, so the whole layout does
+     not reflow every time the keyboard or the URL bar changes height. */
+  min-height: 100svh;
   touch-action: manipulation;
 }
-input, textarea {
-  user-select: text;
-  -webkit-user-select: text;
+/* Background scroll lock while a bottom sheet is open (see ui.js). */
+body.scroll-locked {
+  position: fixed;
+  left: 0; right: 0; width: 100%;
+  overflow: hidden;
+}
+
+/* Motion is decoration, never the mechanism. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 button { font-family: inherit; color: inherit; }
 input, textarea, select { font-family: inherit; }
 .muted { color: var(--muted); }
 
-/* Tactile press feedback on every tappable surface. */
+/* Tactile press feedback. Rows dim; pills and cards also give a little under
+   the finger. Kept to opacity/transform only, so it never triggers layout. */
 .round-btn, .w-finish, .add-set, .add-exercise, .ex-icon, .ex-menu, .set-menu,
 .sheet-btn, .sheet-row, .sheet-x, .sheet-tick, .rpe-chip, .seg-btn,
 .rest-bar, .resume-bar, .workout-card, .tab-card, .pick-row, .pick-cat,
 .pick-row-info, .pick-cancel, .superset-confirm, .meta-notes,
 .tab-head-btn {
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.1s ease-out, transform 0.1s ease-out;
 }
 .round-btn:active, .w-finish:active, .add-set:active, .add-exercise:active,
 .ex-icon:active, .ex-menu:active, .set-menu:active, .sheet-btn:active,
@@ -71,14 +96,22 @@ input, textarea, select { font-family: inherit; }
 .tab-head-btn:active {
   opacity: 0.6;
 }
+.round-btn:active, .w-finish:active, .sheet-btn:active, .sheet-x:active,
+.sheet-tick:active, .rpe-chip:active, .seg-btn:active, .tab-head-btn:active,
+.add-exercise:active, .superset-confirm:active, .tab-card:active {
+  transform: scale(0.97);
+}
+.rest-bar:active, .resume-bar:active { transform: translateX(-50%) scale(0.97); }
 #tabbar button { transition: color 0.15s ease; }
 
 /* Centre on desktop, mobile-first width. */
 #app { max-width: 560px; margin: 0 auto; }
 
 .screen {
-  min-height: 100dvh;
+  min-height: 100svh;
   padding-bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 12px);
+  /* Keep a focused field clear of the keyboard when the browser scrolls it in. */
+  scroll-padding-bottom: 120px;
 }
 .screen[hidden] { display: none; }
 
@@ -190,7 +223,16 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 10px;
   padding: calc(var(--safe-top) + 8px) 0 10px;
-  background: linear-gradient(var(--bg) 72%, rgba(11, 13, 15, 0));
+  /* Solid fill + a short fade in a pseudo-element: a full-height gradient on a
+     sticky box repaints the whole header on every scroll frame. */
+  background: var(--bg);
+}
+.w-head::after {
+  content: '';
+  position: absolute; left: 0; right: 0; top: 100%;
+  height: 12px;
+  background: linear-gradient(var(--bg), rgba(11, 13, 15, 0));
+  pointer-events: none;
 }
 .w-finish {
   flex: 0 0 auto;
@@ -266,6 +308,9 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
   border-radius: var(--radius);
   margin-bottom: 16px;
   padding: 4px 0 6px;
+  /* Each card is an independent layout/paint unit — adding a set only
+     re-lays-out that card, not the whole workout. */
+  contain: layout style;
 }
 .ex-card-head {
   display: flex; align-items: center;
@@ -289,6 +334,7 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
   display: flex; align-items: center; gap: 8px;
   padding: 8px 8px 8px 14px;
   border-top: 1px solid var(--line);
+  scroll-margin-bottom: 140px; /* clears the keyboard when a field is focused */
 }
 .set-row.warm { opacity: 0.62; }
 .set-badge {
@@ -330,7 +376,11 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
 }
 .set-input::placeholder { color: var(--faint); font-weight: 500; }
 .set-input:focus { outline: none; }
+.set-field { transition: background 0.12s ease-out; }
 .set-field:focus-within { background: var(--field); }
+/* iOS paints its own blue selection block over the value when handles appear;
+   we never select programmatically, and this keeps a stray double-tap subtle. */
+.set-input::selection, .meta-name::selection, .sheet-input::selection { background: rgba(78, 205, 214, 0.3); }
 /* Notes input: muted free text (still 16px so iOS doesn't zoom on focus). */
 .set-input.note-input { color: var(--muted); font-weight: 400; font-size: 16px; }
 
@@ -382,14 +432,16 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
 .sheet-backdrop.open { background: rgba(0, 0, 0, 0.55); }
 .sheet {
   width: 100%; max-width: 560px;
-  max-height: 86vh; overflow-y: auto;
+  max-height: 86svh; overflow-y: auto;
   overscroll-behavior: contain; /* sheet scroll never drags the page */
+  -webkit-overflow-scrolling: touch;
   background: #16191c;
   border-radius: 20px 20px 0 0;
   padding: 8px 14px calc(20px + var(--safe-bottom));
   transform: translateY(100%);
   transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
   will-change: transform;
+  backface-visibility: hidden;
 }
 .sheet-backdrop.open .sheet { transform: translateY(0); }
 

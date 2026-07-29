@@ -17,6 +17,7 @@ import {
   confirmSheet, optionSheet, exerciseTypeSheet,
 } from '../ui.js';
 import { normalizeExerciseType, typeLabel } from '../exercise-types.js';
+import { enhanceInput } from '../inputs.js';
 
 // Transient picker state. Persists across the two sub-screens except that query
 // and superset selection reset when the category (route key) changes.
@@ -201,8 +202,9 @@ export async function editExerciseSheet(ex, onSaved = reRenderPick) {
   const usedCount = (await db.listSetsForExercise(ex.id)).length;
   const canDelete = ex.isCustom === true && usedCount === 0 && typeof db.deleteExercise === 'function';
 
-  const nameInput = h('input', { class: 'sheet-input', type: 'text', 'aria-label': 'Exercise name', placeholder: 'Name' });
+  const nameInput = h('input', { class: 'sheet-input', type: 'text', 'aria-label': 'Exercise name', placeholder: 'Name', autocomplete: 'off' });
   nameInput.value = work.name;
+  enhanceInput(nameInput);
   nameInput.addEventListener('input', () => { work.name = nameInput.value; });
 
   const catVal = h('span', { class: 'sheet-row-value', text: titleCase(work.muscleGroup) });
@@ -255,7 +257,8 @@ export async function editExerciseSheet(ex, onSaved = reRenderPick) {
 async function createCustomSheet() {
   const work = { name: '', muscleGroup: currentGroup || 'other', exerciseType: 'weight_reps', isUnilateral: false, equipment: 'other' };
 
-  const nameInput = h('input', { class: 'sheet-input', type: 'text', 'aria-label': 'Exercise name', placeholder: 'Name' });
+  const nameInput = h('input', { class: 'sheet-input', type: 'text', 'aria-label': 'Exercise name', placeholder: 'Name', autocomplete: 'off' });
+  enhanceInput(nameInput);
   nameInput.addEventListener('input', () => { work.name = nameInput.value; });
 
   const catVal = h('span', { class: 'sheet-row-value', text: titleCase(work.muscleGroup) });

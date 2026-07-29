@@ -206,3 +206,55 @@ Charts per exercise beyond basic stats, Transfer Exercise Data, Replace
 exercise, Log-tab bulk Edit mode, template supersets. The spec’s screen-flow
 sections are superseded by the screenshots; every domain rule in CLAUDE.md §10
 still stands.
+
+## Phase 1.6 — On-device feel pass (29 July 2026)
+
+From Dan's on-device testing round. Screen structure is unchanged; this pass is
+about how the app *feels* under a thumb.
+
+### Text entry (`js/inputs.js` — new, shared by every input)
+
+The old behaviour selected-all on focus inside a rAF. On iOS that both lost the
+race with the native caret placement (caret landed at 0, so typing prepended)
+and raised the blue drag handles / magnifier. The rule now:
+
+- **Numeric fields** (`enhanceInput(el, { replaceOnType: true })`) — caret to the
+  END on focus, never a selection; the **first typed character replaces the whole
+  value**, so overwriting a duplicated set is one action (25 → type 3 → `3`).
+  Backspace and every later keystroke edit normally — pristine mode is one-shot.
+  Falls back to select-all where `beforeinput` is unsupported.
+- **Text fields** (`enhanceInput(el)`) — left alone, except that a caret parked at
+  0 on a non-empty value (the iOS bug) is moved to the end. A deliberate
+  mid-text tap is never overridden.
+- Enter always blurs, and blur is the single commit point for every field.
+- Template target inputs moved from `type=number` to `type=text` +
+  `inputmode=numeric` so `setSelectionRange` works on them.
+
+Last-session values stay as grey `placeholder`s on the set grid (Phase 1.5).
+
+### Selection & smoothness
+
+- `user-select: none` moved from `body` to the universal selector — iOS lets a
+  long-press drag a selection out of a body-only rule. Inputs/textareas opt back in.
+- Bottom sheets: forced layout pass before `.open` (a single rAF is too early on
+  iOS — the sheet popped instead of sliding), and the page behind is scroll-locked
+  (`body.scroll-locked`, position:fixed + restored offset).
+- `100dvh` → `100svh` on body/screens: the static unit doesn't reflow the whole
+  layout when the keyboard or URL bar changes height.
+- Sticky workout header: solid fill + a 12px `::after` fade, instead of a
+  full-height gradient repainting every scroll frame.
+- `contain: layout style` on exercise cards; press feedback limited to
+  opacity/transform; `prefers-reduced-motion` honoured.
+
+### Not possible in a PWA
+
+**Dynamic Island / lock-screen session timer.** These are iOS Live Activities
+(ActivityKit) — native-only, with no web API. The in-app minimise → Resume
+Workout pill is the closest equivalent and already ships. Revisit only if the
+app is ever wrapped natively.
+
+### Test harness note
+
+`tests/cdp-e2e.mjs` now enables `Emulation.setFocusEmulationEnabled`. Headless
+Chrome treats the page as unfocused, so `element.focus()` dispatches no focus
+event — without this, every focus-driven assertion silently passes on a no-op.

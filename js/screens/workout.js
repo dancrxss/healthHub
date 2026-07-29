@@ -29,6 +29,7 @@ import {
   confirmSheet, textareaSheet, setScreenCleanup,
 } from '../ui.js';
 import { normalizeExerciseType, blankSet } from '../exercise-types.js';
+import { enhanceInput } from '../inputs.js';
 import { editExerciseSheet } from './picker.js';
 
 // The screen re-renders itself after every structural mutation; renderTarget
@@ -237,13 +238,14 @@ function timerSheet() {
 
 // ---- meta card -------------------------------------------------------------
 function buildMetaCard(workout) {
-  const nameInput = h('input', { class: 'meta-name', type: 'text', placeholder: 'Name', 'aria-label': 'Workout name' });
+  const nameInput = h('input', { class: 'meta-name', type: 'text', placeholder: 'Name', 'aria-label': 'Workout name', autocomplete: 'off' });
   nameInput.value = workout.name || '';
+  enhanceInput(nameInput);
   nameInput.addEventListener('blur', () => mutateWorkout(workout.id, { name: nameInput.value.trim() || null }));
 
   const bwInput = h('input', { class: 'meta-bw-input', type: 'text', inputmode: 'decimal', enterkeyhint: 'done', 'aria-label': 'Bodyweight in kilograms', placeholder: '—' });
   bwInput.value = workout.bodyweightKg != null ? trimNum(workout.bodyweightKg) : '';
-  bwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); bwInput.blur(); } });
+  enhanceInput(bwInput, { replaceOnType: true });
   bwInput.addEventListener('blur', () => {
     const v = parseFloat(bwInput.value.replace(',', '.'));
     mutateWorkout(workout.id, { bodyweightKg: Number.isFinite(v) ? v : null });
@@ -388,13 +390,11 @@ function setInputCell(field, s, refSet, exercise) {
   });
   input.value = def.text();
 
+  // Numeric mode: caret to the end, first keystroke replaces (see inputs.js).
+  enhanceInput(input, { replaceOnType: true });
+
   let atFocus = input.value;
-  input.addEventListener('focus', () => {
-    atFocus = input.value;
-    // iOS drops the caret at position 0 — select everything so typing replaces.
-    requestAnimationFrame(() => { try { input.setSelectionRange(0, input.value.length); } catch { /* type mismatch */ } });
-  });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+  input.addEventListener('focus', () => { atFocus = input.value; });
   input.addEventListener('blur', () => {
     if (input.value === atFocus) return; // untouched — no write, no churn
     const raw = input.value.trim().replace(',', '.');
@@ -431,7 +431,7 @@ function buildSetRow(s, workout, exercise, refSets, isActive) {
 }
 
 // Notes is a direct inline input like Kg/Reps — no sheet. Free text, commits
-// on blur; caret goes to the end on focus (append, don't replace).
+// on blur; text mode, so tapping mid-word keeps the caret where you tapped.
 function noteField(s) {
   const input = h('input', {
     class: 'set-input note-input', 'data-field': 'notes',
@@ -439,13 +439,10 @@ function noteField(s) {
     'aria-label': 'Set notes',
   });
   input.value = s.notes || '';
+  enhanceInput(input);
 
   let atFocus = input.value;
-  input.addEventListener('focus', () => {
-    atFocus = input.value;
-    requestAnimationFrame(() => { try { input.setSelectionRange(input.value.length, input.value.length); } catch { /* noop */ } });
-  });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+  input.addEventListener('focus', () => { atFocus = input.value; });
   input.addEventListener('blur', () => {
     if (input.value === atFocus) return;
     const v = input.value.trim() || null;
