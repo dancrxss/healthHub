@@ -18,17 +18,19 @@
 
   <link rel="stylesheet" href="css/app.css" />
   <link rel="stylesheet" href="css/screens.css" />
+  <link rel="stylesheet" href="css/stats.css" />
 </head>
 <body>
   <!-- Screens: all present in the DOM, toggled by the hash router in ui.js.
        Each is filled by its render function; JS never uses innerHTML with data.
-       Tab screens (#s-log … #s-profile) show the bottom tab bar; the fullscreen
-       screens (#s-workout, #s-pick) hide it via the `fullscreen` body class. -->
+       Tab screens (#s-log, #s-routines, #s-stats) show the bottom tab bar; the
+       fullscreen screens (#s-workout, #s-pick, #s-settings) hide it via the
+       `fullscreen` body class. -->
   <main id="app">
     <section id="s-log" class="screen" hidden></section>
     <section id="s-routines" class="screen" hidden></section>
     <section id="s-stats" class="screen" hidden></section>
-    <section id="s-profile" class="screen" hidden></section>
+    <section id="s-settings" class="screen" hidden></section>
     <section id="s-workout" class="screen" hidden></section>
     <section id="s-pick" class="screen" hidden></section>
   </main>
@@ -55,13 +57,6 @@
         <path d="M6 20V10M12 20V4M18 20v-7" />
       </svg>
       <span>Statistics</span>
-    </button>
-    <button type="button" data-tab="profile" aria-label="Profile">
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="12" cy="8" r="4" />
-        <path d="M4 20c0-3.5 3.6-6 8-6s8 2.5 8 6" />
-      </svg>
-      <span>Profile</span>
     </button>
   </nav>
 

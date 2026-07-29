@@ -11,7 +11,7 @@ import {
   getTrainingFrequency, getWeeklyVolume, getPRs, getRecentWorkouts,
 } from '../queries.js';
 import {
-  h, Icon, formatWeight, formatDate, getUnits, kgToDisplay, optionSheet,
+  h, Icon, gearButton, formatWeight, formatDate, getUnits, kgToDisplay, optionSheet,
 } from '../ui.js';
 
 const PR_STORAGE_KEY = 'stats.prExercise';
@@ -51,7 +51,10 @@ export async function renderStats() {
   const prCard = await buildPrCard(loggedExercises, exMap, initialPr);
 
   screen.replaceChildren(h('div', { class: 'tab-screen' },
-    h('h1', { class: 'tab-title', text: 'Statistics' }),
+    h('div', { class: 'tab-head' },
+      h('h1', { class: 'tab-title', text: 'Statistics' }),
+      h('div', { class: 'tab-head-actions' }, gearButton()),
+    ),
     frequencyCard(freq),
     volumeCard(vol),
     prCard,

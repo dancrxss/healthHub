@@ -11,7 +11,7 @@
 import { listExercises } from '../db.js';
 import { getRecentWorkouts } from '../queries.js';
 import {
-  h, Icon, go,
+  h, Icon, go, gearButton,
   currentWorkout, getEntries, displayName, startWorkout,
 } from '../ui.js';
 
@@ -34,11 +34,14 @@ export async function renderLogTab() {
   const children = [
     h('div', { class: 'tab-head' },
       h('h1', { class: 'tab-title', text: 'Log' }),
-      h('button', {
-        class: 'round-btn tab-head-btn', 'data-action': 'start-workout', type: 'button',
-        'aria-label': active ? 'Resume workout' : 'Start workout',
-        onclick: () => (active ? go('#/workout') : startWorkout()),
-      }, Icon('plus')),
+      h('div', { class: 'tab-head-actions' },
+        h('button', {
+          class: 'round-btn tab-head-btn', 'data-action': 'start-workout', type: 'button',
+          'aria-label': active ? 'Resume workout' : 'Start workout',
+          onclick: () => (active ? go('#/workout') : startWorkout()),
+        }, Icon('plus')),
+        gearButton(),
+      ),
     ),
   ];
 

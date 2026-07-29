@@ -11,7 +11,7 @@ import {
 } from '../db.js';
 import { uid } from '../util.js';
 import {
-  h, Icon, startWorkout,
+  h, Icon, startWorkout, gearButton,
   openSheet, closeSheet, sheetHeader, sheetGroup, sheetRow, confirmSheet,
 } from '../ui.js';
 import { enhanceInput } from '../inputs.js';
@@ -29,10 +29,13 @@ export async function renderRoutines() {
   const children = [
     h('div', { class: 'tab-head' },
       h('h1', { class: 'tab-title', text: 'Routines' }),
-      h('button', {
-        class: 'round-btn tab-head-btn', type: 'button', 'aria-label': 'Create routine',
-        onclick: () => openTemplateEditor(null),
-      }, Icon('plus')),
+      h('div', { class: 'tab-head-actions' },
+        h('button', {
+          class: 'round-btn tab-head-btn', type: 'button', 'aria-label': 'Create routine',
+          onclick: () => openTemplateEditor(null),
+        }, Icon('plus')),
+        gearButton(),
+      ),
     ),
   ];
 

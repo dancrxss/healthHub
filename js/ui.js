@@ -21,7 +21,7 @@ import { renderPick } from './screens/picker.js';
 import { renderLogTab } from './screens/log.js';
 import { renderRoutines } from './screens/routines.js';
 import { renderStats } from './screens/stats.js';
-import { renderProfile } from './screens/profile.js';
+import { renderSettings } from './screens/settings.js';
 
 // ----------------------------------------------------------------------------
 // Constants
@@ -38,11 +38,11 @@ const screens = {
   log: document.getElementById('s-log'),
   routines: document.getElementById('s-routines'),
   stats: document.getElementById('s-stats'),
-  profile: document.getElementById('s-profile'),
+  settings: document.getElementById('s-settings'),
   workout: document.getElementById('s-workout'),
   pick: document.getElementById('s-pick'),
 };
-const TABS = ['log', 'routines', 'stats', 'profile'];
+const TABS = ['log', 'routines', 'stats'];
 
 // ----------------------------------------------------------------------------
 // Tiny DOM builder (hyperscript). No innerHTML anywhere.
@@ -117,11 +117,24 @@ const ICONS = {
   info: () => svg([svgEl('circle', { cx: 12, cy: 12, r: 9 }), p('M12 11v5'), p('M12 8h.01')]),
   lock: () => svg([svgEl('rect', { x: 5, y: 11, width: 14, height: 9, rx: 2 }), p('M8 11V8a4 4 0 0 1 8 0v3')]),
   swap: () => svg([p('M4 8h13l-3-3'), p('M20 16H7l3 3')]),
+  gear: () => svg([
+    svgEl('circle', { cx: 12, cy: 12, r: 3.2 }),
+    p('M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.58 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 8.86a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9c.22.63.8 1.05 1.47 1.06H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51.94z'),
+  ]),
 };
 
 /** A fresh SVG icon node by name. Unknown names return an empty group. */
 export function Icon(name) {
   return (ICONS[name] || (() => svg([])))();
+}
+
+/** The settings gear shown top-right of every tab header (replaced the
+ * Profile tab). Each call returns a fresh button. */
+export function gearButton() {
+  return h('button', {
+    class: 'round-btn tab-head-btn', type: 'button', 'aria-label': 'Settings',
+    'data-action': 'open-settings', onclick: () => go('#/settings'),
+  }, Icon('gear'));
 }
 
 // ----------------------------------------------------------------------------
@@ -444,9 +457,10 @@ async function route() {
   currentRouteKey = key;
 
   if (!a) { location.replace('#/log'); return; }
+  if (a === 'profile') { location.replace('#/settings'); return; } // legacy route
 
   const tab = TABS.includes(a) ? a : null;
-  document.body.classList.toggle('fullscreen', a === 'workout' || a === 'pick');
+  document.body.classList.toggle('fullscreen', a === 'workout' || a === 'pick' || a === 'settings');
   setActiveTab(tab);
 
   try {
@@ -454,8 +468,12 @@ async function route() {
       showScreen(tab);
       if (tab === 'log') await renderLogTab();
       else if (tab === 'routines') await renderRoutines();
-      else if (tab === 'stats') await renderStats();
-      else await renderProfile();
+      // Stats owns its sub-routes (#/stats/exercises, #/stats/exercise/:id,
+      // #/stats/category/:g, #/stats/overall/:metric …) — tab bar stays up.
+      else await renderStats(parts.slice(1));
+    } else if (a === 'settings') {
+      showScreen('settings');
+      await renderSettings();
     } else if (a === 'workout') {
       showScreen('workout');
       await renderWorkoutScreen(b || null);

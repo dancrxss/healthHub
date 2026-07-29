@@ -16,6 +16,10 @@
 }
 .tab-head .tab-title { margin: 8px 0; }
 .tab-head-btn { flex: 0 0 auto; }
+.tab-head-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+/* Settings screen (#/settings): fullscreen with its own back header. */
+.settings-screen { padding-top: 8px; }
+.round-btn-ghost { width: 40px; flex: 0 0 auto; }
 
 .tab-card {
   background: var(--card);

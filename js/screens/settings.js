@@ -1,8 +1,9 @@
 // ============================================================================
-// screens/profile.js — Profile tab (#/profile). Display-unit toggle, default
-// rest timer, CSV import, sync status and an about card.
+// screens/settings.js — the Settings screen (#/settings), opened from the gear
+// button on every tab header (it replaced the Profile tab, 29 Jul 2026).
+// Display-unit toggle, default rest timer, CSV import, sync status, about.
 //
-// The import flow lives here because the Profile tab owns it end to end: pick a
+// The import flow lives here because Settings owns it end to end: pick a
 // file -> csv-import.js turns it into a plan (pure, no DOM/DB) -> a preview
 // sheet -> db.bulkImport persists it. Nothing about the file is trusted, so
 // every scrap of file-derived text goes through textContent / h() — never
@@ -13,7 +14,7 @@ import * as timer from '../timer.js';
 import { getActiveAdapter } from '../sync.js';
 import { bulkImport, listExercises, listWorkouts } from '../db.js';
 import {
-  h, Icon, getUnits, mmss, openSheet, closeSheet, sheetHeader, sheetGroup,
+  h, Icon, go, getUnits, mmss, openSheet, closeSheet, sheetHeader, sheetGroup,
 } from '../ui.js';
 
 const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -30,18 +31,24 @@ function importDate(iso) {
 // ============================================================================
 // Render
 // ============================================================================
-export async function renderProfile() {
-  const screen = document.getElementById('s-profile');
+export async function renderSettings() {
+  const screen = document.getElementById('s-settings');
   const adapter = getActiveAdapter();
   const status = await adapter.status();
 
-  screen.replaceChildren(h('div', { class: 'tab-screen' },
-    h('h1', { class: 'tab-title', text: 'Profile' }),
-    settingsCard(),
-    dataCard(),
-    syncCard(status),
-    aboutCard(),
-  ));
+  screen.replaceChildren(
+    h('header', { class: 'pick-head' },
+      h('button', { class: 'round-btn', type: 'button', 'aria-label': 'Back', onclick: () => history.length > 1 ? history.back() : go('#/log') }, Icon('back')),
+      h('div', { class: 'pick-title', text: 'Settings' }),
+      h('span', { class: 'round-btn-ghost' }),
+    ),
+    h('div', { class: 'tab-screen settings-screen' },
+      settingsCard(),
+      dataCard(),
+      syncCard(status),
+      aboutCard(),
+    ),
+  );
 }
 
 // ---- settings card ----------------------------------------------------
@@ -86,7 +93,7 @@ function restRow() {
 
 function setUnits(v) {
   localStorage.setItem('settings.units', v);
-  renderProfile(); // re-render so the segmented control and any live weights reflect the change
+  renderSettings(); // re-render so the segmented control and any live weights reflect the change
 }
 
 // ---- data card (CSV import) ------------------------------------------------
@@ -259,7 +266,7 @@ async function runImport(plan, opts, root) {
 
   root.setAttribute('data-action', 'import-done');
   root.replaceChildren(
-    sheetHeader('Import complete', { onClose: () => { closeSheet(); renderProfile(); } }),
+    sheetHeader('Import complete', { onClose: () => { closeSheet(); renderSettings(); } }),
     h('p', {
       class: 'sheet-message',
       text: `Imported ${num(workouts.length)} workout${workouts.length === 1 ? '' : 's'}, ${num(sets.length)} set${sets.length === 1 ? '' : 's'}, ${num(exercises.length)} new exercise${exercises.length === 1 ? '' : 's'}.`,
@@ -274,7 +281,7 @@ async function runImport(plan, opts, root) {
     h('div', { class: 'sheet-actions' },
       h('button', {
         class: 'sheet-btn', type: 'button', 'data-action': 'import-done-close',
-        onclick: () => { closeSheet(); renderProfile(); },
+        onclick: () => { closeSheet(); renderSettings(); },
       }, 'Close'),
     ),
   );

@@ -1,0 +1,7 @@
+/* ============================================================================
+   css/stats.css — styles for the reworked Statistics screens: the customisable
+   module grid on #/stats (drag-and-drop edit mode), the Exercises/Categories/
+   Overall navigation lists, and the chart detail screens (metric + Group By
+   selectors, 3M/6M/1Y/All range pills, the SVG chart shell). Reuses app.css
+   tokens; chart geometry itself is drawn by js/charts.js.
+   ============================================================================ */

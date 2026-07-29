@@ -176,23 +176,30 @@ await send('Page.navigate', { url: APP_URL });
 let w1id = null;
 
 try {
-  // --- 1. Fresh app: seed ran, #/log renders, 4 tabs, empty log ---
+  // --- 1. Fresh app: seed ran, #/log renders, 3 tabs, empty log ---
   await poll('app boots to #/log', `location.hash === '#/log' && !document.getElementById('s-log').hidden`, 12000);
   const seedCount = await poll('seed exercises loaded', `import('./js/db.js').then(m => m.listExercises()).then(l => l.length)`);
   check('seed: 61 exercises seeded on fresh install (55 strength + 6 cardio)', seedCount === 61, `got ${seedCount}`);
-  check('shell: tab bar has 4 tabs', (await count('#tabbar button')) === 4, `got ${await count('#tabbar button')}`);
+  check('shell: tab bar has 3 tabs (Profile replaced by the settings gear)', (await count('#tabbar button')) === 3, `got ${await count('#tabbar button')}`);
   check('log: empty state has no month groups yet', (await count('#s-log .month-group')) === 0, `got ${await count('#s-log .month-group')}`);
 
   // --- 2. Tab switching: each tab shows its screen, hides the rest ---
-  const TABS = ['log', 'routines', 'stats', 'profile'];
+  const TABS = ['log', 'routines', 'stats'];
   let tabsOk = true; let tabDetail = '';
   for (const tab of TABS) {
     await clickSel(`tab ${tab}`, `#tabbar button[data-tab="${tab}"]`);
     await poll(`${tab} screen visible`, `!document.getElementById('s-${tab}').hidden`);
-    const othersHidden = await evalJS(`['log','routines','stats','profile'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
+    const othersHidden = await evalJS(`['log','routines','stats','settings'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
     if (!othersHidden) { tabsOk = false; tabDetail = `others not hidden on ${tab}`; }
   }
-  check('tabs: switching shows one screen and hides the other three', tabsOk, tabDetail);
+  check('tabs: switching shows one screen and hides the others', tabsOk, tabDetail);
+
+  // --- 2b. Settings: gear on the Log head opens #/settings (fullscreen) ---
+  await clickSel('log tab', '#tabbar button[data-tab="log"]');
+  await clickSel('settings gear', '#s-log [data-action="open-settings"]');
+  await poll('settings route', `location.hash === '#/settings' && !document.getElementById('s-settings').hidden`);
+  check('settings: gear opens the fullscreen settings screen', await evalJS(`document.body.classList.contains('fullscreen')`));
+  check('settings: legacy #/profile redirects', await evalJS(`(() => { location.hash = '#/profile'; return true; })()`) && await poll('redirected', `location.hash === '#/settings'`) && true);
 
   // --- 3. Start a workout from the Log tab ---
   await clickSel('log tab', '#tabbar button[data-tab="log"]');
@@ -475,9 +482,9 @@ try {
   // The walk has two real workouts dated TODAY, so the fixture's "today" row is
   // guaranteed to collide and must be skipped by default. The 2024 rows are far
   // enough in the past that nothing else in the suite can be disturbed by them.
-  await clickSel('profile tab', '#tabbar button[data-tab="profile"]');
-  await poll('import row rendered', `document.querySelector('#s-profile [data-action="import-csv"]') != null`);
-  check('profile: the Data card exposes an import row', await exists('#s-profile [data-action="import-csv"]'));
+  await evalJS(`(() => { location.hash = '#/settings'; return true; })()`);
+  await poll('import row rendered', `document.querySelector('#s-settings [data-action="import-csv"]') != null`);
+  check('settings: the Data card exposes an import row', await exists('#s-settings [data-action="import-csv"]'));
 
   // Fixture: one OLD workout (2 exercises — a seeded name + a novel one) and one
   // workout dated TODAY (the deliberate collision). Injected through a real
@@ -564,8 +571,8 @@ try {
     await poll('January 2024 month group', `[...document.querySelectorAll('#s-log .month-group-name')].some(e => e.textContent.trim() === 'January 2024')`));
 
   // Idempotency: the identical file a second time must upsert in place, never duplicate.
-  await clickSel('profile tab (re-import)', '#tabbar button[data-tab="profile"]');
-  await poll('import row rendered again', `document.querySelector('#s-profile [data-action="import-csv"]') != null`);
+  await evalJS(`(() => { location.hash = '#/settings'; return true; })()`);
+  await poll('import row rendered again', `document.querySelector('#s-settings [data-action="import-csv"]') != null`);
   await evalJS(injectCSV);
   await poll('import preview sheet open (2nd)', `document.querySelector('[data-action="import-preview"]') != null`, 12000);
   await clickSel('confirm import (2nd)', '[data-action="import-confirm"]');
