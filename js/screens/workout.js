@@ -30,7 +30,7 @@ import {
 } from '../ui.js';
 import { normalizeExerciseType, blankSet } from '../exercise-types.js';
 import { getSetting } from '../settings.js';
-import { playOnce, stagger } from '../motion.js';
+import { playOnce, playOut, stagger } from '../motion.js';
 import { enhanceInput } from '../inputs.js';
 import { editExerciseSheet } from './picker.js';
 
@@ -582,7 +582,15 @@ async function addSet(workout, exercise, exerciseId, exSets, refSets, isActive, 
 function setSheet(set, workout) {
   const warmRow = sheetRow({
     label: 'Warm-up', value: set.isWarmup ? 'Yes' : 'No',
-    onClick: async () => { closeSheet(); await mutateSet(set.id, { isWarmup: !set.isWarmup }); reRender(); },
+    onClick: async () => {
+      closeSheet();
+      await mutateSet(set.id, { isWarmup: !set.isWarmup });
+      await reRender();
+      // The badge's meaning just changed (a number became "W", or back) — pop
+      // the rebuilt badge so the eye lands on what actually changed.
+      const badge = document.querySelector(`.set-row[data-set-id="${CSS.escape(set.id)}"] .set-badge`);
+      playOnce(badge, 'anim-badge-pop');
+    },
   });
 
   let curRpe = set.rpe ?? null;
@@ -612,7 +620,16 @@ function setSheet(set, workout) {
       closeSheet();
       confirmSheet({
         title: 'Delete set?', confirmLabel: 'Delete', danger: true,
-        onConfirm: async () => { await deleteSet(set.id); await renumberExercise(workout.id, set.exerciseId); reRender(); },
+        onConfirm: async () => {
+          // Collapse the row while the delete runs, not after it: the DB work
+          // and the animation overlap, so the exit costs no extra time.
+          const row = document.querySelector(`.set-row[data-set-id="${CSS.escape(set.id)}"]`);
+          const leaving = playOut(row, 'anim-set-row-out');
+          await deleteSet(set.id);
+          await renumberExercise(workout.id, set.exerciseId);
+          await leaving;
+          reRender();
+        },
       });
     },
   });

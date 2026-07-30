@@ -70,6 +70,35 @@
   100% { opacity: 1; transform: translateY(0) scaleY(1); }
 }
 
+/* A set row leaving. Collapses into the row above rather than blinking out,
+   so the gap the re-render closes is one the eye already saw coming. */
+@keyframes set-row-out {
+  0%   { opacity: 1; transform: scaleY(1); }
+  100% { opacity: 0; transform: scaleY(0.55) translateY(-6px); }
+}
+
+/* A card leaving a list — same idea, a touch more travel. */
+@keyframes card-out {
+  0%   { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.94) translateY(-8px); }
+}
+
+/* A badge whose meaning just changed (a set number becoming a warm-up W).
+   Small, so it gets `pop` — on something this size the overshoot reads as
+   emphasis rather than bounce. */
+@keyframes badge-pop {
+  0%   { transform: scale(0.55); }
+  55%  { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
+
+/* A pie slice arriving: grows out of the donut's centre, staggered around the
+   ring so the whole thing reads as one sweep. */
+@keyframes slice-in {
+  0%   { opacity: 0; transform: scale(0.82); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
 /* A pill arriving from off-screen bottom. Centred pills carry
    translateX(-50%), so it is baked into every frame — dropping it would fling
    the pill to the right edge mid-animation. */
@@ -100,6 +129,13 @@
 @keyframes card-in {
   0%   { opacity: 0; transform: translateY(12px) scale(0.985); }
   100% { opacity: 1; transform: none; }
+}
+
+/* The chart's value readout arriving under a finger — fast, from the point it
+   describes. Never replayed while scrubbing (see charts.js showReadout). */
+@keyframes readout-in {
+  0%   { opacity: 0; transform: scale(0.94); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 /* SVG series reveal. --draw-len is set inline from getTotalLength(). */
@@ -136,6 +172,25 @@
   animation-delay: calc(var(--stagger-i, 0) * 45ms);
 }
 .anim-accent-flash { animation: accent-flash 620ms var(--ease-out-quint) both; }
+.anim-set-row-out {
+  transform-origin: top center;
+  animation: set-row-out var(--dur-exit) var(--ease-out-quint) both;
+}
+.anim-card-out {
+  transform-origin: center;
+  animation: card-out var(--dur-exit) var(--ease-out-quint) both;
+}
+.anim-badge-pop { animation: badge-pop var(--dur-enter) var(--ease-pop) both; }
+/* A lighter settle than .anim-card-in: for a list that is already on screen
+   and merely changing mode, where a full rise would read as a page reload. */
+.anim-card-settle {
+  animation: card-settle var(--dur-base) var(--ease-settle) both;
+  animation-delay: calc(var(--stagger-i, 0) * 28ms);
+}
+@keyframes card-settle {
+  0%   { opacity: 0.45; transform: scale(0.99); }
+  100% { opacity: 1; transform: none; }
+}
 .anim-pill-in { animation: pill-in var(--dur-enter) var(--ease-pop) both; }
 .anim-pill-out { animation: pill-out var(--dur-exit) var(--ease-out-quint) both; }
 /* One soft breath of accent when the rest timer reaches zero — the single

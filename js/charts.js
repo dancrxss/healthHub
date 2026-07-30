@@ -520,12 +520,36 @@ export function renderChart(container, spec) {
   // entrance sits behind a latch: exactly one reveal per dataset. A new points
   // array (a genuinely different dataset) re-arms it; zooming never does.
   let hasRevealed = false;
+  let revealLatchTimer = null;
+  /** Longest entrance (bar stagger cap + duration) plus a little slack. */
+  const REVEAL_WINDOW_MS = 900;
 
   /** True when this draw should animate the series in. */
   function shouldReveal() {
     return !hasRevealed && motionOK() && zoom == null;
   }
-  function markRevealed() { hasRevealed = true; }
+
+  /**
+   * Close the latch once the entrance has had time to PLAY, not on the next
+   * frame.
+   *
+   * A chart is redrawn several times around mount — the ResizeObserver's
+   * initial callback, then again whenever layout settles after the card sizes
+   * itself — and each redraw replaces every series node. Latching immediately
+   * (or one frame later) meant a redraw painted statically over the animation
+   * that had just started, so the reveal was applied and thrown away without
+   * ever being seen. Holding the latch open for the length of the entrance
+   * lets any redraw in that window re-apply it to its fresh nodes — the chart
+   * is still arriving, so re-arriving is correct — and after the window it can
+   * never fire again, which is what keeps it out of the gesture path.
+   */
+  function markRevealed() {
+    if (revealLatchTimer) clearTimeout(revealLatchTimer);
+    revealLatchTimer = setTimeout(() => {
+      revealLatchTimer = null;
+      hasRevealed = true;
+    }, REVEAL_WINDOW_MS);
+  }
 
   /**
    * Wipe the line on from the left and fade its area in beneath it. The
@@ -941,6 +965,13 @@ export function renderChart(container, spec) {
     // Dimmer steps of the SAME accent — no new hues.
     const opacityFor = (i) => clamp(1 - i * (0.72 / Math.max(1, slices.length - 1)), 0.26, 1);
 
+    // The reveal sweeps around the ring: each slice grows out of the centre,
+    // delayed by where it starts, so the donut assembles clockwise rather than
+    // appearing all at once. Stagger derives from the ANGLE, not the index, so
+    // one dominant slice doesn't hold up the small ones behind it.
+    const reveal = shouldReveal();
+    const sliceDelay = (a) => Math.round((a / 360) * 320);
+
     let angle = 0;
     for (let i = 0; i < slices.length; i++) {
       const share = slices[i].value / total;
@@ -949,23 +980,31 @@ export function renderChart(container, spec) {
       const a1 = angle + sweep;
       angle = a1;
       if (!(sweep > 0)) continue;
-      el('path', {
+      const slice = el('path', {
         d: donutSlicePath(cx, cy, rOuter, rInner, a0, Math.min(a1, 360)),
         fill: theme.accent,
         opacity: opacityFor(i),
         stroke: theme.bg,
         'stroke-width': 1.5,
       }, gPlot);
+      if (reveal) {
+        slice.style.transformBox = 'view-box';
+        slice.style.transformOrigin = `${cx}px ${cy}px`;
+        slice.style.animation = `slice-in var(--dur-base) var(--ease-settle) ${sliceDelay(a0)}ms both`;
+      }
     }
 
     // Legend: swatch, label, value + share.
     for (let i = 0; i < slices.length; i++) {
       const y = legendY + i * rowH;
       if (y + rowH > H + 2) break;
-      el('rect', {
+      const swatch = el('rect', {
         x: legendX, y: y + 4, width: 10, height: 10, rx: 3, ry: 3,
         fill: theme.accent, opacity: opacityFor(i),
       }, gPlot);
+      if (reveal) {
+        swatch.style.animation = `float-in var(--dur-base) var(--ease-settle) ${240 + i * 40}ms both`;
+      }
       const pct = (slices[i].value / total) * 100;
       const pctStr = `${pct >= 10 ? Math.round(pct) : Number(pct.toFixed(1))}%`;
       const valStr = `${fmt(slices[i].value)}  ${pctStr}`;
@@ -979,6 +1018,7 @@ export function renderChart(container, spec) {
       }, gPlot);
     }
 
+    if (reveal) markRevealed();
     geom = { kind: 'pie', theme, hits: [], interactive: false };
   }
 
@@ -986,10 +1026,16 @@ export function renderChart(container, spec) {
 
   function hideReadout() {
     clear(gOver);
+    gOver.style.animation = ''; // so the next appearance animates again
   }
 
   function showReadout(px, py) {
     if (!geom || !geom.hits || !geom.hits.length) return;
+    // Only fade in when the readout is APPEARING. Scrubbing between points
+    // rebuilds this group continuously, and re-fading on every move would
+    // strobe under the finger — the eye should read it as one label sliding
+    // along, not a new label each frame.
+    const appearing = !gOver.firstChild;
     clear(gOver);
     const theme = geom.theme;
     // Vertical charts are picked along x; horizontal bars along y.
@@ -1043,6 +1089,14 @@ export function renderChart(container, spec) {
       x: bx + w / 2, y: by + (line1 ? 31 : 16),
       fill: theme.text, 'font-size': 13, 'font-weight': '600', 'text-anchor': 'middle',
     }, gOver);
+
+    if (appearing && motionOK()) {
+      gOver.style.transformBox = 'view-box';
+      gOver.style.transformOrigin = `${best.x}px ${best.y}px`;
+      gOver.style.animation = 'readout-in var(--dur-quick) var(--ease-out-quint) both';
+    } else {
+      gOver.style.animation = '';
+    }
   }
 
   // --- pointer gestures ----------------------------------------------------
@@ -1259,6 +1313,7 @@ export function renderChart(container, spec) {
       destroyed = true;
       if (rafId && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
       rafId = 0;
+      if (revealLatchTimer) { clearTimeout(revealLatchTimer); revealLatchTimer = null; }
       if (ro) { try { ro.disconnect(); } catch { /* ignore */ } ro = null; }
       svg.removeEventListener('pointerdown', onPointerDown);
       svg.removeEventListener('pointermove', onPointerMove);

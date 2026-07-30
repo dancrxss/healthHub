@@ -61,6 +61,11 @@
   background: none; color: inherit; text-align: left;
 }
 .stats-module-openable { cursor: pointer; }
+/* The card gives under a press — but only when the press is on its chrome.
+   :active propagates from descendants, so a finger on the chart (which reads
+   values rather than opening anything) would otherwise squash the whole card
+   and promise a navigation that never comes. */
+.stats-module-openable:has(.stats-chart:active):active { transform: none; }
 .stats-module-chev {
   display: inline-flex; align-items: center;
   flex: 0 0 auto;
@@ -196,8 +201,21 @@ body.stats-dragging { cursor: grabbing; }
 .chart-select-chev svg { width: 18px; height: 18px; }
 
 /* Range pills: the shared segmented control, stretched full width. */
-.chart-ranges { display: flex; width: 100%; margin-bottom: 12px; }
-.chart-ranges .seg-btn { flex: 1; padding: 9px 4px; }
+.chart-ranges { position: relative; display: flex; width: 100%; margin-bottom: 12px; }
+.chart-ranges .seg-btn { flex: 1; padding: 9px 4px; position: relative; z-index: 1; }
+/* The single sliding marker. Its own background replaces .seg-btn.on's, so
+   the two can never both be visible mid-slide. */
+.chart-ranges .seg-btn.on { background: none; }
+.seg-indicator {
+  position: absolute;
+  top: 3px; bottom: 3px; left: 3px;
+  width: calc((100% - 6px) / var(--seg-count, 4));
+  border-radius: 999px;
+  background: #3a3f44;
+  transform: translateX(calc(var(--seg-index, 0) * 100%));
+  transition: transform var(--dur-base) var(--ease-spring);
+  pointer-events: none;
+}
 
 .chart-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .chart-type-row { display: inline-flex; flex: 0 0 auto; }

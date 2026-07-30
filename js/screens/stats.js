@@ -38,7 +38,7 @@ import {
   kgToDisplay, mmss,
 } from '../ui.js';
 import { uid } from '../util.js';
-import { playOnce, stagger, springHome, motionOK } from '../motion.js';
+import { playOnce, playOut, stagger, flip, springHome, motionOK } from '../motion.js';
 
 const PR_STORAGE_KEY = 'stats.prExercise';
 const CHART_PREFS_KEY = 'stats.chartPrefs';
@@ -72,6 +72,8 @@ const liveCharts = [];
 let renderToken = 0;
 /** Grid edit mode (drag handles + remove + add). Reset on any sub-route. */
 let editing = false;
+/** True for the one render caused by toggling edit mode (lighter entrance). */
+let editToggled = false;
 /** Cached exercise/logged index for the current stats visit. */
 let indexCache = null;
 /** Context from the last main-grid render (exercise map etc.) for card refreshes. */
@@ -257,7 +259,7 @@ async function renderGrid(screen, token) {
     h('div', { class: 'tab-head-actions' },
       h('button', {
         class: 'stats-edit-btn', type: 'button', 'data-action': 'stats-edit',
-        onclick: () => { editing = !editing; rerenderGrid(); },
+        onclick: () => { editing = !editing; editToggled = true; rerenderGrid(); },
       }, editing ? 'Done' : 'Edit'),
       gearButton(),
     ),
@@ -285,8 +287,11 @@ async function renderGrid(screen, token) {
   ));
 
   // The page assembles as ONE motion: module cards and the navigation below
-  // share a single stagger sequence rather than reading as two lists.
-  stagger([...grid.children, nav, overall]);
+  // share a single stagger sequence rather than reading as two lists. Toggling
+  // edit mode gets the lighter `settle` instead — the list is already on
+  // screen and merely changing mode; a full rise would read as a page reload.
+  stagger([...grid.children, nav, overall], editToggled ? 'anim-card-settle' : 'anim-card-in');
+  editToggled = false;
 
   if (editing) bindDragAndDrop(grid);
 }
@@ -304,7 +309,10 @@ function refreshModule(id) {
   const spec = getStatsLayout().find((m) => m.id === id);
   if (!el || !spec || !gridCtx) { rerenderGrid(); return; }
   destroyChartsIn(el);
-  el.replaceWith(buildModuleCard(spec, gridCtx));
+  const next = buildModuleCard(spec, gridCtx);
+  el.replaceWith(next);
+  // One card changed, not the list: it settles on its own, with no stagger.
+  playOnce(next, 'anim-card-settle');
 }
 
 function buildModuleCard(spec, ctx) {
@@ -606,8 +614,18 @@ function removeModule(spec) {
     title: 'Remove card?',
     message: 'It can be added again from Edit.',
     confirmLabel: 'Remove', danger: true,
-    onConfirm: () => {
+    onConfirm: async () => {
+      // Collapse the card, glide the survivors up into the gap, and only then
+      // re-render. Without the FLIP the remaining cards would jump.
+      const screen = document.getElementById('s-stats');
+      const grid = screen && screen.querySelector('.stats-grid');
+      const card = grid && grid.querySelector(`[data-module-id="${CSS.escape(spec.id)}"]`);
       setStatsLayout(getStatsLayout().filter((m) => m.id !== spec.id));
+      if (card && grid) {
+        const survivors = [...grid.children].filter((el) => el !== card);
+        await playOut(card, 'anim-card-out');
+        flip(survivors, () => card.remove());
+      }
       rerenderGrid();
     },
   });
@@ -1142,16 +1160,30 @@ async function renderChartScreen(screen, scope, metricId, token) {
     }, groupValue, h('span', { class: 'chart-select-chev' }, Icon('down'))),
   );
 
+  // The active range is marked by ONE indicator that slides between the pills
+  // rather than a background that cuts from button to button. The pills are
+  // equal-width (flex: 1), so the indicator is a fraction of the row and moves
+  // by whole multiples of itself — transform only, no layout.
+  const rangeIndicator = h('span', { class: 'seg-indicator', 'aria-hidden': 'true' });
+  const moveIndicator = () => {
+    const i = Math.max(0, RANGE_OPTIONS.findIndex((r) => r.value === state.range));
+    rangeIndicator.style.setProperty('--seg-index', String(i));
+  };
   const rangeButtons = RANGE_OPTIONS.map((r) => h('button', {
     class: 'seg-btn' + (state.range === r.value ? ' on' : ''),
     type: 'button', 'data-range': r.value,
     onclick: () => {
       state.range = r.value;
       for (const b of rangeButtons) b.classList.toggle('on', b.dataset.range === r.value);
+      moveIndicator();
       persist(); draw();
     },
   }, r.label));
-  const rangeRow = h('div', { class: 'seg-toggle chart-ranges' }, ...rangeButtons);
+  const rangeRow = h('div', {
+    class: 'seg-toggle chart-ranges',
+    style: `--seg-count:${RANGE_OPTIONS.length}`,
+  }, rangeIndicator, ...rangeButtons);
+  moveIndicator();
 
   const typeOptions = CHART_TYPES.filter((t) => t.value !== 'pie' || pieAllowed(scope, state.metric));
   const typeButtons = typeOptions.map((t) => h('button', {

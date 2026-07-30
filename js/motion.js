@@ -42,6 +42,35 @@ export function playOnce(el, cls) {
 }
 
 /**
+ * Play an EXIT animation and resolve when it has finished, so the caller can
+ * remove the element (or re-render over it) afterwards. Always resolves —
+ * never rejects and never hangs — because the DOM change it gates must happen
+ * whether or not the animation ran.
+ *
+ * The class is deliberately left on: the element is about to be removed, and
+ * stripping it first would flash the element back to full opacity.
+ *
+ * @param {HTMLElement} el
+ * @param {string} cls an exit class from css/motion.css, e.g. 'anim-card-out'
+ * @returns {Promise<void>}
+ */
+export function playOut(el, cls) {
+  if (!el || !motionOK()) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener('animationend', done);
+      resolve();
+    };
+    el.addEventListener('animationend', done);
+    el.classList.add(cls);
+    setTimeout(done, 600); // hidden tab, or no animation applied at all
+  });
+}
+
+/**
  * Stagger a list of elements into view. Sets --stagger-i (read by
  * .anim-card-in) and caps the index so a long list never waits ages.
  * @param {Iterable<HTMLElement>} els
