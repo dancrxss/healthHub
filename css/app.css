@@ -79,13 +79,18 @@ input, textarea, select { font-family: inherit; }
 .muted { color: var(--muted); }
 
 /* Tactile press feedback. Rows dim; pills and cards also give a little under
-   the finger. Kept to opacity/transform only, so it never triggers layout. */
+   the finger.
+   The asymmetry is the whole trick: the BASE rule carries the spring, so
+   letting go overshoots home by ~4% and the control feels sprung; the :active
+   rule carries a fast ease, so finger-down is acknowledged instantly. Press
+   quick, release with weight. Opacity/transform only — never layout. */
 .round-btn, .w-finish, .add-set, .add-exercise, .ex-icon, .ex-menu, .set-menu,
 .sheet-btn, .sheet-row, .sheet-x, .sheet-tick, .rpe-chip, .seg-btn,
 .rest-bar, .resume-bar, .workout-card, .tab-card, .pick-row, .pick-cat,
 .pick-row-info, .pick-cancel, .superset-confirm, .meta-notes,
 .tab-head-btn {
-  transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+  transition: opacity var(--dur-base) var(--ease-spring),
+              transform var(--dur-base) var(--ease-spring);
 }
 .round-btn:active, .w-finish:active, .add-set:active, .add-exercise:active,
 .ex-icon:active, .ex-menu:active, .set-menu:active, .sheet-btn:active,
@@ -95,6 +100,8 @@ input, textarea, select { font-family: inherit; }
 .pick-cancel:active, .superset-confirm:active, .meta-notes:active,
 .tab-head-btn:active {
   opacity: 0.6;
+  transition: opacity var(--dur-press) ease-out,
+              transform var(--dur-press) ease-out;
 }
 .round-btn:active, .w-finish:active, .sheet-btn:active, .sheet-x:active,
 .sheet-tick:active, .rpe-chip:active, .seg-btn:active, .tab-head-btn:active,
@@ -102,7 +109,11 @@ input, textarea, select { font-family: inherit; }
   transform: scale(0.97);
 }
 .rest-bar:active, .resume-bar:active { transform: translateX(-50%) scale(0.97); }
-#tabbar button { transition: color 0.15s ease; }
+
+/* The active tab's icon lifts and settles — the only motion in the bar. */
+#tabbar button { transition: color var(--dur-base) var(--ease-out-quint); }
+#tabbar button svg { transition: transform var(--dur-base) var(--ease-spring); }
+#tabbar button.active svg { transform: translateY(-2px); }
 
 /* Centre on desktop, mobile-first width. */
 #app { max-width: 560px; margin: 0 auto; }
@@ -426,10 +437,32 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
   position: fixed; inset: 0;
   display: flex; align-items: flex-end; justify-content: center;
   background: rgba(0, 0, 0, 0);
-  transition: background 0.22s ease;
+  transition: background var(--dur-exit) var(--ease-out-quint);
   pointer-events: auto;
 }
-.sheet-backdrop.open { background: rgba(0, 0, 0, 0.55); }
+.sheet-backdrop.open {
+  background: rgba(0, 0, 0, 0.55);
+  transition: background var(--dur-enter) var(--ease-settle);
+}
+/* A touch of depth behind the sheet — the page recedes rather than just
+   dimming. Blur is the one non-transform property allowed here; it is on a
+   single full-screen layer that is composited anyway. */
+@supports ((backdrop-filter: blur(3px)) or (-webkit-backdrop-filter: blur(3px))) {
+  .sheet-backdrop {
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+    transition: background var(--dur-exit) var(--ease-out-quint),
+                backdrop-filter var(--dur-exit) var(--ease-out-quint),
+                -webkit-backdrop-filter var(--dur-exit) var(--ease-out-quint);
+  }
+  .sheet-backdrop.open {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    transition: background var(--dur-enter) var(--ease-settle),
+                backdrop-filter var(--dur-enter) var(--ease-settle),
+                -webkit-backdrop-filter var(--dur-enter) var(--ease-settle);
+  }
+}
 .sheet {
   width: 100%; max-width: 560px;
   max-height: 86svh; overflow-y: auto;
@@ -438,12 +471,17 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
   background: #16191c;
   border-radius: 20px 20px 0 0;
   padding: 8px 14px calc(20px + var(--safe-bottom));
-  transform: translateY(100%);
-  transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* Rises on a spring and settles; leaves faster and without ceremony. The
+     slight scale means it comes toward you rather than merely sliding. */
+  transform: translateY(100%) scale(0.985);
+  transition: transform var(--dur-exit) var(--ease-out-quint);
   will-change: transform;
   backface-visibility: hidden;
 }
-.sheet-backdrop.open .sheet { transform: translateY(0); }
+.sheet-backdrop.open .sheet {
+  transform: translateY(0) scale(1);
+  transition: transform var(--dur-enter) var(--ease-spring);
+}
 
 .sheet-head {
   display: grid; grid-template-columns: 40px 1fr 40px; align-items: center;

@@ -271,8 +271,11 @@ button.tab-card {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   -webkit-appearance: none; appearance: none;
-  transition: background-color 0.2s ease;
+  transition: background-color var(--dur-base) var(--ease-out-quint);
 }
+/* The knob springs across and stretches as it goes — it leans into the travel,
+   squashes as it arrives, then rounds out. Both directions, driven by the
+   `.on` class alone so aria-checked and the state hook stay untouched. */
 .toggle::after {
   content: '';
   position: absolute; top: 2px; left: 2px;
@@ -280,12 +283,28 @@ button.tab-card {
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  transition: transform 0.2s ease;
+  transform-origin: center;
+  animation: knob-off var(--dur-base) var(--ease-spring) both;
 }
 .toggle.on { background: var(--accent); }
-.toggle.on::after { transform: translateX(20px); }
+.toggle.on::after { animation: knob-on var(--dur-base) var(--ease-spring) both; }
+
+@keyframes knob-on {
+  0%   { transform: translateX(0) scaleX(1) scaleY(1); }
+  45%  { transform: translateX(11px) scaleX(1.16) scaleY(0.9); }
+  100% { transform: translateX(20px) scaleX(1) scaleY(1); }
+}
+@keyframes knob-off {
+  0%   { transform: translateX(20px) scaleX(1) scaleY(1); }
+  45%  { transform: translateX(9px) scaleX(1.16) scaleY(0.9); }
+  100% { transform: translateX(0) scaleX(1) scaleY(1); }
+}
 .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .toggle, .toggle::after { transition: none; }
+  .toggle { transition: none; }
+  /* The knob's position lives in the keyframes, so it still needs its end
+     state when animation is switched off globally. */
+  .toggle::after { animation: none; transform: translateX(0); }
+  .toggle.on::after { animation: none; transform: translateX(20px); }
 }

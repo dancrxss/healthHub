@@ -82,6 +82,14 @@
   100% { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.94); }
 }
 
+/* The rest pill's one acknowledgement that time is up: a single swell, not a
+   flash and not a repeat. */
+@keyframes pill-done {
+  0%   { transform: translateX(-50%) scale(1); }
+  40%  { transform: translateX(-50%) scale(1.08); }
+  100% { transform: translateX(-50%) scale(1); }
+}
+
 /* Screens and sheets drifting into place — the "floaty" layer. */
 @keyframes float-in {
   0%   { opacity: 0; transform: translateY(8px) scale(0.994); }
@@ -128,6 +136,11 @@
   animation-delay: calc(var(--stagger-i, 0) * 45ms);
 }
 .anim-accent-flash { animation: accent-flash 620ms var(--ease-out-quint) both; }
+.anim-pill-in { animation: pill-in var(--dur-enter) var(--ease-pop) both; }
+.anim-pill-out { animation: pill-out var(--dur-exit) var(--ease-out-quint) both; }
+/* One soft breath of accent when the rest timer reaches zero — the single
+   moment in the app where the user is actually waiting for a signal. */
+.anim-pill-done { animation: pill-done 520ms var(--ease-out-quint) both; }
 
 /* will-change is a promise, not decoration. JS strips these classes on
    animationend (see js/motion.js) so the compositor releases the layer

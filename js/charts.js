@@ -47,7 +47,17 @@
 // - Axis tick labels use a bare compact number (matching the reference shot);
 //   the readout and pie legend use the full "value + unit" format. A caller
 //   supplied yFormat overrides both.
+//
+// - REVEAL MOTION (css/motion.css supplies the keyframes and the tokens):
+//   a chart animates itself into existence exactly ONCE per dataset. draw()
+//   also runs on every pinch/pan frame and on every resize, so every entrance
+//   sits behind the `hasRevealed` latch — re-running it there would strobe and
+//   would spend the 60fps gesture budget on decoration. Nothing in the reveal
+//   path is load-bearing: skip it, cancel it or interrupt it and the chart is
+//   already in its final state.
 // ============================================================================
+
+import { motionOK } from './motion.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const THIN_SPACE = ' ';
@@ -505,6 +515,40 @@ export function renderChart(container, spec) {
     return { W: w > 0 ? w : 300, H: h > 0 ? h : 260 };
   }
 
+  // ---- reveal motion ------------------------------------------------------
+  // draw() also runs on every pinch/pan frame and every resize, so the
+  // entrance sits behind a latch: exactly one reveal per dataset. A new points
+  // array (a genuinely different dataset) re-arms it; zooming never does.
+  let hasRevealed = false;
+
+  /** True when this draw should animate the series in. */
+  function shouldReveal() {
+    return !hasRevealed && motionOK() && zoom == null;
+  }
+  function markRevealed() { hasRevealed = true; }
+
+  /**
+   * Wipe the line on from the left and fade its area in beneath it. The
+   * dasharray is cleared when the animation ends so a later zoom redraw can
+   * never inherit a dashed stroke.
+   */
+  function revealLine(line, area) {
+    let len = 0;
+    try { len = line.getTotalLength(); } catch { len = 0; }
+    if (!Number.isFinite(len) || len <= 0) return; // degenerate path: paint it
+    line.style.setProperty('--draw-len', String(len));
+    line.style.strokeDasharray = String(len);
+    line.style.animation = 'draw-line var(--dur-enter) var(--ease-out-quint) both';
+    const done = () => {
+      line.style.strokeDasharray = '';
+      line.style.animation = '';
+      line.style.removeProperty('--draw-len');
+      line.removeEventListener('animationend', done);
+    };
+    line.addEventListener('animationend', done);
+    if (area) area.style.animation = 'float-in var(--dur-enter) var(--ease-settle) both';
+  }
+
   function draw() {
     if (destroyed) return;
     const { W, H } = size();
@@ -679,6 +723,8 @@ export function renderChart(container, spec) {
       const band = plotW / Math.max(1, visSpan);
       const barW = clamp(band * 0.62, 2, 44);
       const zeroY = clamp(yOf(0), plotT, plotB);
+      const reveal = shouldReveal();
+      let barSeq = 0;
       for (const i of idx) {
         const cx = xOf(i);
         const v = pts[i].value;
@@ -686,13 +732,23 @@ export function renderChart(container, spec) {
         if (!num(cx) || !num(vy)) continue;
         const top = Math.min(vy, zeroY);
         const h = Math.max(1, Math.abs(vy - zeroY));
-        el('path', {
+        const bar = el('path', {
           d: roundedRectPath(cx - barW / 2, top, barW, h, 2, 0),
           fill: theme.accent,
           opacity: 0.85,
         }, gSeries);
+        if (reveal) {
+          // Grow out of the baseline, gently staggered. --ease-settle, never
+          // --ease-pop: a wall of bouncing bars is exactly the dated failure
+          // the motion system warns about.
+          bar.style.transformBox = 'fill-box';
+          bar.style.transformOrigin = zeroY >= vy ? 'bottom' : 'top';
+          bar.style.animation = `bar-grow var(--dur-enter) var(--ease-settle) ${Math.min(barSeq * 25, 400)}ms both`;
+          barSeq += 1;
+        }
         hits.push({ i, x: cx, y: vy, label: pts[i].label, value: v });
       }
+      if (reveal) markRevealed();
     } else {
       // Draw one neighbour beyond each edge so the line reaches the border;
       // the clip path trims the overhang.
@@ -716,8 +772,8 @@ export function renderChart(container, spec) {
         }
         // Faint area under the line, then the line itself.
         const areaD = `${d} L${coords[coords.length - 1].x.toFixed(2)} ${plotB} L${coords[0].x.toFixed(2)} ${plotB} Z`;
-        el('path', { d: areaD, fill: `url(#${gradId})`, stroke: 'none' }, gSeries);
-        el('path', {
+        const area = el('path', { d: areaD, fill: `url(#${gradId})`, stroke: 'none' }, gSeries);
+        const line = el('path', {
           d,
           fill: 'none',
           stroke: theme.accent,
@@ -725,6 +781,10 @@ export function renderChart(container, spec) {
           'stroke-linejoin': 'round',
           'stroke-linecap': 'round',
         }, gSeries);
+        if (shouldReveal()) {
+          revealLine(line, area);
+          markRevealed();
+        }
       }
       for (const c of coords) {
         if (c.i >= firstVis && c.i <= lastVis) {
@@ -1183,7 +1243,10 @@ export function renderChart(container, spec) {
       const prevPoints = cfg.rawPoints;
       cfg = normalise(next);
       applyTouchAction(); // interactive may have flipped with the new spec
-      if (cfg.rawPoints !== prevPoints) resetZoom();
+      if (cfg.rawPoints !== prevPoints) {
+        resetZoom();
+        hasRevealed = false; // genuinely new data earns a fresh reveal
+      }
       pointers.clear();
       mode = 'none';
       down = null;

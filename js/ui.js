@@ -15,6 +15,7 @@ import { seedIfEmpty } from './seed.js';
 import * as timer from './timer.js';
 import { uid, nowISO, todayISO } from './util.js';
 import { EXERCISE_TYPE_GROUPS, blankSet } from './exercise-types.js';
+import { playOnce, motionOK } from './motion.js';
 
 import { renderWorkoutScreen } from './screens/workout.js';
 import { renderPick } from './screens/picker.js';
@@ -488,7 +489,14 @@ async function route() {
     console.error('route error', err);
   }
   updateResumeBar(a); // fire-and-forget; hides itself when nothing is in progress
-  if (changed) window.scrollTo(0, 0);
+  if (changed) {
+    window.scrollTo(0, 0);
+    // A genuine route change drifts its screen into place. Deliberately NOT on
+    // re-renders of the same screen: committing a set must never re-animate
+    // the workout, and the screen is interactive throughout regardless.
+    const shown = screens[tab || a];
+    if (shown && shown.firstElementChild) playOnce(shown.firstElementChild, 'anim-float-in');
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -497,19 +505,66 @@ async function route() {
 const restBar = document.getElementById('rest-bar');
 const restBarTime = document.getElementById('rest-bar-time');
 
+// ---- pill show/hide -------------------------------------------------------
+// The pills pop in and drop out rather than blinking. `hidden` stays the
+// source of truth (CSS and the test suite both read it): it is cleared before
+// the entrance and set only once the exit has finished, so an animating pill
+// is always genuinely visible. Pending exits are tracked per element so a
+// re-show mid-exit cancels cleanly instead of hiding the pill a beat later.
+const pillExits = new WeakMap();
+
+function cancelPillExit(el) {
+  const t = pillExits.get(el);
+  if (t) { clearTimeout(t); pillExits.delete(el); }
+  el.classList.remove('anim-pill-out');
+}
+
+function pillShow(el) {
+  cancelPillExit(el);
+  if (!el.hidden) return; // already up — don't re-play the entrance
+  el.hidden = false;
+  playOnce(el, 'anim-pill-in');
+}
+
+function pillHide(el) {
+  cancelPillExit(el);
+  if (el.hidden) return;
+  if (!motionOK()) { el.hidden = true; return; }
+  el.classList.remove('anim-pill-in');
+  el.classList.add('anim-pill-out');
+  const done = () => {
+    el.removeEventListener('animationend', done);
+    cancelPillExit(el);
+    el.hidden = true;
+  };
+  el.addEventListener('animationend', done);
+  // Fallback: an animation on a hidden tab may never fire animationend, and a
+  // pill that never hides would sit over the tab bar forever.
+  pillExits.set(el, setTimeout(done, 500));
+}
+
 function showRestBar(secs) {
   restBarTime.textContent = mmss(secs);
-  restBar.hidden = false;
+  pillShow(restBar);
   document.body.classList.add('timer-active');
 }
 function hideRestBar() {
-  restBar.hidden = true;
+  pillHide(restBar);
   document.body.classList.remove('timer-active');
 }
 restBar.addEventListener('click', () => { timer.cancel(); hideRestBar(); });
 
 function onTimerTick(secs) { if (secs > 0) showRestBar(secs); else hideRestBar(); }
-function onTimerDone() { hideRestBar(); }
+function onTimerDone() {
+  // Rest is over: one swell to catch the eye, then leave.
+  if (!restBar.hidden && motionOK()) {
+    playOnce(restBar, 'anim-pill-done');
+    setTimeout(() => hideRestBar(), 520);
+    document.body.classList.remove('timer-active');
+    return;
+  }
+  hideRestBar();
+}
 
 // ----------------------------------------------------------------------------
 // Resume bar (shell): when a workout is in progress but minimised (any route
@@ -524,7 +579,7 @@ resumeBar.addEventListener('click', () => go('#/workout'));
 
 function hideResumeBar() {
   if (resumeTimer) { clearInterval(resumeTimer); resumeTimer = null; }
-  resumeBar.hidden = true;
+  pillHide(resumeBar);
   document.body.classList.remove('resume-active');
 }
 
@@ -539,7 +594,7 @@ async function updateResumeBar(routeHead) {
   tickFn();
   if (resumeTimer) clearInterval(resumeTimer);
   resumeTimer = setInterval(tickFn, 1000);
-  resumeBar.hidden = false;
+  pillShow(resumeBar);
   document.body.classList.add('resume-active');
 }
 

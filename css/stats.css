@@ -109,6 +109,18 @@
   will-change: transform;
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.55);
   outline-color: var(--accent);
+  /* The shadow deepens over the lift rather than snapping on — the card looks
+     like it leaves the surface. Transform is driven per-frame by JS, so only
+     the shadow transitions here. */
+  transition: box-shadow var(--dur-base) var(--ease-settle);
+  animation: card-lift 320ms var(--ease-spring);
+}
+/* Squash on the way up, swell as it clears the surface, settle. The animation
+   runs once at pick-up; the per-frame transform takes over from there. */
+@keyframes card-lift {
+  0%   { scale: 1 0.985; }
+  45%  { scale: 1.012 1.03; }
+  100% { scale: 1 1; }
 }
 .stats-module.dragging .stats-drag-handle { cursor: grabbing; color: var(--accent); }
 /* Siblings settle back with a FLIP transition applied inline by stats.js. */

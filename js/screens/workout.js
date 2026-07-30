@@ -30,6 +30,7 @@ import {
 } from '../ui.js';
 import { normalizeExerciseType, blankSet } from '../exercise-types.js';
 import { getSetting } from '../settings.js';
+import { playOnce, stagger } from '../motion.js';
 import { enhanceInput } from '../inputs.js';
 import { editExerciseSheet } from './picker.js';
 
@@ -38,6 +39,8 @@ import { editExerciseSheet } from './picker.js';
 // same target.
 let renderTarget = null;
 let elapsedTimer = null; // the active-workout elapsed ticker (one at a time)
+/** Which workout last played its entrance, so re-renders don't repeat it. */
+let lastAnimatedWorkoutId = null;
 const reRender = () => renderWorkoutScreen(renderTarget);
 function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
 
@@ -174,6 +177,14 @@ export async function renderWorkoutScreen(workoutId) {
   }, Icon('plus'), h('span', { text: 'Add Exercise' })));
 
   screen.replaceChildren(h('div', { class: 'workout-scroll' }, ...children));
+
+  // Stagger the exercise cards in when this workout is first opened. Guarded
+  // on the workout id so structural re-renders (deleting a set, toggling a
+  // warm-up) don't re-animate the whole screen underneath the user.
+  if (lastAnimatedWorkoutId !== workout.id) {
+    lastAnimatedWorkoutId = workout.id;
+    stagger(screen.querySelectorAll('.ex-card'));
+  }
 }
 
 // ---- header ----------------------------------------------------------------
@@ -484,6 +495,11 @@ function setInputCell(field, s, refSet, exercise) {
     // May add weightKg to `changes` (and paint the sibling input) before we write.
     if (field === 'reps') autofillWeight(input, s, refSet, exercise, changes);
     mutateSet(s.id, changes); // persist quietly — no re-render, keyboard stays put
+    // One quiet breath of accent on the row: the app's only "that landed"
+    // signal. Only past the unchanged-value guard above, so simply tabbing
+    // through fields never lights anything up.
+    const row = input.closest('.set-row');
+    if (row) playOnce(row, 'anim-accent-flash');
   });
 
   return h('label', { class: 'set-field' }, h('span', { class: 'fl', text: def.label }), input);
@@ -554,6 +570,10 @@ async function addSet(workout, exercise, exerciseId, exSets, refSets, isActive, 
   exSets.push(base);
   const row = buildSetRow(base, workout, exercise, refSets, isActive);
   card.querySelector('.ex-card-foot').before(row);
+  // THE hero animation: the new row squashes on landing, overshoots tall and
+  // settles, hinged at its top so the card grows downwards. Purely decorative
+  // — the row is already in the DOM and committed before this runs.
+  playOnce(row, 'anim-set-row-in');
   // Auto rest timer: active workout only, and only when the setting is on.
   if (isActive && getSetting('autoStartTimer')) timer.start();
 }

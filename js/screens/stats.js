@@ -38,6 +38,7 @@ import {
   kgToDisplay, mmss,
 } from '../ui.js';
 import { uid } from '../util.js';
+import { playOnce, stagger, springHome, motionOK } from '../motion.js';
 
 const PR_STORAGE_KEY = 'stats.prExercise';
 const CHART_PREFS_KEY = 'stats.chartPrefs';
@@ -282,6 +283,10 @@ async function renderGrid(screen, token) {
     h('div', { class: 'stats-section-label', text: 'Overall Statistics' }),
     overall,
   ));
+
+  // The page assembles as ONE motion: module cards and the navigation below
+  // share a single stagger sequence rather than reading as two lists.
+  stagger([...grid.children, nav, overall]);
 
   if (editing) bindDragAndDrop(grid);
 }
@@ -737,6 +742,12 @@ function bindDragAndDrop(grid) {
   }
 }
 
+/** Clamp a tilt angle symmetrically; NaN-safe (a stray velocity means level). */
+function clampTilt(deg, max) {
+  if (!Number.isFinite(deg)) return 0;
+  return deg < -max ? -max : deg > max ? max : deg;
+}
+
 function startDrag(e, grid) {
   if (e.button != null && e.button > 0) return;
   const handle = e.currentTarget;
@@ -761,10 +772,19 @@ function startDrag(e, grid) {
   // inside it — the drag would freeze at the first swap. The grid never moves.
   try { grid.setPointerCapture(e.pointerId); } catch (err) { /* mouse w/o capture */ }
 
+  // Carry physics: the card leans into its own motion. Velocity is smoothed
+  // from successive pointer deltas (raw per-frame deltas jitter badly) and the
+  // tilt is clamped hard — past ~2deg it stops reading as weight and starts
+  // reading as a bug. Computed inside the existing update path; no second loop.
+  let velocity = 0;
+  let lastPointerY = e.clientY;
+  const MAX_TILT = 2;
+
   const applyTransform = () => {
     const wanted = startOffsetTop + (pointerY - startPointerY) + (window.scrollY - startScrollY);
     translateY = Math.round(wanted - card.offsetTop);
-    card.style.transform = `translateY(${translateY}px) scale(1.03)`;
+    const tilt = motionOK() ? clampTilt(velocity * 0.06, MAX_TILT) : 0;
+    card.style.transform = `translateY(${translateY}px) scale(1.03) rotate(${tilt}deg)`;
   };
 
   const flip = (mutate) => {
@@ -827,6 +847,9 @@ function startDrag(e, grid) {
   const onMove = (ev) => {
     if (!active || ev.pointerId !== e.pointerId) return;
     pointerY = ev.clientY;
+    // Exponential smoothing: mostly history, a little of the new delta.
+    velocity = velocity * 0.7 + (pointerY - lastPointerY) * 0.3;
+    lastPointerY = pointerY;
     update();
   };
 
@@ -840,20 +863,24 @@ function startDrag(e, grid) {
     window.removeEventListener('pointercancel', finish);
     try { grid.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
 
-    // Settle the lifted card back into its slot, then persist the new order.
-    card.style.transition = 'transform 160ms ease';
-    card.style.transform = '';
-    // Guard on target: a transition inside the card (e.g. a chart) also bubbles.
-    const clear = (ev) => {
-      if (ev && ev.target !== card) return;
-      card.removeEventListener('transitionend', clear);
+    // Drop: the card springs into its slot on the house curve rather than
+    // easing flatly into it. springHome sets the final (empty) transform
+    // immediately and animates FROM the lifted one, so the DOM is correct even
+    // if the animation is skipped or cut short.
+    const clear = () => {
+      if (cleared) return;
+      cleared = true;
       card.style.transition = '';
+      card.style.transform = '';
       card.classList.remove('dragging');
       grid.classList.remove('stats-grid-dragging');
       document.body.classList.remove('stats-dragging');
     };
-    card.addEventListener('transitionend', clear);
-    setTimeout(() => clear(), 240);
+    let cleared = false;
+    const from = card.style.transform || `translateY(${translateY}px) scale(1.03)`;
+    const anim = springHome(card, from, { duration: 420 });
+    if (anim && anim.finished) anim.finished.then(clear).catch(clear);
+    setTimeout(clear, 460); // fallback: WAAPI unsupported, or the tab is hidden
 
     const order = cards().map((el) => el.dataset.moduleId);
     const layout = getStatsLayout();
