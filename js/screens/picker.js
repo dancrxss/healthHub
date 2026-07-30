@@ -179,6 +179,7 @@ async function confirmSuperset() {
     if (!sets.some((s) => s.exerciseId === id)) await createInitialSet(w.id, id);
   }
   ps.selected = [];
+  ps.mode = 'regular'; // the superset is added — the next visit starts normal
   go('#/workout');
 }
 

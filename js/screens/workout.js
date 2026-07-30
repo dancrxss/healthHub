@@ -29,6 +29,7 @@ import {
   confirmSheet, textareaSheet, setScreenCleanup,
 } from '../ui.js';
 import { normalizeExerciseType, blankSet } from '../exercise-types.js';
+import { getSetting } from '../settings.js';
 import { enhanceInput } from '../inputs.js';
 import { editExerciseSheet } from './picker.js';
 
@@ -39,6 +40,44 @@ let renderTarget = null;
 let elapsedTimer = null; // the active-workout elapsed ticker (one at a time)
 const reRender = () => renderWorkoutScreen(renderTarget);
 function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
+
+// ---- keep screen on (Screen Wake Lock API) ---------------------------------
+// Held only while the ACTIVE workout screen is on show and the setting is on.
+// The lock is dropped by the browser whenever the tab is hidden, so we re-ask
+// on visibilitychange. Every path is feature-detected and swallows rejections:
+// no support (Safari < 16.4, Firefox), a denied request or a lock released
+// under us must never surface as an error on the logging screen.
+let wakeLock = null;
+let wakeHandler = null; // the visibilitychange listener, when installed
+
+async function requestWakeLock() {
+  if (wakeLock || !wakeHandler) return; // already held, or the screen has gone
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    if (!wakeHandler) { lock.release().catch(() => { /* left mid-await */ }); return; }
+    wakeLock = lock;
+    lock.addEventListener?.('release', () => { if (wakeLock === lock) wakeLock = null; });
+  } catch { /* denied, or not permitted in this state — carry on without it */ }
+}
+
+function startWakeLock() {
+  if (wakeHandler) return; // already running for this screen
+  if (!getSetting('keepScreenOn')) return;
+  if (!navigator.wakeLock || typeof navigator.wakeLock.request !== 'function') return;
+  wakeHandler = () => { if (document.visibilityState === 'visible') requestWakeLock(); };
+  document.addEventListener('visibilitychange', wakeHandler);
+  requestWakeLock();
+}
+
+function stopWakeLock() {
+  if (wakeHandler) { document.removeEventListener('visibilitychange', wakeHandler); wakeHandler = null; }
+  const lock = wakeLock;
+  wakeLock = null;
+  if (lock) { try { lock.release().catch(() => { /* already gone */ }); } catch { /* noop */ } }
+}
+
+/** Route-change teardown for the active workout screen. */
+function teardownWorkoutScreen() { stopElapsed(); stopWakeLock(); }
 
 // ---- small data helpers ----------------------------------------------------
 async function mutateWorkout(id, changes) {
@@ -78,9 +117,15 @@ export async function renderWorkoutScreen(workoutId) {
   stopElapsed(); // clear any prior ticker before this (re-)render installs one
   const isActive = workoutId == null;
   const screen = document.getElementById('s-workout');
+  // Structural re-renders of the SAME active workout keep the existing lock —
+  // dropping and re-taking it would let the screen dim for a frame. Leaving the
+  // screen goes through setScreenCleanup instead, which does release it.
+  if (!isActive) stopWakeLock();
 
   const workout = isActive ? await currentWorkout() : await getWorkout(workoutId);
   if (!workout) { go('#/log'); return; }
+
+  if (isActive) startWakeLock(); // no-op unless supported, enabled, and not already held
 
   const sets = await listSetsForWorkout(workout.id);
   const exList = await listExercises();
@@ -144,7 +189,7 @@ function buildHeader(workout, isActive) {
     const tickFn = () => { el.textContent = formatElapsed(Date.now() - new Date(workout.startedAt)); };
     tickFn();
     elapsedTimer = setInterval(tickFn, 1000);
-    setScreenCleanup(stopElapsed); // route change tears the ticker down
+    setScreenCleanup(teardownWorkoutScreen); // route change stops the ticker and drops the wake lock
     centre.append(el);
 
     return h('header', { class: 'w-head' },
@@ -380,6 +425,40 @@ function cellDef(field, s, exercise) {
   }
 }
 
+/**
+ * Autofill weight: entering reps on a set that still has no weight pulls the
+ * weight straight from the matching last-session set — the grey placeholder
+ * you were looking at becomes real. It is deliberately timid; it bails on any
+ * hint that the user has an opinion about the weight.
+ *
+ * Mutates `changes` in place so the caller persists reps and weight in a
+ * SINGLE mutateSet, and writes the sibling input directly so only that row's
+ * DOM moves (no re-render, no lost keyboard).
+ *
+ * @param {HTMLInputElement} repsInput the reps field that just committed
+ * @param {object} s      the live set record (already carrying `changes`)
+ * @param {object|null} refSet  last session's matching set
+ * @param {object|null} exercise
+ * @param {object} changes the commit payload, extended here
+ */
+function autofillWeight(repsInput, s, refSet, exercise, changes) {
+  if (!getSetting('autofillWeight')) return;
+  if (!(changes.reps > 0)) return;            // blanked to 0, or nonsense typed
+  if (s.weightKg > 0) return;                 // already has a weight — never overwrite
+  if (!refSet || !(refSet.weightKg > 0)) return; // nothing to copy from
+  // Only for layouts that actually show a weight (skips reps/time/cardio/notes).
+  const type = normalizeExerciseType(exercise ? exercise.exerciseType : null);
+  const layout = LAYOUTS[type] || LAYOUTS.weight_reps;
+  if (!layout.some((line) => line.includes('weight'))) return;
+  const row = repsInput.closest('.set-row');
+  const weightInput = row && row.querySelector('input[data-field="weight"]');
+  if (!weightInput || weightInput.value !== '') return; // the user typed one — leave it
+
+  changes.weightKg = refSet.weightKg;
+  s.weightKg = refSet.weightKg;
+  weightInput.value = trimNum(kgToDisplay(refSet.weightKg));
+}
+
 function setInputCell(field, s, refSet, exercise) {
   const def = cellDef(field, s, exercise);
   const input = h('input', {
@@ -402,6 +481,8 @@ function setInputCell(field, s, refSet, exercise) {
     const changes = def.commit(Number.isFinite(n) ? n : 0);
     Object.assign(s, changes); // keep the in-memory record current for Add Set duplication
     input.value = def.text(); // canonical display (blanks a zero back to placeholder)
+    // May add weightKg to `changes` (and paint the sibling input) before we write.
+    if (field === 'reps') autofillWeight(input, s, refSet, exercise, changes);
     mutateSet(s.id, changes); // persist quietly — no re-render, keyboard stays put
   });
 
@@ -473,7 +554,8 @@ async function addSet(workout, exercise, exerciseId, exSets, refSets, isActive, 
   exSets.push(base);
   const row = buildSetRow(base, workout, exercise, refSets, isActive);
   card.querySelector('.ex-card-foot').before(row);
-  if (isActive) timer.start(); // auto rest timer for the active workout only
+  // Auto rest timer: active workout only, and only when the setting is on.
+  if (isActive && getSetting('autoStartTimer')) timer.start();
 }
 
 // ---- per-set sheet ---------------------------------------------------------

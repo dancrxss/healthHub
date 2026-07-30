@@ -1,6 +1,10 @@
 // Rest timer. Auto-started by the logging flow on set completion.
 // Survives reloads: the end timestamp is persisted to localStorage, so an
 // installed PWA that gets backgrounded mid-rest resumes the countdown.
+//
+// No DOM imports here — settings.js is pure localStorage, so it is safe.
+
+import { getSetting } from './settings.js';
 
 const STORAGE_KEY = 'resttimer.endsAt';
 const DEFAULT_REST_KEY = 'settings.restSeconds';
@@ -60,7 +64,43 @@ function finish() {
   localStorage.removeItem(STORAGE_KEY);
   stopTicking();
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  if (getSetting('timerSound')) beep();
   onDone?.();
+}
+
+// ---- rest-finished beep ----------------------------------------------------
+// A short two-note chime via the Web Audio API — no asset to cache, no <audio>
+// element to keep alive. The context is created lazily on the first beep and
+// reused: iOS suspends contexts created outside a user gesture, so we resume
+// on each play and simply give up if the platform refuses. Never throws.
+
+let audioCtx = null;
+
+/** One sine note with a smooth in/out envelope (a hard start/stop clicks). */
+function note(ctx, freq, at, dur) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(freq, at);
+  gain.gain.setValueAtTime(0.0001, at);
+  gain.gain.exponentialRampToValueAtTime(0.3, at + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(at);
+  osc.stop(at + dur + 0.02);
+}
+
+function beep() {
+  try {
+    const Ctx = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+    if (!Ctx) return;
+    if (!audioCtx) audioCtx = new Ctx();
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => { /* blocked until a gesture */ });
+    const t0 = audioCtx.currentTime + 0.01;
+    note(audioCtx, 880, t0, 0.15);
+    note(audioCtx, 660, t0 + 0.18, 0.15);
+  } catch { /* audio unavailable or blocked — the vibration is enough */ }
 }
 
 function stopTicking() {

@@ -169,6 +169,9 @@ await send('Runtime.enable');
 // assertion (caret placement, first-keystroke-replaces). Emulate focus so the
 // text-entry behaviour in js/inputs.js is genuinely exercised.
 await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+// Touch emulation: without it Input.dispatchTouchEvent is silently dropped,
+// so the drag-and-drop step would no-op. Needed for real pointer sequences.
+await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 // window.confirm is no longer used (sheets replaced it) — keep a harmless shim anyway.
 await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.confirm = () => true;' });
 await send('Page.navigate', { url: APP_URL });
@@ -584,11 +587,189 @@ try {
   await clickSel('close import result (2nd)', '[data-action="import-done-close"]');
   await poll('import sheet dismissed (2nd)', `document.querySelector('[data-action="import-done"]') == null`);
 
+  // --- 15c. Statistics rework: module grid, drill-ins, chart screens --------
+  await evalJS(`(() => { location.hash = '#/stats'; return true; })()`);
+  await poll('stats grid rendered', `document.querySelector('#s-stats .stats-grid') != null`);
+  check('stats: default layout renders 3 module cards',
+    (await poll('module cards', `document.querySelectorAll('#s-stats .stat-card[data-module-id]').length`)) === 3,
+    `got ${await count('#s-stats .stat-card[data-module-id]')}`);
+  check('stats: Exercises + Categories navigation rows present',
+    await exists('#s-stats [data-stat-nav="exercises"]') && await exists('#s-stats [data-stat-nav="categories"]'));
+  const overallRows = await evalJS(`(async () => {
+    const sd = await import('./js/stats-data.js');
+    return { dom: document.querySelectorAll('#s-stats [data-metric]').length, catalogue: sd.OVERALL_METRICS.length };
+  })()`);
+  check('stats: one Overall Statistics row per catalogue metric', overallRows.dom === overallRows.catalogue, JSON.stringify(overallRows));
+
+  // Chart detail: overall volume — svg renders, range pill re-renders it.
+  await evalJS(`(() => { location.hash = '#/stats/overall/volume'; return true; })()`);
+  await poll('overall volume chart screen', `document.querySelector('#s-stats .chart-screen svg') != null`, 12000);
+  check('stats: overall volume chart renders an SVG with plotted content',
+    await evalJS(`document.querySelectorAll('#s-stats .chart-screen svg *').length > 10`));
+  check('stats: range pills present (3M/6M/1Y/All)', (await count('#s-stats [data-range]')) >= 4, `got ${await count('#s-stats [data-range]')}`);
+  await clickSel('range pill All', '#s-stats [data-range="all"]');
+  // Settle on either a live chart or an empty state, and report which.
+  const rangeState = await poll('chart settled after range change', `(() => {
+    const scr = document.querySelector('#s-stats .chart-screen');
+    if (!scr) return { ok: false, why: 'no chart screen' };
+    const svgN = scr.querySelectorAll('svg *').length;
+    if (svgN > 10) return { ok: true, svgN };
+    const empty = scr.querySelector('.stats-empty, .muted');
+    if (empty) return { ok: false, why: 'empty state: ' + empty.textContent.trim() };
+    return null; // still loading — keep polling
+  })()`, 8000).catch((e) => ({ ok: false, why: e.message }));
+  check('stats: switching range keeps a live chart on screen', rangeState.ok === true, JSON.stringify(rangeState));
+
+  // Per-exercise drill-in: metric list from the catalogue, then its chart.
+  await evalJS(`(() => { location.hash = '#/stats/exercise/${BBP}'; return true; })()`);
+  const exRows = await poll('exercise metric rows', `(async () => {
+    const sd = await import('./js/stats-data.js');
+    const dom = document.querySelectorAll('#s-stats [data-metric]').length;
+    return dom >= sd.EXERCISE_METRICS.length ? { dom, catalogue: sd.EXERCISE_METRICS.length } : null;
+  })()`);
+  check('stats: per-exercise metric list matches the catalogue', exRows.dom >= exRows.catalogue, JSON.stringify(exRows));
+  await evalJS(`(() => { location.hash = '#/stats/exercise/${BBP}/chart/e1rm'; return true; })()`);
+  await poll('exercise e1rm chart', `document.querySelector('#s-stats .chart-screen svg') != null`, 12000);
+  check('stats: per-exercise e1RM chart renders', await evalJS(`document.querySelectorAll('#s-stats .chart-screen svg *').length > 10`));
+
+  // Edit mode: remove a module through the UI, then reset the layout back.
+  await evalJS(`(() => { location.hash = '#/stats'; return true; })()`);
+  await clickSel('edit layout', '#s-stats [data-action="stats-edit"]');
+  await poll('edit mode on', `document.querySelector('#s-stats .stats-editing') != null || document.querySelector('#s-stats [data-action="module-remove"]') != null`);
+  await clickSel('remove second module', '#s-stats .stat-card[data-module-id="default-volume"] [data-action="module-remove"]');
+  await clickText('confirm module removal', '#sheet-root [data-action="confirm"]', 'Remove').catch(async () => {
+    await clickSel('confirm module removal (generic)', '#sheet-root [data-action="confirm"]');
+  });
+  await poll('module removed from grid', `document.querySelectorAll('#s-stats .stat-card[data-module-id]').length === 2`);
+  // The confirm sheet's backdrop removal runs on a ~260ms transition fallback —
+  // wait it out, or the touch sequence below lands on the backdrop instead.
+  await poll('sheets fully closed', `document.querySelectorAll('#sheet-root .sheet-backdrop').length === 0`);
+  const storedLayout = await evalJS(`import('./js/settings.js').then((s) => s.getStatsLayout().map((m) => m.id))`);
+  check('stats: removing a module persists the layout', Array.isArray(storedLayout) && storedLayout.length === 2 && !storedLayout.includes('default-volume'), JSON.stringify(storedLayout));
+
+  // Drag-and-drop reorder via REAL touch input (CDP Input domain): grab the
+  // first module's handle and drag it below the second; layout order flips.
+  const beforeDrag = await evalJS(`import('./js/settings.js').then((s) => s.getStatsLayout().map((m) => m.id))`);
+  const dragRects = await evalJS(`(() => {
+    window.scrollTo(0, 0); // the drag coords must be inside the viewport
+    window.__dragEvts = [];
+    const cards = [...document.querySelectorAll('#s-stats .stat-card[data-module-id]')];
+    const handle = cards[0].querySelector('[data-action="module-drag"]');
+    if (!handle) return null;
+    handle.addEventListener('pointerdown', () => window.__dragEvts.push('down'), { once: true });
+    const hr = handle.getBoundingClientRect();
+    const second = cards[1].getBoundingClientRect();
+    return {
+      x: hr.left + hr.width / 2, y: hr.top + hr.height / 2,
+      targetY: second.top + second.height * 0.8,
+      viewport: { w: window.innerWidth, h: window.innerHeight },
+    };
+  })()`);
+  check('stats: drag handle exposed in edit mode', dragRects != null);
+  if (dragRects) {
+    // What is actually under the touch point right now?
+    const under = await evalJS(`(() => {
+      const el = document.elementFromPoint(${Math.round(dragRects.x)}, ${Math.round(dragRects.y)});
+      const handle = document.querySelector('#s-stats .stat-card[data-module-id] [data-action="module-drag"]');
+      return {
+        under: el ? el.tagName + '.' + (el.className.baseVal ?? el.className) : 'none',
+        handleConnected: handle ? handle.isConnected : false,
+        underIsHandle: !!(el && el.closest && el.closest('[data-action="module-drag"]')),
+        backdrops: document.querySelectorAll('#sheet-root .sheet-backdrop').length,
+      };
+    })()`);
+    console.log(`      drag point diag: ${JSON.stringify(under)}`);
+    // touchEnd must carry the released point — an empty touchPoints list never
+    // maps to a pointerup, and the drag would hang uncommitted.
+    const touch = (type, x, y) => send('Input.dispatchTouchEvent', {
+      type, touchPoints: [{ x: Math.round(x), y: Math.round(y), id: 1 }],
+    });
+    await touch('touchStart', dragRects.x, dragRects.y);
+    const steps = 12;
+    let lastY = dragRects.y;
+    for (let i = 1; i <= steps; i++) {
+      lastY = dragRects.y + ((dragRects.targetY - dragRects.y) * i) / steps;
+      await touch('touchMove', dragRects.x, lastY);
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    await touch('touchEnd', dragRects.x, lastY);
+    const afterDrag = await poll('layout reordered after drag', `import('./js/settings.js').then((s) => {
+      const ids = s.getStatsLayout().map((m) => m.id);
+      return ids[0] !== ${J(beforeDrag[0])} ? ids : null;
+    })`, 6000).catch(() => null);
+    const dragDiag = await evalJS(`({ evts: window.__dragEvts, scrollY: window.scrollY })`);
+    check('stats: touch drag reorders the layout and persists it',
+      Array.isArray(afterDrag) && afterDrag[0] === beforeDrag[1] && afterDrag.includes(beforeDrag[0]),
+      `before=${JSON.stringify(beforeDrag)} after=${JSON.stringify(afterDrag)} rects=${JSON.stringify(dragRects)} diag=${JSON.stringify(dragDiag)}`);
+  }
+
+  // Reset the layout so later runs start clean; leaves edit mode too. go()
+  // re-routes even on the same hash (location.hash alone would not re-render).
+  await evalJS(`Promise.all([import('./js/settings.js'), import('./js/ui.js')]).then(([s, ui]) => { s.resetStatsLayout(); ui.go('#/stats'); return true; })`);
+  await poll('layout back to defaults', `document.querySelectorAll('#s-stats .stat-card[data-module-id]').length === 3`);
+
+  // --- 15d. Settings toggles + wired behaviour ------------------------------
+  await evalJS(`(() => { location.hash = '#/settings'; return true; })()`);
+  await poll('settings toggles rendered', `document.querySelectorAll('#s-settings [data-setting]').length >= 7`);
+  check('settings: all seven toggles present', (await count('#s-settings [data-setting]')) === 7, `got ${await count('#s-settings [data-setting]')}`);
+  await clickSel('flip auto-start timer OFF', '#s-settings [data-setting="autoStartTimer"]');
+  check('settings: toggle flips aria-checked and persists',
+    await poll('setting persisted', `localStorage.getItem('settings.autoStartTimer') === 'false'
+      && document.querySelector('#s-settings [data-setting="autoStartTimer"]').getAttribute('aria-checked') === 'false'`) && true);
+
+  // Behaviour: with auto-start OFF, adding a set must NOT start the rest timer;
+  // autofill (default ON) pulls last session's weight when only reps are typed.
+  await evalJS(`import('./js/ui.js').then(() => { location.hash = '#/log'; return true; })`);
+  await clickSel('start behaviour-check workout', '#s-log [data-action="start-workout"]');
+  await poll('workout screen up', `location.hash === '#/workout' && !document.getElementById('s-workout').hidden`);
+  // The autofill subject must have a REAL last-session weight. Bench's latest
+  // session is the routine workout (all 0 kg blanks), so use the imported
+  // Zercher Carry Test: one clean session, 40 kg × 5, untouched since.
+  const ZERCHER = 'import-zercher-carry-test';
+  const zercherCard = `.ex-card[data-exercise-id="${ZERCHER}"]`;
+  await gotoPicker('add-exercise (behaviour check)');
+  await pickSearch('Zercher');
+  await clickSel('pick zercher (behaviour check)', `#s-pick .pick-row[data-exercise-id="${ZERCHER}"]`);
+  await poll('zercher card up', `location.hash === '#/workout' && document.querySelector(${J(zercherCard)}) != null`);
+  await clickSel('add set (timer check)', `${zercherCard} .add-set`);
+  await poll('second set row present', `document.querySelectorAll(${J(zercherCard + ' .set-row')}).length === 2`);
+  await new Promise((r) => setTimeout(r, 400)); // deliberate: absence needs a beat
+  check('settings: auto-start OFF leaves the rest bar hidden', await evalJS(`document.getElementById('rest-bar').hidden`));
+
+  await setField('reps only (autofill check)', zercherCard, 0, 'reps', 6);
+  const autofilled = await poll('autofill persisted', `(async () => {
+    const db = await import('./js/db.js');
+    const wid = localStorage.getItem('currentWorkoutId');
+    const s = (await db.listSetsForWorkout(wid)).filter((x) => x.exerciseId === ${J(ZERCHER)}).sort((a, b) => a.setNumber - b.setNumber);
+    return s[0] && s[0].reps === 6 && s[0].weightKg > 0 ? s[0].weightKg : null;
+  })()`);
+  check('settings: autofill weight copies last session on a reps-only entry', autofilled === 40, `weightKg=${autofilled}`);
+
+  // Restore the toggle and clear the behaviour-check workout via its menu.
+  await evalJS(`import('./js/settings.js').then((s) => { s.setSetting('autoStartTimer', true); return true; })`);
+  await clickSel('workout menu (cleanup)', '#s-workout .w-head [aria-label="Workout menu"]');
+  await clickText('delete workout row', '#sheet-root .sheet-row', 'Delete Workout');
+  // Sheets stack, and a closing sheet lingers through its exit transition —
+  // always press the TOPMOST sheet's confirm, never the first text match.
+  const confirmTopSheet = () => evalJS(`(() => {
+    const tops = [...document.querySelectorAll('#sheet-root .sheet-backdrop')];
+    const btn = tops.length && tops[tops.length - 1].querySelector('[data-action="confirm"]');
+    if (!btn) return false;
+    btn.click();
+    return true;
+  })()`);
+  await poll('first confirm sheet up', `document.querySelector('#sheet-root [data-action="confirm"]') != null`);
+  await confirmTopSheet();
+  await poll('second confirm sheet', `[...document.querySelectorAll('#sheet-root .sheet-title')].some((e) => e.textContent.includes('permanently'))`);
+  await confirmTopSheet();
+  await poll('back on log after cleanup', `location.hash === '#/log'`);
+
   // --- 16. No uncaught exceptions / console errors across the whole walk ---
   check('pwa: no uncaught exceptions or console errors during the walk', jsErrors.length === 0, jsErrors.join(' | '));
 } catch (err) {
   failures.push('SUITE ABORTED');
   console.log('FAIL — suite aborted :: ' + err.message);
+  if (jsErrors.length) console.log('      page errors at abort: ' + jsErrors.slice(0, 5).join(' | '));
 }
 
 console.log(failures.length === 0

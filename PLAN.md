@@ -295,3 +295,54 @@ detection over an RFC 4180 parser (delimiter sniffed), so other apps' exports
   an app-logged workout are flagged; the preview defaults to skipping them
   (Dan dual-logged in RepCount while testing this app, so the export overlaps
   21–28 Jul). Toggleable in the preview sheet.
+
+## Phase 1.8 — Statistics rework + Settings (30 July 2026)
+
+Second half of the stats/settings build (contracts in the 29 Jul session).
+Reference: RepCount screenshots in `sample/` (now gitignored with the rest of
+that folder).
+
+### Settings (replaces the Profile tab)
+
+- 3 tabs + a **settings gear** top-right of every tab header → fullscreen
+  `#/settings` (legacy `#/profile` redirects). Everything from the Profile
+  screen moved over unchanged (units, rest stepper, CSV import, sync, about).
+- `js/settings.js` — central typed store. New settings, all **wired, not just
+  stored**: Autofill weight (reps entered + weight empty → last session's
+  weight commits in the same write), Auto-start rest timer (gates
+  `timer.start()` in addSet), Timer sound (Web Audio double beep in
+  timer.finish), Keep screen on (Screen Wake Lock, re-acquired on
+  visibilitychange, released on screen teardown); Charts: Show trend line,
+  Include warm-up sets (charts only — PRs never), Count single arm/leg twice.
+
+### Statistics
+
+- `js/charts.js` — dependency-free SVG engine: line (default, RepCount-style:
+  teal line, faint grid, right-edge y labels), bar (+horizontal flip), donut
+  pie + legend. Interactive: pinch-zoom on the x-domain, one-finger pan,
+  double-tap reset, press readout; least-squares trend line; colours read from
+  CSS custom properties; ResizeObserver-responsive.
+- `js/stats-data.js` — the metric layer (separate from the FROZEN queries.js
+  contract): Overall (duration, volume, sets, reps, reps/set, bodyweight,
+  workouts, cardio time/distance, kcal), per-Exercise (e1RM, e1RM/BW, volume,
+  max/avg weight, reps, sets, max reps, workouts), per-Category, plus
+  `categoryBreakdown` for pies. Day/week/month/year bucketing, 3M/6M/1Y/All
+  ranges, zero-fill only for count metrics, finished workouts only.
+- `js/screens/stats.js` + `css/stats.css` — the **customisable module grid**
+  (layout persisted via settings.js): Edit mode with pointer-events
+  drag-and-drop (FLIP-animated, auto-scroll at viewport edges; capture held on
+  the grid so mid-drag DOM reorders can't kill the gesture), per-card ⋯ config
+  (metric/chart/group/range), add/remove/reset. Below: Exercises → per-exercise
+  metric list → chart detail; Categories likewise; Overall Statistics rows.
+  Chart detail = metric + Group By selectors, range pills, line/bar(/pie)
+  toggle, axis flip; prefs persist per scope.
+- Picker fix surfaced by the new e2e: confirming a superset now resets the
+  picker to Regular mode (it used to stay armed forever).
+
+### Verification
+
+177 browser unit assertions (incl. 36 stats-data), 69 e2e steps (incl. a
+CDP-touch drag-and-drop reorder, toggle wiring, autofill and rest-timer-gate
+behaviour checks), offline check, and visual screenshot review of the grid,
+chart detail, edit mode and settings screens. E2E harness now enables touch
+emulation (Input.dispatchTouchEvent is silently dropped without it).

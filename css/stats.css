@@ -5,3 +5,194 @@
    selectors, 3M/6M/1Y/All range pills, the SVG chart shell). Reuses app.css
    tokens; chart geometry itself is drawn by js/charts.js.
    ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+   Statistics tab head — the Edit toggle next to the gear
+   ---------------------------------------------------------------------------- */
+.stats-edit-btn {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 9px 15px;
+  border: 0; border-radius: 999px;
+  background: var(--card-2); color: var(--accent);
+  font-size: 15px; font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+}
+.stats-edit-btn:active { opacity: 0.6; transform: scale(0.97); }
+
+/* ----------------------------------------------------------------------------
+   The module grid
+   ---------------------------------------------------------------------------- */
+.stats-grid { display: block; }
+
+/* .stats-module is a .tab-card .stat-card — only the extras live here. */
+.stats-module { position: relative; }
+
+.stats-module-head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 12px;
+}
+.stats-module-title {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stats-module-headline { flex: 0 0 auto; font-size: 17px; }
+
+.stats-module-btn {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border: 0; border-radius: 999px;
+  background: none; color: var(--faint);
+  cursor: pointer;
+  transition: opacity 0.1s ease-out;
+}
+.stats-module-btn:active { opacity: 0.5; }
+.stats-module-btn svg { width: 18px; height: 18px; }
+.stats-module-remove { color: var(--danger); }
+
+/* The whole card body is the tap target for "open the full chart". */
+.stats-module-body {
+  display: block; width: 100%;
+  padding: 0; border: 0;
+  background: none; color: inherit; text-align: left;
+  cursor: pointer;
+}
+
+/* Every chart container carries an explicit height — charts.js sizes to it. */
+.stats-chart { position: relative; width: 100%; }
+.stats-chart-mini { height: 160px; }
+.chart-detail {
+  height: clamp(300px, 52svh, 440px);
+  margin: 0 0 14px;
+}
+.stats-empty {
+  position: absolute; inset: 0; margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; text-align: center;
+}
+
+/* ----------------------------------------------------------------------------
+   Edit mode + drag and drop
+   ---------------------------------------------------------------------------- */
+.stats-editing .stats-module {
+  outline: 1px dashed rgba(255, 255, 255, 0.14);
+  outline-offset: -1px;
+}
+/* Charts must not swallow pointers while cards are being rearranged. */
+.stats-editing .stats-module-body { pointer-events: none; }
+
+.stats-drag-handle {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 40px; margin-left: -8px;
+  border: 0; border-radius: 10px;
+  background: none; color: var(--muted);
+  cursor: grab;
+  /* The only element that must never scroll the page under a finger. */
+  touch-action: none;
+}
+.stats-drag-handle:active { color: var(--accent); }
+.stats-drag-handle svg { width: 20px; height: 20px; }
+
+.stats-module.dragging {
+  z-index: 6;
+  will-change: transform;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.55);
+  outline-color: var(--accent);
+}
+.stats-module.dragging .stats-drag-handle { cursor: grabbing; color: var(--accent); }
+/* Siblings settle back with a FLIP transition applied inline by stats.js. */
+.stats-grid-dragging .stats-module:not(.dragging) { pointer-events: none; }
+body.stats-dragging { cursor: grabbing; }
+
+.stats-add-card {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%;
+  min-height: 56px;
+  padding: 16px;
+  margin-bottom: 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.18); border-radius: var(--radius);
+  background: var(--card); color: var(--accent);
+  font-size: 16px; font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+}
+.stats-add-card:active { opacity: 0.6; transform: scale(0.98); }
+.stats-add-card svg { width: 20px; height: 20px; }
+
+/* ----------------------------------------------------------------------------
+   Navigation lists (Exercises / Categories / Overall Statistics)
+   ---------------------------------------------------------------------------- */
+.stats-section-label {
+  color: var(--muted); font-size: 13px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 2px 4px 8px;
+}
+/* .tab-card modifier: rows run full bleed with their own dividers. */
+.stats-nav-card { padding: 0; overflow: hidden; }
+.stats-nav-row { border-radius: 0; }
+.stats-nav-card .sheet-row:last-child { border-bottom: 0; }
+.stats-nav-card .stat-empty { padding: 18px 16px; }
+
+/* ----------------------------------------------------------------------------
+   Sub-screens (#/stats/exercises, /exercise/:id, /categories, /category/:g)
+   The back header and search bar keep their own gutters, so the body pads to
+   match rather than the screen padding everything.
+   ---------------------------------------------------------------------------- */
+/* The sticky .pick-head already carries the safe-area inset, so the screen
+   itself only pads the bottom. */
+.stats-screen { padding: 0 0 24px; }
+.stats-body { padding: 0 14px; }
+.stats-body > .tab-card:last-child { margin-bottom: 0; }
+
+/* ----------------------------------------------------------------------------
+   Chart detail screen
+   ---------------------------------------------------------------------------- */
+.chart-selectors { display: flex; gap: 12px; margin: 6px 0 12px; }
+.chart-select-wrap {
+  flex: 1 1 0; min-width: 0;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.chart-select-wrap[hidden] { display: none; }
+.chart-select-label { font-size: 12px; color: var(--muted); padding-left: 3px; }
+.chart-select {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; min-height: 44px;
+  padding: 10px 12px;
+  border: 0; border-radius: 12px;
+  background: var(--card-2); color: var(--accent);
+  font-size: 15px; font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.1s ease-out, transform 0.1s ease-out;
+}
+.chart-select:active { opacity: 0.6; transform: scale(0.98); }
+.chart-select-value {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chart-select-chev { display: inline-flex; flex: 0 0 auto; color: var(--muted); }
+.chart-select-chev svg { width: 18px; height: 18px; }
+
+/* Range pills: the shared segmented control, stretched full width. */
+.chart-ranges { display: flex; width: 100%; margin-bottom: 12px; }
+.chart-ranges .seg-btn { flex: 1; padding: 9px 4px; }
+
+.chart-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chart-type-row { display: inline-flex; flex: 0 0 auto; }
+.chart-type-row .seg-btn { padding: 9px 18px; }
+.chart-axis-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 40px;
+  padding: 9px 14px;
+  border: 0; border-radius: 999px;
+  background: var(--card-2); color: var(--muted);
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.1s ease-out;
+}
+.chart-axis-btn[hidden] { display: none; }
+.chart-axis-btn:active { opacity: 0.6; }
+.chart-axis-btn.on { background: var(--accent); color: var(--accent-ink); }
+.chart-axis-btn svg { width: 16px; height: 16px; }

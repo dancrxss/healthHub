@@ -38,10 +38,12 @@ import {
 import { isoWeekOf, epley1RM } from '../js/calc.js';
 import { seedIfEmpty, SEED_EXERCISES } from '../js/seed.js';
 import { parseCSV, sniffDelimiter, detectColumns, buildImportPlan } from '../js/csv-import.js';
+import { computeSeries, categoryBreakdown } from '../js/stats-data.js';
 
 const TEST_DB = 'healthhub-test';
 const SEED_DB = 'healthhub-seed-test';
 const UPGRADE_DB = 'healthhub-upgrade-test';
+const STATS_DB = 'healthhub-statsdata-test';
 
 let root;
 let summaryEl;
@@ -84,6 +86,20 @@ function daysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return isoDate(d);
+}
+/** Monday of the ISO week `n` weeks before this one — fixture dates that don't
+ *  drift with the day the suite happens to run. */
+function mondayWeeksAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - n * 7);
+  return isoDate(d);
+}
+function plusDays(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return isoDate(new Date(y, m - 1, d + n));
+}
+function sum(nums) {
+  return nums.reduce((a, b) => a + b, 0);
 }
 
 function deleteDb(name) {
@@ -430,6 +446,122 @@ export async function runTests(rootEl, summaryElement) {
     ok('buildImportPlan: empty file is rejected', buildImportPlan('', [], []).ok === false);
     const planNoRows = buildImportPlan('Workout Start,Exercise,Weight,Reps', [], []);
     ok('buildImportPlan: header-only file is ok with zero counts', planNoRows.ok === true && planNoRows.stats.rows === 0 && planNoRows.stats.workouts === 0 && planNoRows.stats.sets === 0);
+
+    // ---- stats-data ----
+    // The metric layer against a throwaway DB, seeded with a deliberately
+    // awkward fixture: two ISO weeks with an empty week between them, an
+    // UNFINISHED workout, warmups, a unilateral exercise, a cardio set, and a
+    // workout old enough to fall outside the 3-month range.
+    _setDbNameForTests(STATS_DB);
+    await deleteDb(STATS_DB);
+    await openDb();
+
+    const wkA = mondayWeeksAgo(4);        // week A, Monday
+    const wkA2 = plusDays(wkA, 2);        // week A, Wednesday
+    const wkC = mondayWeeksAgo(2);        // week C — week B stays empty
+    const wkOld = daysAgo(200);           // outside '3m', inside 'all'
+
+    await putExercise({ id: 'st-bench', name: 'ST Bench', muscleGroup: 'chest', equipment: 'barbell', exerciseType: 'weight_reps', isUnilateral: false, isCustom: false, createdAt: '2026-01-01T00:00:00', syncedAt: null });
+    await putExercise({ id: 'st-row', name: 'ST One-Arm Row', muscleGroup: 'back', equipment: 'dumbbell', exerciseType: 'weight_reps', isUnilateral: true, isCustom: false, createdAt: '2026-01-01T00:00:00', syncedAt: null });
+    await putExercise({ id: 'st-run', name: 'ST Treadmill', muscleGroup: 'cardio', equipment: 'other', exerciseType: 'cardio', isUnilateral: false, isCustom: false, createdAt: '2026-01-01T00:00:00', syncedAt: null });
+
+    const stWorkout = (id, date, from, to, bodyweightKg) => putWorkout({
+      id, date, startedAt: `${date}T${from}:00`, finishedAt: to ? `${date}T${to}:00` : null,
+      templateId: null, notes: null, name: null, bodyweightKg, entries: null, syncedAt: null,
+    });
+    const stSet = (id, workoutId, date, exerciseId, setNumber, weightKg, reps, extra = {}) => putSet({
+      id, workoutId, exerciseId, setNumber, weightKg, reps, rpe: null, isWarmup: false,
+      setType: 'strength', notes: null, durationSeconds: null, distanceM: null, kcal: null,
+      completedAt: `${date}T10:${String(10 + setNumber).padStart(2, '0')}:00`, syncedAt: null, ...extra,
+    });
+
+    await stWorkout('st-wa', wkA, '10:00', '11:00', 80);     // 60 min
+    await stWorkout('st-wb', wkA2, '09:00', '10:30', 81);    // 90 min
+    await stWorkout('st-wc', wkC, '18:00', '19:00', null);   // no bodyweight
+    await stWorkout('st-wu', wkC, '20:00', null, 99);        // unfinished — must be ignored
+    await stWorkout('st-wold', wkOld, '10:00', '11:00', null);
+
+    await stSet('st-a0', 'st-wa', wkA, 'st-bench', 1, 40, 10, { isWarmup: true });
+    await stSet('st-a1', 'st-wa', wkA, 'st-bench', 2, 100, 5);
+    await stSet('st-a2', 'st-wa', wkA, 'st-bench', 3, 100, 3);
+    await stSet('st-a3', 'st-wa', wkA, 'st-row', 1, 50, 10);
+    await stSet('st-b1', 'st-wb', wkA2, 'st-bench', 1, 90, 8);
+    await stSet('st-b2', 'st-wb', wkA2, 'st-run', 1, 0, 0, { setType: 'cardio', durationSeconds: 600, distanceM: 2000, kcal: 150 });
+    await stSet('st-c1', 'st-wc', wkC, 'st-bench', 1, 110, 2);
+    await stSet('st-c2', 'st-wc', wkC, 'st-row', 1, 55, 6);
+    await stSet('st-u1', 'st-wu', wkC, 'st-bench', 1, 200, 5);   // unfinished workout
+    await stSet('st-o1', 'st-wold', wkOld, 'st-bench', 1, 60, 5);
+
+    const overall = { kind: 'overall' };
+    const weekly = { scope: overall, groupBy: 'week', range: '3m' };
+
+    // Counts: zero-filled interior week, unfinished workout excluded.
+    const nWorkouts = await computeSeries({ ...weekly, metric: 'workouts' });
+    eq('stats: workouts per week zero-fills the empty middle week', nWorkouts.points.map((p) => p.value), [2, 0, 1]);
+    ok('stats: series points ascend by t', nWorkouts.points.every((p, i) => i === 0 || p.t > nWorkouts.points[i - 1].t));
+    ok('stats: every point carries a label', nWorkouts.points.every((p) => typeof p.label === 'string' && p.label.length > 0), JSON.stringify(nWorkouts.points.map((p) => p.label)));
+    ok('stats: week labels look like W31', nWorkouts.points.every((p) => /^W\d{2}$/.test(p.label)), nWorkouts.points.map((p) => p.label).join(','));
+    eq('stats: count metric unit is blank', nWorkouts.unit, '');
+
+    const daily = await computeSeries({ scope: overall, metric: 'workouts', groupBy: 'day', range: '3m' });
+    ok('stats: day labels look like "6 Mar"', /^\d{1,2} [A-Z][a-z]{2}$/.test(daily.points[0].label), daily.points[0].label);
+
+    // Volume: warmups and cardio out, warmups back in on request, unilateral doubling.
+    const volume = await computeSeries({ ...weekly, metric: 'volume' });
+    eq('stats: volume unit is kg', volume.unit, 'kg');
+    eq('stats: weekly volume excludes warmups and cardio', volume.points.map((p) => p.value), [2020, 550]);
+    const volumeWarm = await computeSeries({ ...weekly, metric: 'volume', includeWarmup: true });
+    eq('stats: includeWarmup adds the 40x10 warmup', volumeWarm.points[0].value, 2420);
+    const volumeUni = await computeSeries({ ...weekly, metric: 'volume', countUnilateralTwice: true });
+    eq('stats: countUnilateralTwice doubles only the unilateral row', volumeUni.points[0].value, 2520);
+    const repsUni = await computeSeries({ ...weekly, metric: 'reps', countUnilateralTwice: true });
+    eq('stats: reps double for the unilateral exercise only', repsUni.points[0].value, 36);
+
+    eq('stats: total sets per week (warmup + cardio excluded)', (await computeSeries({ ...weekly, metric: 'sets' })).points.map((p) => p.value), [4, 2]);
+    eq('stats: total reps per week', (await computeSeries({ ...weekly, metric: 'reps' })).points.map((p) => p.value), [26, 8]);
+    approx('stats: reps per set = reps / sets', (await computeSeries({ ...weekly, metric: 'repsPerSet' })).points[0].value, 26 / 4);
+
+    // Duration, bodyweight, cardio fields.
+    eq('stats: duration is the average session length in minutes', (await computeSeries({ ...weekly, metric: 'duration' })).points.map((p) => p.value), [75, 60]);
+    const bw = await computeSeries({ ...weekly, metric: 'bodyweight' });
+    eq('stats: bodyweight takes the last value in the bucket, empty buckets omitted', bw.points.map((p) => p.value), [81]);
+    eq('stats: cardio time in minutes', (await computeSeries({ ...weekly, metric: 'cardioTime' })).points.map((p) => p.value), [10]);
+    eq('stats: cardio distance in metres', (await computeSeries({ ...weekly, metric: 'cardioDistance' })).points.map((p) => p.value), [2000]);
+    eq('stats: logged calories', (await computeSeries({ ...weekly, metric: 'kcal' })).points.map((p) => p.value), [150]);
+
+    // Per-exercise scope.
+    const stBenchScope = { kind: 'exercise', id: 'st-bench' };
+    const benchWeekly = { scope: stBenchScope, groupBy: 'week', range: '3m' };
+    const e1rm = await computeSeries({ ...benchWeekly, metric: 'e1rm' });
+    approx('stats: exercise e1RM bucket = best Epley of the week', e1rm.points[0].value, epley1RM(100, 5));
+    approx("stats: exercise e1RM / bodyweight uses each session's own bodyweight", (await computeSeries({ ...benchWeekly, metric: 'e1rmPerBw' })).points[0].value, epley1RM(100, 5) / 80);
+    eq('stats: exercise max weight per week', (await computeSeries({ ...benchWeekly, metric: 'maxWeight' })).points.map((p) => p.value), [100, 110]);
+    approx('stats: exercise average weight per week', (await computeSeries({ ...benchWeekly, metric: 'avgWeight' })).points[0].value, (100 + 100 + 90) / 3);
+    eq('stats: exercise max reps per week', (await computeSeries({ ...benchWeekly, metric: 'maxReps' })).points.map((p) => p.value), [8, 2]);
+    eq('stats: exercise total sets per week', (await computeSeries({ ...benchWeekly, metric: 'totalSets' })).points.map((p) => p.value), [3, 1]);
+    eq('stats: exercise total reps per week', (await computeSeries({ ...benchWeekly, metric: 'totalReps' })).points.map((p) => p.value), [16, 2]);
+    approx('stats: exercise reps per set', (await computeSeries({ ...benchWeekly, metric: 'repsPerSet' })).points[0].value, 16 / 3);
+    eq('stats: exercise workouts counts sessions containing the exercise', (await computeSeries({ ...benchWeekly, metric: 'workouts' })).points.map((p) => p.value), [2, 0, 1]);
+
+    // Per-category scope + breakdown.
+    eq('stats: category volume is restricted to the muscle group', (await computeSeries({ scope: { kind: 'category', id: 'chest' }, metric: 'volume', groupBy: 'week', range: '3m' })).points.map((p) => p.value), [1520, 220]);
+    eq('stats: category sets are restricted to the muscle group', (await computeSeries({ scope: { kind: 'category', id: 'back' }, metric: 'sets', groupBy: 'week', range: '3m' })).points.map((p) => p.value), [1, 1]);
+    const breakdown = await categoryBreakdown({ metric: 'volume', range: '3m' });
+    eq('stats: breakdown slices sorted descending', breakdown.slices.map((s) => [s.label, s.value]), [['Chest', 1740], ['Back', 830]]);
+    ok('stats: breakdown omits zero slices (cardio)', !breakdown.slices.some((s) => s.label === 'Cardio'));
+    eq('stats: breakdown unit follows the metric', breakdown.unit, 'kg');
+    eq('stats: breakdown of workouts counts sessions per group', (await categoryBreakdown({ metric: 'workouts', range: '3m' })).slices.map((s) => [s.label, s.value]), [['Chest', 3], ['Back', 2]]);
+
+    // Range window.
+    const allWorkouts = await computeSeries({ scope: overall, metric: 'workouts', groupBy: 'week', range: 'all' });
+    eq('stats: range all includes the 200-day-old workout', sum(allWorkouts.points.map((p) => p.value)), 4);
+    eq('stats: range 3m drops the 200-day-old workout', sum(nWorkouts.points.map((p) => p.value)), 3);
+    eq('stats: range all includes its volume too', sum((await computeSeries({ scope: overall, metric: 'volume', groupBy: 'year', range: 'all' })).points.map((p) => p.value)), 2020 + 550 + 300);
+
+    // Unknown metric for the scope charts as empty rather than throwing.
+    eq('stats: unknown metric returns an empty series', (await computeSeries({ scope: overall, metric: 'e1rm', groupBy: 'week', range: '3m' })).points, []);
+
+    await deleteDb(STATS_DB);
   } catch (err) {
     fail += 1;
     line(false, 'suite threw', err && err.message ? err.message : String(err));

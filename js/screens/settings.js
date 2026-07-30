@@ -12,6 +12,7 @@
 
 import * as timer from '../timer.js';
 import { getActiveAdapter } from '../sync.js';
+import { getSetting, setSetting } from '../settings.js';
 import { bulkImport, listExercises, listWorkouts } from '../db.js';
 import {
   h, Icon, go, getUnits, mmss, openSheet, closeSheet, sheetHeader, sheetGroup,
@@ -44,6 +45,8 @@ export async function renderSettings() {
     ),
     h('div', { class: 'tab-screen settings-screen' },
       settingsCard(),
+      workoutLogCard(),
+      chartsCard(),
       dataCard(),
       syncCard(status),
       aboutCard(),
@@ -94,6 +97,77 @@ function restRow() {
 function setUnits(v) {
   localStorage.setItem('settings.units', v);
   renderSettings(); // re-render so the segmented control and any live weights reflect the change
+}
+
+// ---- toggle rows -------------------------------------------------------
+/**
+ * One label + iOS-style switch, optionally followed by a muted explanation.
+ * The switch is the single source of truth for its own state: tapping it
+ * writes through setSetting and repaints only itself — no re-render, so a
+ * flurry of taps can never fight a rebuild. Initial state comes from
+ * getSetting, so it survives every render.
+ *
+ * @param {string} label
+ * @param {string} name  a SETTING_DEFS key; also the `data-setting` hook
+ * @param {string} [note]
+ * @returns {Node[]} row (+ note), spread into a card by h()'s flattening
+ */
+function toggleRow(label, name, note) {
+  const on = getSetting(name);
+  const btn = h('button', {
+    class: 'toggle' + (on ? ' on' : ''),
+    type: 'button', role: 'switch',
+    'aria-checked': on ? 'true' : 'false',
+    'aria-label': label,
+    'data-setting': name,
+  });
+  btn.addEventListener('click', () => {
+    const next = btn.getAttribute('aria-checked') !== 'true';
+    setSetting(name, next);
+    btn.setAttribute('aria-checked', next ? 'true' : 'false');
+    btn.classList.toggle('on', next);
+  });
+
+  const row = h('div', { class: 'settings-row' },
+    h('span', { class: 'settings-label', text: label }),
+    btn,
+  );
+  return note ? [row, h('p', { class: 'settings-note muted', text: note })] : [row];
+}
+
+function sectionLabel(text) {
+  return h('div', { class: 'settings-section', text });
+}
+
+// ---- workout log card --------------------------------------------------
+function workoutLogCard() {
+  return h('div', { class: 'settings-group' },
+    sectionLabel('Workout Log'),
+    h('div', { class: 'tab-card settings-card settings-toggle-card' },
+      toggleRow('Autofill weight', 'autofillWeight',
+        'When you enter reps, the weight fills in from last session if you left it empty.'),
+      toggleRow('Auto-start rest timer', 'autoStartTimer',
+        'Starts the rest countdown each time you add a set.'),
+      toggleRow('Timer sound', 'timerSound',
+        'Beep when the rest timer finishes.'),
+      toggleRow('Keep screen on during workout', 'keepScreenOn',
+        'Stops the screen locking while a workout is open. Uses more battery.'),
+    ),
+  );
+}
+
+// ---- charts card -------------------------------------------------------
+function chartsCard() {
+  return h('div', { class: 'settings-group' },
+    sectionLabel('Charts'),
+    h('div', { class: 'tab-card settings-card settings-toggle-card' },
+      toggleRow('Show trend line', 'chartTrendLine'),
+      toggleRow('Include warm-up sets', 'chartIncludeWarmup',
+        'Charts only — PRs and records always exclude warm-ups.'),
+      toggleRow('Count single arm/leg twice', 'countUnilateralTwice',
+        'Doubles volume and reps from unilateral exercises in statistics.'),
+    ),
+  );
 }
 
 // ---- data card (CSV import) ------------------------------------------------
