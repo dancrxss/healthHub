@@ -8,12 +8,13 @@
 // User text only ever via textContent / h() — never innerHTML.
 // ============================================================================
 
-import { listExercises } from '../db.js';
+import { listExercises, deleteWorkout } from '../db.js';
 import { getRecentWorkouts } from '../queries.js';
 import {
-  h, Icon, go, gearButton,
+  h, Icon, go, gearButton, confirmSheet,
   currentWorkout, getEntries, displayName, startWorkout,
 } from '../ui.js';
+import { swipeRow } from '../swipe.js';
 
 const MONTH_FORMAT = { month: 'long', year: 'numeric' };
 const WEEKDAY_FORMAT = { weekday: 'short' };
@@ -74,7 +75,19 @@ function buildMonthGroups(sessions, exMap) {
       h('span', { class: 'month-group-name', text: label }),
       h('span', { class: 'month-group-count', text: `${items.length} Workout${items.length === 1 ? '' : 's'}` }),
     ));
-    out.push(h('div', { class: 'month-card' }, ...items.map((item) => workoutRow(item, exMap))));
+    out.push(h('div', { class: 'month-card' }, ...items.map((item) => swipeRow(
+      workoutRow(item, exMap),
+      {
+        // A whole session is a lot to lose to a stray swipe, so this one keeps
+        // its confirm — unlike a set, which is cheap to re-add.
+        onDelete: () => confirmSheet({
+          title: 'Delete workout?',
+          message: `This removes "${displayName(item.workout)}" and all its sets.`,
+          confirmLabel: 'Delete', danger: true,
+          onConfirm: async () => { await deleteWorkout(item.workout.id); renderLogTab(); },
+        }),
+      },
+    ))));
   }
   return out;
 }

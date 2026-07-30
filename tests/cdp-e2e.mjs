@@ -179,20 +179,20 @@ await send('Page.navigate', { url: APP_URL });
 let w1id = null;
 
 try {
-  // --- 1. Fresh app: seed ran, #/log renders, 3 tabs, empty log ---
+  // --- 1. Fresh app: seed ran, #/log renders, 2 tabs, empty log ---
   await poll('app boots to #/log', `location.hash === '#/log' && !document.getElementById('s-log').hidden`, 12000);
   const seedCount = await poll('seed exercises loaded', `import('./js/db.js').then(m => m.listExercises()).then(l => l.length)`);
   check('seed: 61 exercises seeded on fresh install (55 strength + 6 cardio)', seedCount === 61, `got ${seedCount}`);
-  check('shell: tab bar has 3 tabs (Profile replaced by the settings gear)', (await count('#tabbar button')) === 3, `got ${await count('#tabbar button')}`);
+  check('shell: tab bar has 2 tabs (Routines folded into Copy Routine)', (await count('#tabbar button')) === 2, `got ${await count('#tabbar button')}`);
   check('log: empty state has no month groups yet', (await count('#s-log .month-group')) === 0, `got ${await count('#s-log .month-group')}`);
 
   // --- 2. Tab switching: each tab shows its screen, hides the rest ---
-  const TABS = ['log', 'routines', 'stats'];
+  const TABS = ['log', 'stats'];
   let tabsOk = true; let tabDetail = '';
   for (const tab of TABS) {
     await clickSel(`tab ${tab}`, `#tabbar button[data-tab="${tab}"]`);
     await poll(`${tab} screen visible`, `!document.getElementById('s-${tab}').hidden`);
-    const othersHidden = await evalJS(`['log','routines','stats','settings'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
+    const othersHidden = await evalJS(`['log','stats','settings'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
     if (!othersHidden) { tabsOk = false; tabDetail = `others not hidden on ${tab}`; }
   }
   check('tabs: switching shows one screen and hides the others', tabsOk, tabDetail);
@@ -450,21 +450,64 @@ try {
   await clickSel('done (back to log)', '#s-workout [data-action="finish"]');
   await poll('back on #/log from past workout', `location.hash === '#/log'`);
 
-  // --- 13. Routines: start from the seeded template, then finish it ---
-  await clickSel('routines tab', '#tabbar button[data-tab="routines"]');
-  check('routines: seeded Push Day A template card present',
-    await poll('template card', `document.querySelector('#s-routines [data-template-id="seed-template-push-day-a"]') != null`));
-  await clickSel('open template detail', '#s-routines [data-template-id="seed-template-push-day-a"]');
-  await clickSel('start routine', '[data-action="start-routine"]');
-  await poll('routine started on #/workout', `location.hash === '#/workout' && !document.getElementById('s-workout').hidden`);
-  check('routines: starting the template pre-seeds 5 exercise cards',
-    (await poll('five ex-cards', `document.querySelectorAll('#s-workout .ex-card').length === 5`)) && true,
-    `ex-cards=${await count('#s-workout .ex-card')}`);
-  check('routines: each pre-seeded exercise auto-gets one blank set',
-    (await poll('five auto set-rows', `document.querySelectorAll('#s-workout .set-row').length === 5`)) && true,
-    `set-rows=${await count('#s-workout .set-row')}`);
+  // --- 13. Routines: none are seeded, so create one from a logged session
+  // via its ⋯ menu, then copy it into a fresh workout. ---
+  check('routines: nothing is seeded — the library starts empty',
+    (await evalJS(`import('./js/db.js').then((m) => m.listTemplates()).then((t) => t.length)`)) === 0);
+
+  // Open the finished workout and save it as a routine.
+  await clickSel('open logged workout', '#s-log .workout-card');
+  await poll('past workout open', `location.hash.startsWith('#/workout/')`);
+  await clickSel('workout menu', '#s-workout .w-head [aria-label="Workout menu"]');
+  await clickSel('save as routine', '[data-action="save-as-routine"]');
+  await poll('routine editor open', `location.hash.startsWith('#/routine/from/') && document.querySelector('#s-routine .routine-name-input') != null`);
+  const prefilled = await count('#s-routine .tpl-entry-row');
+  check('routines: Save as Routine prefills the session skeleton', prefilled >= 1, `entries=${prefilled}`);
+  await evalJS(`(() => {
+    const i = document.querySelector('#s-routine .routine-name-input');
+    i.value = 'Test Routine'; i.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  await clickSel('save routine', '#s-routine [data-action="routine-save"]');
+  const saved = await poll('routine persisted', `import('./js/db.js').then((m) => m.listTemplates()).then((t) => t.length === 1 ? t[0] : null)`);
+  check('routines: saving stores the routine with its name and skeleton',
+    saved && saved.name === 'Test Routine' && saved.entries.length === prefilled, JSON.stringify(saved && saved.name));
+
+  // Copy it into a brand-new workout.
+  await evalJS(`import('./js/ui.js').then((ui) => { ui.go('#/log'); return true; })`);
+  await clickSel('start workout for copy', '#s-log [data-action="start-workout"]');
+  await poll('empty workout up', `location.hash === '#/workout'`);
+  check('workout: Copy Routine sits above Add Exercise',
+    await poll('copy button', `document.querySelector('#s-workout [data-action="copy-routine"]') != null`));
+  await clickSel('open copy picker', '#s-workout [data-action="copy-routine"]');
+  await poll('copy categories', `location.hash === '#/copy' && document.querySelector('#s-copy [data-copy-cat="routines"]') != null`);
+  check('copy: both categories offered',
+    await exists('#s-copy [data-copy-cat="routines"]') && await exists('#s-copy [data-copy-cat="previous"]'));
+  await clickSel('open routines list', '#s-copy [data-copy-cat="routines"]');
+  await poll('routine row listed', `document.querySelector('#s-copy .pick-row[data-template-id]') != null`);
+  await clickSel('copy the routine', '#s-copy .pick-row[data-template-id]');
+  await poll('back on the workout', `location.hash === '#/workout'`);
+  const copied = await poll('skeleton copied', `(async () => {
+    const db = await import('./js/db.js');
+    const wid = localStorage.getItem('currentWorkoutId');
+    const sets = await db.listSetsForWorkout(wid);
+    const w = await db.getWorkout(wid);
+    return sets.length > 0 ? { entries: (w.entries || []).length, sets: sets.length, blank: sets.every((s) => s.weightKg === 0 && s.reps === 0) } : null;
+  })()`);
+  check('copy: the routine skeleton lands as exercises + blank sets',
+    copied.entries === prefilled && copied.sets > 0 && copied.blank === true, JSON.stringify(copied));
+
+  // Previous Sessions is the other half of the same picker.
+  await clickSel('copy routine again', '#s-workout [data-action="copy-routine"]');
+  await poll('copy categories again', `location.hash === '#/copy'`);
+  await clickSel('open sessions list', '#s-copy [data-copy-cat="previous"]');
+  check('copy: previous sessions are listed',
+    await poll('session row', `document.querySelectorAll('#s-copy .pick-row[data-workout-id]').length >= 1`));
+  await evalJS(`import('./js/ui.js').then((ui) => { ui.go('#/workout'); return true; })`);
+  await poll('back on workout again', `location.hash === '#/workout'`);
   await finishActiveWorkout();
-  check('routines: an untouched routine workout can be finished', await poll('two workout cards', `document.querySelectorAll('#s-log .workout-card').length === 2`));
+  // Two logged workouts by now: the original walk's, plus this copied one.
+  check('routines: the copied workout can be finished', await poll('two workout cards', `document.querySelectorAll('#s-log .workout-card').length === 2`));
 
   // --- 14. Stats: at least one stat card; frequency reflects 2 sessions this week ---
   await clickSel('stats tab', '#tabbar button[data-tab="stats"]');
@@ -789,6 +832,79 @@ try {
   await poll('second confirm sheet', `[...document.querySelectorAll('#sheet-root .sheet-title')].some((e) => e.textContent.includes('permanently'))`);
   await confirmTopSheet();
   await poll('back on log after cleanup', `location.hash === '#/log'`);
+
+  // --- 15e. Long-press to reorder, and swipe-to-delete ---------------------
+  await evalJS(`import('./js/ui.js').then((ui) => { ui.go('#/log'); return true; })`);
+  await clickSel('start gesture-check workout', '#s-log [data-action="start-workout"]');
+  await poll('gesture workout up', `location.hash === '#/workout'`);
+  for (const ex of [BBP, 'seed-lat-pulldown']) {
+    await gotoPicker(`add ${ex}`);
+    await pickSearch(ex === BBP ? 'Barbell Bench' : 'Lat Pulldown');
+    await clickSel(`pick ${ex}`, `#s-pick .pick-row[data-exercise-id="${ex}"]`);
+    await poll(`${ex} card`, `document.querySelector('.ex-card[data-exercise-id="${ex}"]') != null`);
+  }
+  const orderNow = () => evalJS(`[...document.querySelectorAll('#s-workout .ex-card')].map((c) => c.dataset.exerciseId)`);
+  const before = await orderNow();
+  check('reorder: two exercises in the order they were added', before.length === 2 && before[0] === BBP, JSON.stringify(before));
+  check('reorder: Move Up/Down are gone from the ⋯ menu', await evalJS(`(async () => {
+    document.querySelector('.ex-card[data-exercise-id="${BBP}"] .ex-menu').click();
+    await new Promise((r) => setTimeout(r, 300));
+    const labels = [...document.querySelectorAll('#sheet-root .sheet-row')].map((r) => r.textContent);
+    const has = labels.some((l) => l.includes('Move Up') || l.includes('Move Down'));
+    const backdrop = document.querySelector('#sheet-root .sheet-backdrop');
+    if (backdrop) backdrop.click();
+    return !has;
+  })()`));
+  await poll('menu closed', `document.querySelectorAll('#sheet-root .sheet-backdrop').length === 0`);
+
+  // Long press the SECOND card, then move it up.
+  await evalJS(`(() => {
+    const card = document.querySelectorAll('#s-workout .ex-card')[1];
+    const r = card.getBoundingClientRect();
+    card.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, clientX: r.left + 40, clientY: r.top + 10, bubbles: true }));
+    return true;
+  })()`);
+  await poll('card selected by long press', `document.querySelector('#s-workout .ex-card.ex-selected') != null`, 4000);
+  // Lift the finger, as a real long press does once the selection appears.
+  await evalJS(`(() => {
+    const card = document.querySelector('#s-workout .ex-card.ex-selected');
+    card.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+    return true;
+  })()`);
+  check('reorder: a long press selects the card and reveals its toolbar',
+    await exists('#s-workout .ex-selected [data-action="entry-up"]'));
+  await clickSel('move it up', '#s-workout .ex-selected [data-action="entry-up"]');
+  const after = await poll('order changed', `(() => {
+    const ids = [...document.querySelectorAll('#s-workout .ex-card')].map((c) => c.dataset.exerciseId);
+    return ids[0] !== ${J(before[0])} ? ids : null;
+  })()`);
+  check('reorder: moving up reorders the workout and persists', after[0] === before[1], JSON.stringify(after));
+  const persisted = await evalJS(`(async () => {
+    const db = await import('./js/db.js');
+    const w = await db.getWorkout(localStorage.getItem('currentWorkoutId'));
+    return (w.entries || []).map((e) => e.exerciseId);
+  })()`);
+  check('reorder: the new order is written to the workout record', persisted[0] === before[1], JSON.stringify(persisted));
+
+  // Swipe a set row left far enough to reveal Delete, then use it.
+  await clickSel('add a set to swipe', `.ex-card[data-exercise-id="${before[1]}"] .add-set`);
+  await poll('two set rows', `document.querySelectorAll('.ex-card[data-exercise-id="${before[1]}"] .set-row').length === 2`);
+  const swiped = await evalJS(`(async () => {
+    const row = document.querySelectorAll('.ex-card[data-exercise-id="${before[1]}"] .swipe-surface')[1];
+    const r = row.getBoundingClientRect();
+    const y = r.top + r.height / 2;
+    const send = (type, x) => row.dispatchEvent(new PointerEvent(type, { pointerId: 7, clientX: x, clientY: y, bubbles: true }));
+    send('pointerdown', r.right - 20);
+    for (let i = 1; i <= 8; i++) { send('pointermove', r.right - 20 - i * 12); await new Promise((res) => setTimeout(res, 16)); }
+    send('pointerup', r.right - 116);
+    await new Promise((res) => setTimeout(res, 450));
+    return !!row.closest('.swipe-host').classList.contains('swipe-open');
+  })()`);
+  check('swipe: dragging a set row left reveals its Delete button', swiped);
+  await clickSel('tap the revealed Delete', `.ex-card[data-exercise-id="${before[1]}"] [data-action="swipe-delete"]`);
+  check('swipe: tapping Delete removes the set',
+    await poll('back to one set row', `document.querySelectorAll('.ex-card[data-exercise-id="${before[1]}"] .set-row').length === 1`));
+  await finishActiveWorkout();
 
   // --- 16. No uncaught exceptions / console errors across the whole walk ---
   check('pwa: no uncaught exceptions or console errors during the walk', jsErrors.length === 0, jsErrors.join(' | '));

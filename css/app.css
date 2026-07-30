@@ -700,3 +700,70 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
 .tab-screen { padding: calc(var(--safe-top) + 20px) 18px 20px; }
 .tab-title { font-size: 30px; font-weight: 800; margin: 8px 0 16px; }
 .tab-placeholder { font-size: 15px; }
+
+/* ----------------------------------------------------------------------------
+   Swipe-to-delete rows (js/swipe.js)
+   ---------------------------------------------------------------------------- */
+.swipe-host {
+  position: relative;
+  overflow: hidden;
+  /* The wrapper inherits the spacing the content used to own, so wrapping a
+     card never changes the rhythm of the list around it. */
+  border-radius: inherit;
+}
+.swipe-surface {
+  position: relative;
+  z-index: 1;
+  background: inherit;
+  /* Vertical panning stays with the browser; only the horizontal component
+     reaches the gesture handler. */
+  touch-action: pan-y;
+  will-change: transform;
+}
+.swipe-delete {
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  z-index: 0;
+  width: var(--swipe-w, 92px);
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 0;
+  background: var(--danger); color: #fff;
+  font-size: 15px; font-weight: 600;
+  cursor: pointer;
+}
+.swipe-delete:active { opacity: 0.8; }
+/* Exercise cards carry their own bottom margin; hoist it to the wrapper so
+   the revealed button doesn't extend into the gap below the card. */
+.swipe-host.swipe-card { margin-bottom: 16px; border-radius: var(--radius); }
+.swipe-host.swipe-card > .swipe-surface > .ex-card { margin-bottom: 0; }
+
+/* ----------------------------------------------------------------------------
+   Long-press selection on an exercise card (js/screens/workout.js)
+   ---------------------------------------------------------------------------- */
+.ex-card { transition: box-shadow var(--dur-base) var(--ease-settle); }
+.ex-selected {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.ex-select-bar { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.ex-select-bar[hidden] { display: none; }
+.ex-select-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px;
+  border: 0; border-radius: 999px;
+  background: var(--card-2); color: var(--text);
+  cursor: pointer;
+  transition: opacity var(--dur-base) var(--ease-spring),
+              transform var(--dur-base) var(--ease-spring);
+}
+.ex-select-btn:active { opacity: 0.6; transform: scale(0.94); transition-duration: var(--dur-press); }
+.ex-select-btn svg { width: 18px; height: 18px; }
+.ex-select-btn.danger { color: var(--danger); }
+.ex-select-btn.done { background: var(--accent); color: var(--accent-ink); }
+/* The set grid is the swipe surface's own background, so it must be opaque. */
+.ex-card .swipe-surface { background: var(--card); }
+.copy-routine { margin-bottom: 12px; }
+/* With the toolbar in place the name has less room — truncate rather than
+   reflow the card to two lines while it is selected. */
+.ex-selected .ex-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

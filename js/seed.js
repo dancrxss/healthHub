@@ -21,7 +21,7 @@
 //   upgrade repairs installs that were seeded with the old v1 shapes and adds
 //   the cardio seeds.
 
-import { getMeta, setMeta, putExercise, putTemplate, listExercises } from './db.js';
+import { getMeta, setMeta, putExercise, listExercises } from './db.js';
 
 export const SEED_CREATED_AT = '2026-07-21T00:00:00.000Z';
 
@@ -107,7 +107,11 @@ export const SEED_EXERCISES = [
   { id: 'seed-stair-climber', name: 'Stair Climber', muscleGroup: 'cardio', equipment: 'other', exerciseType: 'cardio', isUnilateral: false, isCustom: false, createdAt: SEED_CREATED_AT, syncedAt: null },
 ];
 
-/** One hand-seeded template, e.g. "Push Day A", referencing seed-* ids. */
+/**
+ * A reference routine shape. NO LONGER SEEDED (30 Jul 2026) — routines are
+ * user-created via "Save as routine" on a workout. Kept exported because the
+ * browser test suite uses it as a known-good TemplateRecord fixture.
+ */
 export const SEED_TEMPLATE = {
   id: 'seed-template-push-day-a',
   name: 'Push Day A',
@@ -168,7 +172,10 @@ export async function seedIfEmpty() {
   const firstRun = !(await getMeta('seeded-v1'));
   if (firstRun) {
     for (const ex of SEED_EXERCISES) await putExercise(ex);
-    if (SEED_TEMPLATE) await putTemplate(SEED_TEMPLATE);
+    // NOT seeded any more (30 Jul 2026): routines are Dan's to create — the
+    // Copy Routine picker should start empty rather than pre-stocked. Existing
+    // installs keep the template they were given; deleting it would be a
+    // destructive migration for no gain (CLAUDE.md §2.1).
     await setMeta('seeded-v1', true);
     didWork = true;
   }

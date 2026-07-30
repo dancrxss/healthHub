@@ -25,12 +25,13 @@
 <body>
   <!-- Screens: all present in the DOM, toggled by the hash router in ui.js.
        Each is filled by its render function; JS never uses innerHTML with data.
-       Tab screens (#s-log, #s-routines, #s-stats) show the bottom tab bar; the
-       fullscreen screens (#s-workout, #s-pick, #s-settings) hide it via the
-       `fullscreen` body class. -->
+       Tab screens (#s-log, #s-stats) show the bottom tab bar; the fullscreen
+       screens (#s-workout, #s-pick, #s-settings, #s-copy, #s-routine) hide it
+       via the `fullscreen` body class. -->
   <main id="app">
     <section id="s-log" class="screen" hidden></section>
-    <section id="s-routines" class="screen" hidden></section>
+    <section id="s-copy" class="screen" hidden></section>
+    <section id="s-routine" class="screen" hidden></section>
     <section id="s-stats" class="screen" hidden></section>
     <section id="s-settings" class="screen" hidden></section>
     <section id="s-workout" class="screen" hidden></section>
@@ -46,13 +47,6 @@
         <path d="M8 3v18" />
       </svg>
       <span>Log</span>
-    </button>
-    <button type="button" data-tab="routines" aria-label="Routines">
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="5" y="4" width="14" height="16" rx="2" />
-        <path d="M9 8h6M9 12h6M9 16h4" />
-      </svg>
-      <span>Routines</span>
     </button>
     <button type="button" data-tab="stats" aria-label="Statistics">
       <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

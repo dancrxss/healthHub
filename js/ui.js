@@ -16,11 +16,12 @@ import * as timer from './timer.js';
 import { uid, nowISO, todayISO } from './util.js';
 import { EXERCISE_TYPE_GROUPS, blankSet } from './exercise-types.js';
 import { playOnce, motionOK } from './motion.js';
+import { closeOpenSwipe } from './swipe.js';
 
 import { renderWorkoutScreen } from './screens/workout.js';
 import { renderPick } from './screens/picker.js';
 import { renderLogTab } from './screens/log.js';
-import { renderRoutines } from './screens/routines.js';
+import { renderCopyPicker, renderRoutineEditor } from './screens/routines.js';
 import { renderStats } from './screens/stats.js';
 import { renderSettings } from './screens/settings.js';
 
@@ -37,13 +38,14 @@ let screenCleanup = null; // per-screen teardown (e.g. the elapsed ticker)
 
 const screens = {
   log: document.getElementById('s-log'),
-  routines: document.getElementById('s-routines'),
   stats: document.getElementById('s-stats'),
   settings: document.getElementById('s-settings'),
   workout: document.getElementById('s-workout'),
   pick: document.getElementById('s-pick'),
+  copy: document.getElementById('s-copy'),
+  routine: document.getElementById('s-routine'),
 };
-const TABS = ['log', 'routines', 'stats'];
+const TABS = ['log', 'stats'];
 
 // ----------------------------------------------------------------------------
 // Tiny DOM builder (hyperscript). No innerHTML anywhere.
@@ -449,6 +451,7 @@ export function setScreenCleanup(fn) {
 async function route() {
   if (screenCleanup) { try { screenCleanup(); } catch (e) { /* ignore */ } screenCleanup = null; }
   closeAllSheets();
+  closeOpenSwipe(); // a revealed Delete must never survive a navigation
 
   const raw = (location.hash || '#/').replace(/^#/, '');
   const parts = raw.split('/').filter(Boolean);
@@ -459,19 +462,28 @@ async function route() {
 
   if (!a) { location.replace('#/log'); return; }
   if (a === 'profile') { location.replace('#/settings'); return; } // legacy route
+  // The Routines tab became the Copy Routine picker + a routine editor reached
+  // from a workout's menu (30 Jul 2026); keep the old route working.
+  if (a === 'routines') { location.replace('#/copy/routines'); return; }
 
   const tab = TABS.includes(a) ? a : null;
-  document.body.classList.toggle('fullscreen', a === 'workout' || a === 'pick' || a === 'settings');
+  const fullscreenRoutes = ['workout', 'pick', 'settings', 'copy', 'routine'];
+  document.body.classList.toggle('fullscreen', fullscreenRoutes.includes(a));
   setActiveTab(tab);
 
   try {
     if (tab) {
       showScreen(tab);
       if (tab === 'log') await renderLogTab();
-      else if (tab === 'routines') await renderRoutines();
       // Stats owns its sub-routes (#/stats/exercises, #/stats/exercise/:id,
       // #/stats/category/:g, #/stats/overall/:metric …) — tab bar stays up.
       else await renderStats(parts.slice(1));
+    } else if (a === 'copy') {
+      showScreen('copy');
+      await renderCopyPicker(parts.slice(1));
+    } else if (a === 'routine') {
+      showScreen('routine');
+      await renderRoutineEditor(parts.slice(1));
     } else if (a === 'settings') {
       showScreen('settings');
       await renderSettings();

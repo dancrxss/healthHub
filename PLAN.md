@@ -346,3 +346,41 @@ CDP-touch drag-and-drop reorder, toggle wiring, autofill and rest-timer-gate
 behaviour checks), offline check, and visual screenshot review of the grid,
 chart detail, edit mode and settings screens. E2E harness now enables touch
 emulation (Input.dispatchTouchEvent is silently dropped without it).
+
+## Phase 1.9 — Routines reworked, gesture editing (30 July 2026)
+
+### Routines tab removed
+
+The tab bar is now **Log + Statistics**. Routines were a destination you rarely
+needed; what you actually want is to reuse a session while starting one.
+
+- **Copy Routine** sits above Add Exercise on an active workout → `#/copy`,
+  a picker in the exercise-picker language with two categories: **Routines**
+  (user-created; nothing is seeded any more) and **Previous Sessions**.
+  Choosing either copies its *skeleton* — exercises + number of sets, never the
+  loads — as blank sets, so each row shows its own last-session placeholder.
+  Exercises already in the workout are skipped rather than duplicated.
+- **Save as Routine** on a workout's ⋯ menu → `#/routine/from/:id`, the editor
+  prefilled with that session's skeleton, needing only a name.
+- Routine editing is a fullscreen screen (`#/routine/new|:id`), not a sheet.
+  `#/routines` redirects to `#/copy/routines`.
+- `seedIfEmpty` no longer seeds "Push Day A". Existing installs keep theirs —
+  deleting it would be a destructive migration (§2.1). `SEED_TEMPLATE` stays
+  exported as a test fixture.
+
+### Gesture editing
+
+- **Long press an exercise card** to pick it up: it lifts into a selected state
+  with a toolbar for move up / move down / delete. Replaces Move Up/Move Down
+  in the ⋯ menu — the controls now sit next to the thing being moved. 450ms,
+  cancelled by 8px of movement so a press that becomes a scroll never selects.
+- **Swipe left to delete** (`js/swipe.js`), shared by sets, exercise cards,
+  sessions and routines. Deleting a whole session still confirms; a set does
+  not (swipe + tap is already two deliberate steps).
+
+Two real bugs found while verifying the gesture, both invisible to the eye:
+swipe rows NEST (a set row inside a swipeable card), so both tracked one drag
+and the outer closed the inner — swiping a set actually swiped its card. And
+the gesture claim was permanent, so a pointerdown that never got its pointerup
+wedged swiping shut for the session. The claim is now keyed by pointerId, only
+blocks the same gesture, and is released document-wide on any pointerup.

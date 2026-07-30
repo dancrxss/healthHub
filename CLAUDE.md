@@ -266,11 +266,17 @@ cheaper to clarify than to recover.
   Phase 1 implementation plan derived from both. **UI structure exception
   (22 Jul 2026):** Dan supplied RepCount reference screenshots
   (`sample_screenshots/`) and asked for the UI to be reworked to that
-  structure — 4 tabs (Log/Routines/Statistics/Profile), per-exercise set-grid
-  cards, category-based picker, supersets, and Strength+Cardio exercise types.
+  structure — per-exercise set-grid cards, category-based picker, supersets,
+  and Strength+Cardio exercise types.
   For screen flow/layout the screenshots + `PLAN.md` §“Phase 1.5” now win over
   the spec; all domain rules below still stand (cardio sets are additionally
   excluded from PR/volume calcs, alongside warmups).
+  **Navigation since:** the tab bar went from 4 tabs to **Log + Statistics**
+  with a settings gear on every header (29 Jul 2026), then lost Routines
+  (30 Jul 2026) — routines are created from a workout's ⋯ menu (“Save as
+  Routine”) and re-used via **Copy Routine** on the workout screen, which also
+  copies the skeleton of any previous session. Nothing is seeded: the routine
+  library starts empty and is Dan's to fill.
 - **Stack:** Vanilla JS, no framework, no build step; single-file or
   near-single-file HTML PWA with IndexedDB as the local source of truth (same
   pattern as Odds IQ). No external runtime dependencies in the PWA. A standalone

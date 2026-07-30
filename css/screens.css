@@ -308,3 +308,29 @@ button.tab-card {
   .toggle::after { animation: none; transform: translateX(0); }
   .toggle.on::after { animation: none; transform: translateX(20px); }
 }
+
+/* ----------------------------------------------------------------------------
+   Copy Routine picker + routine editor (js/screens/routines.js)
+   ---------------------------------------------------------------------------- */
+.pick-cat-main { display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.pick-cat-sub { font-size: 12.5px; color: var(--muted); }
+.pick-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.pick-row-sub {
+  font-size: 12.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-row-chev { color: var(--faint); display: inline-flex; flex: 0 0 auto; }
+.pick-row-chev svg { width: 18px; height: 18px; }
+/* Swiped rows need an opaque surface so the Delete button stays behind them. */
+.copy-row { background: var(--bg); }
+.pick-list .swipe-host { border-bottom: 1px solid var(--line); }
+.pick-list .swipe-host .pick-row { border-bottom: 0; }
+
+.routine-screen { padding-top: 8px; }
+.routine-name-input { font-size: 17px; font-weight: 600; }
+.routine-entries { margin-bottom: 4px; }
+
+/* Log rows sit inside a rounded month card; the swipe wrapper must not clip
+   the card's own corners or paint over the divider between rows. */
+.month-card .swipe-host { background: var(--card); }
+.month-card .swipe-surface { background: var(--card); }

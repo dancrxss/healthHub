@@ -31,6 +31,7 @@ import {
 import { normalizeExerciseType, blankSet } from '../exercise-types.js';
 import { getSetting } from '../settings.js';
 import { playOnce, playOut, stagger } from '../motion.js';
+import { swipeRow } from '../swipe.js';
 import { enhanceInput } from '../inputs.js';
 import { editExerciseSheet } from './picker.js';
 
@@ -91,6 +92,60 @@ async function mutateSet(id, changes) {
   const s = await getSet(id);
   if (s) return putSet({ ...s, ...changes });
 }
+/** Reorder an exercise entry by `dir` places and persist. */
+async function moveEntry(workout, entries, index, dir) {
+  const j = index + dir;
+  if (j < 0 || j >= entries.length) return false;
+  const next = entries.slice();
+  [next[index], next[j]] = [next[j], next[index]];
+  await saveEntries(workout, next);
+  return true;
+}
+
+/** Delete an exercise entry and every set it owns. */
+async function deleteEntry(workout, entries, index, exerciseId) {
+  const next = entries.filter((_, k) => k !== index);
+  await saveEntries(workout, next);
+  const sets = (await listSetsForWorkout(workout.id)).filter((s) => s.exerciseId === exerciseId);
+  for (const s of sets) await deleteSet(s.id);
+}
+
+/**
+ * Long press an exercise card to pick it up: the card lifts into a selected
+ * state and grows a small toolbar for moving it up/down or deleting it.
+ * Anything else — a tap elsewhere, a route change, a re-render — drops it.
+ *
+ * Pointer events with a movement threshold, so a press that turns into a
+ * scroll never selects. 450ms matches the platform's own long-press.
+ */
+function attachLongPressSelect(card, onSelect) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+
+  card.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    // Controls inside the card keep their own behaviour.
+    if (e.target.closest('button, input, label')) return;
+    startX = e.clientX;
+    startY = e.clientY;
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      if (navigator.vibrate) navigator.vibrate(12);
+      onSelect();
+    }, 450);
+  });
+  card.addEventListener('pointermove', (e) => {
+    if (!timer) return;
+    if (Math.abs(e.clientX - startX) > 8 || Math.abs(e.clientY - startY) > 8) cancel();
+  });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
+    card.addEventListener(ev, cancel);
+  }
+}
+
 /** Renumber a single exercise's sets in a workout to stay 1-based contiguous. */
 async function renumberExercise(workoutId, exerciseId) {
   const sets = (await listSetsForWorkout(workoutId))
@@ -117,6 +172,7 @@ function setSummaryLine(s) {
 // ============================================================================
 export async function renderWorkoutScreen(workoutId) {
   renderTarget = workoutId ?? null;
+  clearEntrySelection(); // the selected card is about to be replaced
   stopElapsed(); // clear any prior ticker before this (re-)render installs one
   const isActive = workoutId == null;
   const screen = document.getElementById('s-workout');
@@ -172,6 +228,12 @@ export async function renderWorkoutScreen(workoutId) {
     }
   }
 
+  if (isActive) {
+    children.push(h('button', {
+      class: 'add-exercise copy-routine', 'data-action': 'copy-routine', type: 'button',
+      onclick: () => go('#/copy'),
+    }, Icon('history'), h('span', { text: 'Copy Routine' })));
+  }
   children.push(h('button', {
     class: 'add-exercise', 'data-action': 'add-exercise', type: 'button', onclick: () => go('#/pick'),
   }, Icon('plus'), h('span', { text: 'Add Exercise' })));
@@ -248,6 +310,10 @@ function workoutMenu(workout, isActive) {
       onClick: () => { closeSheet(); setCurrent(workout.id); go('#/workout'); },
     }));
   }
+  rows.push(sheetRow({
+    label: 'Save as Routine', icon: Icon('star'), action: 'save-as-routine',
+    onClick: () => { closeSheet(); go(`#/routine/from/${workout.id}`); },
+  }));
   rows.push(sheetRow({
     label: 'Delete Workout', icon: Icon('trash'), danger: true,
     onClick: () => {
@@ -329,6 +395,48 @@ function metaRow(label, valueEl) {
   return h('div', { class: 'meta-row' }, h('span', { class: 'meta-label', text: label }), valueEl);
 }
 
+// ---- long-press selection --------------------------------------------------
+/** The card currently picked up, if any. Only ever one. */
+let selectedCard = null;
+
+function clearEntrySelection() {
+  if (!selectedCard) return;
+  selectedCard.classList.remove('ex-selected');
+  const bar = selectedCard.querySelector('.ex-select-bar');
+  if (bar) bar.hidden = true;
+  selectedCard = null;
+  document.removeEventListener('pointerdown', onOutsidePointer, true);
+}
+
+function onOutsidePointer(e) {
+  if (!selectedCard) return;
+  if (e.target instanceof Node && selectedCard.contains(e.target)) return;
+  clearEntrySelection();
+}
+
+function selectEntryCard(card) {
+  clearEntrySelection();
+  selectedCard = card;
+  card.classList.add('ex-selected');
+  const bar = card.querySelector('.ex-select-bar');
+  if (bar) bar.hidden = false;
+  playOnce(card, 'anim-badge-pop');
+  document.addEventListener('pointerdown', onOutsidePointer, true);
+}
+
+function confirmDeleteEntry(workout, entries, index, entry, name) {
+  clearEntrySelection();
+  confirmSheet({
+    title: 'Delete exercise?',
+    message: `Removes ${name} and its sets from this workout.`,
+    confirmLabel: 'Delete', danger: true,
+    onConfirm: async () => {
+      await deleteEntry(workout, entries, index, entry.exerciseId);
+      reRender();
+    },
+  });
+}
+
 // ---- exercise card ---------------------------------------------------------
 function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, lastByEx, isActive) {
   const exercise = exMap.get(entry.exerciseId);
@@ -338,16 +446,47 @@ function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, lastByE
 
   const card = h('div', { class: 'ex-card', 'data-exercise-id': entry.exerciseId });
 
+  // Long-press toolbar: shown only while this card is the selected one.
+  const selectBar = h('div', { class: 'ex-select-bar', hidden: true },
+    h('button', {
+      class: 'ex-select-btn', type: 'button', 'aria-label': 'Move up', 'data-action': 'entry-up',
+      onclick: async () => { if (await moveEntry(workout, entries, index, -1)) reRender(); },
+    }, Icon('up')),
+    h('button', {
+      class: 'ex-select-btn', type: 'button', 'aria-label': 'Move down', 'data-action': 'entry-down',
+      onclick: async () => { if (await moveEntry(workout, entries, index, 1)) reRender(); },
+    }, Icon('down')),
+    h('button', {
+      class: 'ex-select-btn danger', type: 'button', 'aria-label': 'Delete exercise', 'data-action': 'entry-delete',
+      onclick: () => confirmDeleteEntry(workout, entries, index, entry, name),
+    }, Icon('trash')),
+    h('button', {
+      class: 'ex-select-btn done', type: 'button', 'aria-label': 'Done', 'data-action': 'entry-done',
+      onclick: () => clearEntrySelection(),
+    }, Icon('check')),
+  );
+
   card.append(h('div', { class: 'ex-card-head' },
     h('div', { class: 'ex-name', text: name }),
+    selectBar,
     h('button', {
       class: 'ex-menu', 'aria-label': 'Exercise menu', type: 'button',
       onclick: () => exerciseMenu(entry, index, workout, entries, exercise, isActive),
     }, Icon('dots')),
   ));
+
+  attachLongPressSelect(card, () => selectEntryCard(card));
   if (entry.note) card.append(h('div', { class: 'ex-note', text: entry.note }));
 
-  for (const s of exSets) card.append(buildSetRow(s, workout, exercise, refSets, isActive));
+  for (const s of exSets) {
+    card.append(swipeRow(buildSetRow(s, workout, exercise, refSets, isActive), {
+      onDelete: async () => {
+        await deleteSet(s.id);
+        await renumberExercise(workout.id, s.exerciseId);
+        reRender();
+      },
+    }));
+  }
 
   const addBtn = h('button', {
     class: 'add-set', 'data-exercise-id': entry.exerciseId, type: 'button',
@@ -368,7 +507,12 @@ function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, lastByE
     ),
   ));
 
-  return card;
+  // The whole card is swipeable too — same gesture as a set row, one level up.
+  const wrapper = swipeRow(card, {
+    onDelete: () => confirmDeleteEntry(workout, entries, index, entry, name),
+  });
+  wrapper.classList.add('swipe-card');
+  return wrapper;
 }
 
 // ---- set grid: always-present inputs ----------------------------------------
@@ -569,7 +713,16 @@ async function addSet(workout, exercise, exerciseId, exSets, refSets, isActive, 
   await putSet(base);
   exSets.push(base);
   const row = buildSetRow(base, workout, exercise, refSets, isActive);
-  card.querySelector('.ex-card-foot').before(row);
+  // Wrapped like the rows built during a render, so a set added mid-workout is
+  // swipe-deletable without waiting for the next re-render.
+  const wrapped = swipeRow(row, {
+    onDelete: async () => {
+      await deleteSet(base.id);
+      await renumberExercise(workout.id, base.exerciseId);
+      reRender();
+    },
+  });
+  card.querySelector('.ex-card-foot').before(wrapped);
   // THE hero animation: the new row squashes on landing, overshoots tall and
   // settles, hinged at its top so the card grows downwards. Purely decorative
   // — the row is already in the DOM and committed before this runs.
@@ -646,19 +799,10 @@ function setSheet(set, workout) {
 
 // ---- per-exercise sheet ----------------------------------------------------
 function exerciseMenu(entry, index, workout, entries, exercise, isActive) {
-  const move = async (dir) => {
-    const j = index + dir;
-    if (j < 0 || j >= entries.length) { closeSheet(); return; }
-    const next = entries.slice();
-    [next[index], next[j]] = [next[j], next[index]];
-    closeSheet();
-    await saveEntries(workout, next);
-    reRender();
-  };
-
+  // Move Up / Move Down used to live here. Reordering is now a long press on
+  // the card itself, which puts the controls next to the thing being moved
+  // instead of two sheet-taps away from it.
   const rows = [
-    sheetRow({ label: 'Move Up', icon: Icon('up'), onClick: () => move(-1) }),
-    sheetRow({ label: 'Move Down', icon: Icon('down'), onClick: () => move(1) }),
     sheetRow({
       label: 'Delete', icon: Icon('trash'), danger: true,
       onClick: () => {
