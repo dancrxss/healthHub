@@ -22,7 +22,7 @@
 //   without a value are omitted, not zero-filled).
 // ============================================================================
 
-import { epley1RM, isoWeekOf } from './calc.js';
+import { epley1RM } from './calc.js';
 import { todayISO } from './util.js';
 import { listWorkouts, listSetsForWorkout, listExercises } from './db.js';
 
@@ -114,12 +114,18 @@ function bucketStart(isoDate, groupBy) {
   return new Date(y, m - 1, d).getTime();
 }
 
-/** Short axis text for a bucket start: '6 Mar' | 'W31' | 'Mar 26' | '2026'. */
+/**
+ * Axis text for a bucket start — ALWAYS a real date, never a week number:
+ * day '6 Mar' | week '3 Aug' (the Monday it begins, per bucketStart) |
+ * month 'Mar 2026' | year '2026'. A week number tells you nothing at a
+ * glance; the date it starts on does.
+ */
 function bucketLabel(t, groupBy) {
   const date = new Date(t);
   if (groupBy === 'year') return String(date.getFullYear());
-  if (groupBy === 'month') return `${MONTHS[date.getMonth()]} ${String(date.getFullYear()).slice(2)}`;
-  if (groupBy === 'week') return isoWeekOf(isoOf(date)).slice(5); // '2026-W31' -> 'W31'
+  if (groupBy === 'month') return `${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+  // week buckets start on their Monday, so the same day/month form reads as
+  // "week beginning 3 Aug".
   return `${date.getDate()} ${MONTHS[date.getMonth()]}`;
 }
 
@@ -337,12 +343,12 @@ function zeroFill(points, groupBy) {
  * Compute a chartable time series.
  *
  * Buckets: groupBy 'day' = calendar day, 'week' = ISO week (calc.js
- * isoWeekOf), 'month' = calendar month, 'year' = calendar year. Buckets with
+ * Monday-anchored), 'month' = calendar month, 'year' = calendar year. Buckets with
  * no qualifying data are OMITTED except 'workouts'-style counts where a gap
  * genuinely means zero — then include zero buckets between the first and last
  * non-empty bucket so lines don't lie. Points ascend by t (bucket start, epoch
- * ms, local). label is short axis text ('6 Mar', 'W31', 'Mar 26', '2026' by
- * groupBy).
+ * ms, local). label is short axis text, always a real date — '6 Mar' (day),
+ * '3 Aug' (week, its Monday), 'Mar 2026' (month), '2026' (year).
  *
  * range: trailing window ending today — '3m' | '6m' | '1y' | 'all'.
  *

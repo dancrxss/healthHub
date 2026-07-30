@@ -601,6 +601,32 @@ try {
   })()`);
   check('stats: one Overall Statistics row per catalogue metric', overallRows.dom === overallRows.catalogue, JSON.stringify(overallRows));
 
+  // Card interaction: the chart area reads values and lets the page scroll;
+  // only the card's chrome opens the full screen.
+  await poll('module chart mounted', `document.querySelector('#s-stats .stat-card[data-module-id] .stats-chart svg') != null`, 12000);
+  check('stats: a card chart does not block vertical scrolling (touch-action)',
+    await evalJS(`(() => {
+      const svg = document.querySelector('#s-stats .stat-card[data-module-id] .stats-chart svg');
+      return svg && getComputedStyle(svg).touchAction === 'pan-y';
+    })()`));
+  await evalJS(`(() => { window.__hashBefore = location.hash; return true; })()`);
+  // SVGElement has no .click() — dispatch a real bubbling click so the card's
+  // listener genuinely gets the chance to (not) fire.
+  await evalJS(`(() => {
+    const svg = document.querySelector('#s-stats .stat-card[data-module-id] .stats-chart svg');
+    svg.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 300)); // deliberate: absence needs a beat
+  check('stats: tapping the chart shows values without leaving the grid',
+    await evalJS(`location.hash === window.__hashBefore && location.hash === '#/stats'`),
+    await evalJS(`location.hash`));
+  await clickSel('tap the card chrome', '#s-stats .stat-card[data-module-id] .stats-module-head .stats-module-title');
+  await poll('card chrome opened the chart screen', `location.hash.startsWith('#/stats/') && document.querySelector('#s-stats .chart-screen') != null`, 8000);
+  check('stats: tapping the card chrome opens the full chart screen', true);
+  await evalJS(`import('./js/ui.js').then((ui) => { ui.go('#/stats'); return true; })`);
+  await poll('back on the grid', `document.querySelector('#s-stats .stats-grid') != null`);
+
   // Chart detail: overall volume — svg renders, range pill re-renders it.
   await evalJS(`(() => { location.hash = '#/stats/overall/volume'; return true; })()`);
   await poll('overall volume chart screen', `document.querySelector('#s-stats .chart-screen svg') != null`, 12000);

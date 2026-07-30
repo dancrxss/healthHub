@@ -425,10 +425,20 @@ export function renderChart(container, spec) {
     'aria-label': 'chart',
   });
   svg.style.display = 'block';
-  // The chart area is not a scroll surface: swallow touch gestures here only,
-  // so pinch/pan never scrolls the page. Everything outside is unaffected.
-  svg.style.touchAction = 'none';
   svg.style.overflow = 'visible';
+
+  /**
+   * Touch-action follows the chart's job.
+   *  - interactive (the detail screen): 'none' — we own every gesture, so
+   *    pinch-zoom and pan never scroll the page underneath.
+   *  - static (the cards on the statistics grid): 'pan-y' — a vertical drag
+   *    scrolls the page as normal, because a card in a list must never be a
+   *    scroll trap. A tap still reaches us and shows the value readout.
+   */
+  function applyTouchAction() {
+    svg.style.touchAction = cfg.interactive ? 'none' : 'pan-y';
+  }
+  applyTouchAction();
 
   const defs = el('defs', null, svg);
   const grad = el('linearGradient', {
@@ -1172,6 +1182,7 @@ export function renderChart(container, spec) {
       if (destroyed) return;
       const prevPoints = cfg.rawPoints;
       cfg = normalise(next);
+      applyTouchAction(); // interactive may have flipped with the new spec
       if (cfg.rawPoints !== prevPoints) resetZoom();
       pointers.clear();
       mode = 'none';

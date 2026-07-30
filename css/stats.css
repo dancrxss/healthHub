@@ -52,13 +52,21 @@
 .stats-module-btn svg { width: 18px; height: 18px; }
 .stats-module-remove { color: var(--danger); }
 
-/* The whole card body is the tap target for "open the full chart". */
+/* The body just holds the chart. Opening the full screen is the CARD's job
+   (its head, padding and the margin around the chart) — the chart area itself
+   is reserved for reading values and for scrolling past. */
 .stats-module-body {
   display: block; width: 100%;
   padding: 0; border: 0;
   background: none; color: inherit; text-align: left;
-  cursor: pointer;
 }
+.stats-module-openable { cursor: pointer; }
+.stats-module-chev {
+  display: inline-flex; align-items: center;
+  flex: 0 0 auto;
+  color: var(--faint);
+}
+.stats-module-chev svg { width: 16px; height: 16px; }
 
 /* Every chart container carries an explicit height — charts.js sizes to it. */
 .stats-chart { position: relative; width: 100%; }

@@ -40,6 +40,9 @@ import { seedIfEmpty, SEED_EXERCISES } from '../js/seed.js';
 import { parseCSV, sniffDelimiter, detectColumns, buildImportPlan } from '../js/csv-import.js';
 import { computeSeries, categoryBreakdown } from '../js/stats-data.js';
 
+/** Mirrors the month abbreviations stats-data.js builds its labels from. */
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 const TEST_DB = 'healthhub-test';
 const SEED_DB = 'healthhub-seed-test';
 const UPGRADE_DB = 'healthhub-upgrade-test';
@@ -500,11 +503,24 @@ export async function runTests(rootEl, summaryElement) {
     eq('stats: workouts per week zero-fills the empty middle week', nWorkouts.points.map((p) => p.value), [2, 0, 1]);
     ok('stats: series points ascend by t', nWorkouts.points.every((p, i) => i === 0 || p.t > nWorkouts.points[i - 1].t));
     ok('stats: every point carries a label', nWorkouts.points.every((p) => typeof p.label === 'string' && p.label.length > 0), JSON.stringify(nWorkouts.points.map((p) => p.label)));
-    ok('stats: week labels look like W31', nWorkouts.points.every((p) => /^W\d{2}$/.test(p.label)), nWorkouts.points.map((p) => p.label).join(','));
+    // Week labels are the DATE the week begins (its Monday), never "W31".
+    ok('stats: week labels are the Monday date, not a week number',
+      nWorkouts.points.every((p) => /^\d{1,2} [A-Z][a-z]{2}$/.test(p.label)),
+      nWorkouts.points.map((p) => p.label).join(','));
+    ok('stats: each week label matches its own bucket Monday',
+      nWorkouts.points.every((p) => {
+        const d = new Date(p.t);
+        return d.getDay() === 1 && p.label === `${d.getDate()} ${MONTH_ABBR[d.getMonth()]}`;
+      }),
+      nWorkouts.points.map((p) => `${p.label}@${new Date(p.t).getDay()}`).join(','));
     eq('stats: count metric unit is blank', nWorkouts.unit, '');
 
     const daily = await computeSeries({ scope: overall, metric: 'workouts', groupBy: 'day', range: '3m' });
     ok('stats: day labels look like "6 Mar"', /^\d{1,2} [A-Z][a-z]{2}$/.test(daily.points[0].label), daily.points[0].label);
+    const monthly = await computeSeries({ scope: overall, metric: 'workouts', groupBy: 'month', range: 'all' });
+    ok('stats: month labels carry the full year ("Mar 2026")', /^[A-Z][a-z]{2} \d{4}$/.test(monthly.points[0].label), monthly.points[0].label);
+    const yearly = await computeSeries({ scope: overall, metric: 'workouts', groupBy: 'year', range: 'all' });
+    ok('stats: year labels are the year', /^\d{4}$/.test(yearly.points[0].label), yearly.points[0].label);
 
     // Volume: warmups and cardio out, warmups back in on request, unilateral doubling.
     const volume = await computeSeries({ ...weekly, metric: 'volume' });

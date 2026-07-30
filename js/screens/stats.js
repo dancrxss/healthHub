@@ -311,7 +311,7 @@ function buildModuleCard(spec, ctx) {
   return card;
 }
 
-function moduleHead(spec, title, headlineEl, onConfig) {
+function moduleHead(spec, title, headlineEl, onConfig, openable = false) {
   return h('div', { class: 'stats-module-head' },
     editing ? h('button', {
       class: 'stats-drag-handle', type: 'button', 'aria-label': 'Reorder card',
@@ -319,6 +319,9 @@ function moduleHead(spec, title, headlineEl, onConfig) {
     }, Icon('move')) : null,
     h('span', { class: 'stat-card-title stats-module-title', text: title }),
     headlineEl,
+    // A chevron on an openable card: the affordance for "tap the card (not the
+    // chart) to open the full screen".
+    openable && !editing ? h('span', { class: 'stats-module-chev' }, Icon('chevron')) : null,
     h('button', {
       class: 'stats-module-btn', type: 'button', 'aria-label': 'Card options',
       'data-action': 'module-config', onclick: onConfig,
@@ -344,16 +347,39 @@ function buildMetricModule(card, spec, ctx) {
   const def = metricDef(spec.scope.kind, spec.metric);
   const headline = h('span', { class: 'stat-card-headline stats-module-headline', text: '—' });
   const box = h('div', { class: 'stats-chart stats-chart-mini' });
-  const body = h('button', {
-    class: 'stats-module-body', type: 'button', 'aria-label': 'Open chart',
-    onclick: () => { if (!editing) go(chartHash(spec.scope, def.id)); },
-  }, box);
+  // The chart itself is for READING: a tap there scrubs the value readout and
+  // a drag scrolls the page (charts.js sets touch-action: pan-y on a static
+  // chart). It must never navigate — so its clicks stop here, and the card's
+  // own chrome around it is what opens the full screen.
+  box.addEventListener('click', (e) => e.stopPropagation());
+  const body = h('div', { class: 'stats-module-body' }, box);
 
   card.replaceChildren(
-    moduleHead(spec, moduleTitle(spec, def, ctx), headline, () => moduleConfigSheet(spec)),
+    moduleHead(spec, moduleTitle(spec, def, ctx), headline, () => moduleConfigSheet(spec), true),
     body,
   );
+  makeCardOpenable(card, () => go(chartHash(spec.scope, def.id)));
   loadModuleChart(spec, def, box, headline, ctx.token);
+}
+
+/**
+ * Tapping a card's chrome — its head, padding, the margin around the chart —
+ * opens the full chart screen. Taps that landed on a control (or on the chart,
+ * which stops its own clicks above) are ignored, and nothing fires in edit
+ * mode, where the card belongs to the drag/remove interaction instead.
+ *
+ * A plain click listener is deliberate: the browser withholds click after a
+ * touch that scrolled, so scrolling with a finger on the card can never open
+ * anything.
+ */
+function makeCardOpenable(card, open) {
+  card.classList.add('stats-module-openable');
+  card.setAttribute('data-action', 'card-open');
+  card.addEventListener('click', (e) => {
+    if (editing) return;
+    if (e.target.closest('button, input, a, .stats-chart')) return;
+    open();
+  });
 }
 
 async function loadModuleChart(spec, def, box, headlineEl, token) {
