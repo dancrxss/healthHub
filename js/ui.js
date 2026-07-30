@@ -548,6 +548,19 @@ async function updateResumeBar(routeHead) {
 // ----------------------------------------------------------------------------
 async function init() {
   if ('serviceWorker' in navigator) {
+    // Self-updating PWA: the SW is cache-first, so a launch always shows the
+    // OLD version while the new one installs in the background. When the new
+    // worker takes control (skipWaiting + clients.claim in sw.js), reload once
+    // so the update lands on THIS launch instead of the next. The
+    // hadController guard stops the very first install from reloading, and the
+    // once-flag stops any loop. Data is safe — IndexedDB is not the SW cache.
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      reloading = true;
+      location.reload();
+    });
     try { await navigator.serviceWorker.register('sw.js'); } catch (e) { /* file:// etc. */ }
   }
   try { await seedIfEmpty(); } catch (e) { console.error('seed failed', e); }
