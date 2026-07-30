@@ -1,0 +1,134 @@
+/* ============================================================================
+   css/motion.css — the motion system. Every animation in the app pulls its
+   easing, duration and keyframes from here, so the whole product moves like
+   one object.
+
+   THE BRIEF: premium and calm. Real spring physics, squash-and-stretch on the
+   things that "arrive", floaty transitions between states. Restraint is the
+   whole game — a gym app is used mid-set, one-handed, sometimes shaking. If a
+   flourish ever delays a tap, it is wrong.
+
+   SPRINGS, NOT BOUNCES. The easings below are genuine damped-spring curves
+   (x(t) = 1 − e^(−ζωt)(cos ω_d t + (ζω/ω_d) sin ω_d t)) sampled into CSS
+   linear(). That is what separates "premium" from "dated": a cartoon
+   cubic-bezier(.68,-.6,.32,1.6) overshoots ~25% and draws attention to
+   itself; these settle at 1–11% and just read as physical.
+
+   linear() is Safari 17.4+ / Chrome 113+. Every spring token is declared
+   TWICE — a cubic-bezier first, the spring second — so old engines keep the
+   bezier via the cascade and nothing is ever left un-eased.
+
+   Reduced motion: css/app.css already kills every animation and transition
+   under prefers-reduced-motion with !important. Nothing here needs to opt in,
+   and nothing here may use !important, or it would defeat that.
+   ============================================================================ */
+
+:root {
+  /* ---- Easing ------------------------------------------------------------ */
+  /* Classic decelerations, for things that simply move. */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* settle — ζ0.82, ~1% overshoot. Calm arrivals, screen changes, anything
+     large. Reads as "weighted", never as "boing". */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-settle: linear(0 0%, 0.0256 4%, 0.0895 8%, 0.1763 12%, 0.2741 15%, 0.3748 19%, 0.4725 23%, 0.5636 27%, 0.6458 31%, 0.7181 35%, 0.7803 38%, 0.8326 42%, 0.8759 46%, 0.911 50%, 0.9388 54%, 0.9605 58%, 0.977 62%, 0.9892 65%, 0.9979 69%, 1.0039 73%, 1.0077 77%, 1.0099 81%, 1.0109 85%, 1.0111 88%, 1.0106 92%, 1.0098 96%, 1 100%);
+
+  /* spring — ζ0.70, ~4.6% overshoot. The house curve: sheets, drag settles,
+     press releases. Enough life to feel sprung, not enough to feel silly. */
+  --ease-spring: cubic-bezier(0.18, 1.12, 0.4, 1);
+  --ease-spring: linear(0 0%, 0.026 4%, 0.0926 8%, 0.1848 12%, 0.2908 15%, 0.4013 19%, 0.5096 23%, 0.611 27%, 0.7025 31%, 0.7823 35%, 0.85 38%, 0.9057 42%, 0.95 46%, 0.9841 50%, 1.0092 54%, 1.0266 58%, 1.0377 62%, 1.0438 65%, 1.0459 69%, 1.0452 73%, 1.0425 77%, 1.0384 81%, 1.0336 85%, 1.0286 88%, 1.0235 92%, 1.0188 96%, 1 100%);
+
+  /* pop — ζ0.58, ~10.7% overshoot. Reserved for small things that appear out
+     of nowhere and must be noticed: the rest pill, the resume pill. */
+  --ease-pop: cubic-bezier(0.15, 1.3, 0.4, 1);
+  --ease-pop: linear(0 0%, 0.0265 4%, 0.0959 8%, 0.1941 12%, 0.3092 15%, 0.4312 19%, 0.5521 23%, 0.6662 27%, 0.7693 31%, 0.8589 35%, 0.9338 38%, 0.9937 42%, 1.0393 46%, 1.0717 50%, 1.0926 54%, 1.1037 58%, 1.1068 62%, 1.1037 65%, 1.0962 69%, 1.0856 73%, 1.0732 77%, 1.0602 81%, 1.0473 85%, 1.0352 88%, 1.0242 92%, 1.0147 96%, 1 100%);
+
+  /* ---- Duration ---------------------------------------------------------- */
+  /* Exits run at ~70% of their entrance: leaving should never cost the user
+     time, arriving is what deserves the grace. */
+  --dur-press: 90ms;    /* finger-down acknowledgement */
+  --dur-quick: 180ms;   /* toggles, small state flips */
+  --dur-base: 300ms;    /* the default state change */
+  --dur-enter: 420ms;   /* a spring arriving */
+  --dur-exit: 220ms;    /* the same thing leaving */
+  --dur-screen: 340ms;  /* route/tab change */
+}
+
+/* ============================================================================
+   Keyframes. Transform + opacity only — never a layout property.
+   ============================================================================ */
+
+/* A set row landing in the card. THE hero moment: it is the single most
+   repeated interaction in the app, so it gets the only real squash-and-stretch
+   — compress on impact, overshoot tall, settle. transform-origin: top keeps
+   the row hinged to the row above it, so the card grows downwards. */
+@keyframes set-row-in {
+  0%   { opacity: 0; transform: translateY(-10px) scaleY(0.82); }
+  45%  { opacity: 1; transform: translateY(0) scaleY(1.06); }
+  72%  { transform: scaleY(0.985); }
+  100% { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+
+/* A pill arriving from off-screen bottom. Centred pills carry
+   translateX(-50%), so it is baked into every frame — dropping it would fling
+   the pill to the right edge mid-animation. */
+@keyframes pill-in {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(18px) scale(0.86); }
+  100% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+@keyframes pill-out {
+  0%   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.94); }
+}
+
+/* Screens and sheets drifting into place — the "floaty" layer. */
+@keyframes float-in {
+  0%   { opacity: 0; transform: translateY(8px) scale(0.994); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* Cards in a list, staggered by --stagger-i. */
+@keyframes card-in {
+  0%   { opacity: 0; transform: translateY(12px) scale(0.985); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* SVG series reveal. --draw-len is set inline from getTotalLength(). */
+@keyframes draw-line {
+  0%   { stroke-dashoffset: var(--draw-len, 0); }
+  100% { stroke-dashoffset: 0; }
+}
+
+/* A bar growing out of its baseline (needs transform-box: fill-box and
+   transform-origin: bottom on the rect/path). */
+@keyframes bar-grow {
+  0%   { transform: scaleY(0); }
+  100% { transform: scaleY(1); }
+}
+
+/* One soft breath of accent — a value landed, a record was set. */
+@keyframes accent-flash {
+  0%   { background-color: rgba(78, 205, 214, 0); }
+  35%  { background-color: rgba(78, 205, 214, 0.16); }
+  100% { background-color: rgba(78, 205, 214, 0); }
+}
+
+/* ============================================================================
+   Shared utility classes
+   ============================================================================ */
+.anim-set-row-in {
+  transform-origin: top center;
+  animation: set-row-in var(--dur-enter) var(--ease-out-quint) both;
+  will-change: transform, opacity;
+}
+.anim-float-in { animation: float-in var(--dur-screen) var(--ease-settle) both; }
+.anim-card-in {
+  animation: card-in var(--dur-enter) var(--ease-settle) both;
+  animation-delay: calc(var(--stagger-i, 0) * 45ms);
+}
+.anim-accent-flash { animation: accent-flash 620ms var(--ease-out-quint) both; }
+
+/* will-change is a promise, not decoration. JS strips these classes on
+   animationend (see js/motion.js) so the compositor releases the layer
+   instead of holding one per row for the life of the workout. */
