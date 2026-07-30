@@ -14,4 +14,5 @@ smoke check passes.
 2026-07-30 · frontend · 1115c35 · "statistics rework (SVG charts, metric layer, customisable drag-drop grid) + wired settings toggles, SW v8" · Claude (for Dan)
 2026-07-30 · frontend · 4e8ba88 · "self-updating PWA: reload once on new SW controllerchange, SW v9" · Claude (for Dan)
 2026-07-30 · frontend · cc10578 · "stats cards scroll-safe + tap-to-read, chart axes use real dates, SW v10" · Claude (for Dan)
+2026-07-30 · frontend · e8a7e5c · "motion pass: spring physics, squash-and-stretch set rows, floaty transitions, SW v11" · Claude (for Dan)
 ```
