@@ -16,4 +16,5 @@ smoke check passes.
 2026-07-30 · frontend · cc10578 · "stats cards scroll-safe + tap-to-read, chart axes use real dates, SW v10" · Claude (for Dan)
 2026-07-30 · frontend · e8a7e5c · "motion pass: spring physics, squash-and-stretch set rows, floaty transitions, SW v11" · Claude (for Dan)
 2026-07-30 · frontend · d8931e8 · "motion tail: exit animations, pie sweep, sliding range indicator, reveal-latch fix, SW v12" · Claude (for Dan)
+2026-07-30 · frontend · 6180bfd · "routines rework (copy routine / save as routine), long-press reorder, swipe-to-delete, SW v13" · Claude (for Dan)
 ```
