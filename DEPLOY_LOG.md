@@ -13,4 +13,5 @@ smoke check passes.
 2026-07-29 16:20 UTC · frontend · 0a9e63f · "shell restructure: 3 tabs + settings gear, stats/settings contracts, SW v7" · Claude (for Dan)
 2026-07-30 · frontend · 1115c35 · "statistics rework (SVG charts, metric layer, customisable drag-drop grid) + wired settings toggles, SW v8" · Claude (for Dan)
 2026-07-30 · frontend · 4e8ba88 · "self-updating PWA: reload once on new SW controllerchange, SW v9" · Claude (for Dan)
+2026-07-30 · frontend · cc10578 · "stats cards scroll-safe + tap-to-read, chart axes use real dates, SW v10" · Claude (for Dan)
 ```
