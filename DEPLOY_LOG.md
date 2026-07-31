@@ -18,3 +18,4 @@ smoke check passes.
 2026-07-30 · frontend · d8931e8 · "motion tail: exit animations, pie sweep, sliding range indicator, reveal-latch fix, SW v12" · Claude (for Dan)
 2026-07-30 · frontend · 6180bfd · "routines rework (copy routine / save as routine), long-press reorder, swipe-to-delete, SW v13" · Claude (for Dan)
 ```
+2026-07-31 ~11:45 UTC · pwa · 5c1edf8 · "Apple Health integration + native shell groundwork (SW v14): health store DB v2, js/health.js, Health UI, privacy.html" · Claude
