@@ -1,0 +1,9 @@
+{
+  "appId": "com.dancross.gymtracker",
+  "appName": "Gym Tracker",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#0b0d0f"
+  }
+}

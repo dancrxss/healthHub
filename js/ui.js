@@ -614,7 +614,10 @@ async function updateResumeBar(routeHead) {
 // Startup
 // ----------------------------------------------------------------------------
 async function init() {
-  if ('serviceWorker' in navigator) {
+  // Inside the Capacitor shell the assets are bundled with the app, so the SW
+  // adds nothing and its reload-on-update dance can fight the native lifecycle.
+  const isNativeShell = !!window.Capacitor?.isNativePlatform?.();
+  if ('serviceWorker' in navigator && !isNativeShell) {
     // Self-updating PWA: the SW is cache-first, so a launch always shows the
     // OLD version while the new one installs in the background. When the new
     // worker takes control (skipWaiting + clients.claim in sw.js), reload once

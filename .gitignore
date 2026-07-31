@@ -2,6 +2,7 @@
 .env.*
 .DS_Store
 node_modules/
+www/
 .claude/settings.local.json
 
 # Personal training data (public repo) — reference exports stay local
