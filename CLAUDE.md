@@ -251,15 +251,26 @@ cheaper to clarify than to recover.
 
 ## 10. Project addendum — Gym Tracker (healthHub)
 
-*Filled in 21 July 2026 from the initial brief.*
+*Filled in 21 July 2026 from the initial brief. Rewritten 31 July 2026 for the
+App Store pivot (see "Direction change" below).*
 
-- **Product:** A personal gym workout tracker for a single user (Dan) — an
-  offline-first PWA replacing RepCount, prioritising a ≤2-tap repeat-set logging
-  flow with an auto rest timer. Dan owns all the data (local-first, later
-  Azure-synced), and the derived query layer is designed as a frozen contract for
-  a future MCP server so Claude can read training data directly. It is **not** a
-  multi-user product, a social/coaching app, a wearable integration (P2 wishlist
-  only), or a native App Store app.
+- **Direction change (31 Jul 2026):** Dan decided healthHub will become an
+  **end-user iOS app on the App Store**, with a one-tap, on-device
+  **Apple Health integration** as a headline feature. The previously planned
+  Azure Table Storage sync and cloud MCP server (old Phase 2) are **cancelled**
+  — with health and gym data read on-device there is no need for a backend, and
+  no health data ever leaves the phone. This supersedes the original brief's
+  "not a native App Store app / not multi-user" scoping.
+- **Product:** An offline-first gym workout tracker replacing RepCount,
+  prioritising a ≤2-tap repeat-set logging flow with an auto rest timer.
+  Distributed two ways from one codebase: the **PWA on GitHub Pages** (Dan's
+  daily driver and the dev/test channel) and a **native iOS shell** (Capacitor)
+  destined for the App Store. Each user owns all their data — everything lives
+  in on-device IndexedDB; there are no accounts, no backend, no telemetry.
+  Apple Health integration (native shell only): read Watch workouts, heart
+  rate, body weight and recovery metrics into the local store; write logged
+  gym sessions back to Apple Health. It is **not** a social/coaching app and
+  has no server-side component.
 - **Authoritative build spec:** `gym-tracker-spec.md` (the spec), with
   `gym-tracker-claude-code-handoff.md` defining Phase 1 session scope. **Where
   they conflict, the spec wins** (per the handoff itself). `PLAN.md` is the
@@ -277,42 +288,71 @@ cheaper to clarify than to recover.
   Routine”) and re-used via **Copy Routine** on the workout screen, which also
   copies the skeleton of any previous session. Nothing is seeded: the routine
   library starts empty and is Dan's to fill.
-- **Stack:** Vanilla JS, no framework, no build step; single-file or
+- **Stack:** Vanilla JS, no framework, no build step for the web code;
   near-single-file HTML PWA with IndexedDB as the local source of truth (same
-  pattern as Odds IQ). No external runtime dependencies in the PWA. A standalone
-  Node script (`import-repcount.js`) for the one-off RepCount CSV import may use
-  Node built-ins plus a CSV parser. Future sync target: Azure Table Storage
-  (Phase 2 — interface stubbed now, no Azure resources provisioned).
-- **Source-of-truth docs:** No infrastructure doc yet — nothing is deployed and
-  no cloud resources exist. When Azure sync lands (Phase 2), create the infra doc
-  in that same session. No component catalog — vanilla JS single-file app, no
+  pattern as Odds IQ). No external runtime dependencies in the PWA. **Native
+  layer (31 Jul 2026):** a Capacitor iOS shell (`ios/`, generated project) wraps
+  the same web assets; Capacitor is a *packaging* layer only — `npm`/`npx cap`
+  are used to assemble `www/` and sync the Xcode project, the web code itself
+  stays no-build vanilla JS and must keep working as a plain PWA. HealthKit
+  access is a custom Swift `CAPPlugin` in the shell, reached from JS via
+  `window.Capacitor.Plugins.HealthKit` (feature-detected; absent in the PWA).
+  A standalone Node script (`import-repcount.js`) for the one-off RepCount CSV
+  import may use Node built-ins plus a CSV parser. **No Azure / no sync
+  backend** — cancelled 31 Jul 2026 (`js/sync.js` stub is dormant, leave it).
+- **Source-of-truth docs:** No infrastructure doc — there are no cloud
+  resources and none planned (static hosting only). `APP_STORE.md` tracks the
+  App Store submission checklist and the steps only Dan can do (developer
+  account, signing, TestFlight). No component catalog — vanilla JS app, no
   shared component library (§4's `COMPONENTS.md` rule dormant).
-- **Deploy path:** **GitHub Pages** serves the repo root of `main` at
-  https://dancrxss.github.io/healthHub/ — every push to `main` auto-deploys
-  (the repo was made **public** on 21 July 2026 to enable this on the free
-  plan). No CI gate: run `node tests/calc.test.mjs` and `./tests/e2e.sh`
-  locally before pushing, and smoke-check the live URL after (§2.4).
-  `DEPLOY_LOG.md` records production-affecting deploys.
+- **Deploy path:** Two channels.
+  1. **PWA — GitHub Pages** serves the repo root of `main` at
+     https://dancrxss.github.io/healthHub/ — every push to `main` auto-deploys
+     (repo public since 21 July 2026). No CI gate: run
+     `node tests/calc.test.mjs` and `./tests/e2e.sh` locally before pushing,
+     and smoke-check the live URL after (§2.4). `DEPLOY_LOG.md` records
+     production-affecting deploys.
+  2. **Native — Xcode → TestFlight → App Store.** `node scripts/build-www.mjs
+     && npx cap sync ios` assembles the shell, then build/archive in Xcode.
+     Native builds are inherently local (§6.2 exception — there is no hosted
+     iOS build farm and no CI for this yet). Store releases also get a
+     `DEPLOY_LOG.md` line.
 - **Hosted vs local:** The PWA is hosted on GitHub Pages but inherently
   local-first — all data lives in on-device IndexedDB; there is no backend.
-  The import script is explicitly a one-off local run (no live DB, no
-  scraping). §6.2's "everything hosted" rule is satisfied by the static host.
+  Health data additionally **never leaves the device at all** (App Review
+  guideline 5.1.3 and our own rule). The import script is explicitly a one-off
+  local run. §6.2's "everything hosted" rule is satisfied by the static host;
+  Xcode builds are the documented exception.
 - **Domain rules (must not change silently):**
   - All weights stored in **kg** (numeric). Display units are a client concern.
-  - Derived query layer is a **frozen contract** for the future MCP server:
-    `getLastSession`, `getRecentWorkouts`, `getPRs`, `getWeeklyVolume`,
-    `getTrainingFrequency` — exact names and signatures per the spec; never
-    change without flagging it first.
-  - Warmup sets (`isWarmup`) are **excluded** from PR and volume calculations.
+  - The derived query layer (`getLastSession`, `getRecentWorkouts`, `getPRs`,
+    `getWeeklyVolume`, `getTrainingFrequency`) is no longer an MCP contract
+    (MCP cancelled 31 Jul 2026) but stays a **stable internal API** — flag any
+    signature change before making it.
+  - Warmup sets (`isWarmup`) are **excluded** from PR and volume calculations
+    (cardio sets likewise).
   - 1RM estimate uses Epley: `w × (1 + reps/30)`.
-  - Everything beyond Exercise / Workout / Set / Template is **derived, never
-    stored**.
-  - Azure Table Storage partition/row key scheme is fixed per the spec's mapping
-    table.
+  - Stored entities are Exercise / Workout / Set / Template **plus HealthSample
+    (31 Jul 2026)** — raw Apple Health samples keyed by their HealthKit UUID.
+    Everything else is **derived, never stored**.
+  - **Health data never leaves the device.** No upload, no analytics, no
+    third-party sharing, no iCloud storage of health data — both an App Review
+    guideline (5.1.3) and a product promise. Any future feature that would
+    move health data off-device needs an explicit, separate, default-off
+    consent AND Dan's sign-off first.
+  - **HealthKit scope stays minimal.** Read: workouts, heart rate, resting HR,
+    HRV (SDNN), VO₂max, body mass, body fat %, sleep analysis, active energy.
+    Write: workouts (+ active energy) only. Adding a type to either list is a
+    flagged change. Never assume read permission was granted — Apple hides
+    denials; UI copy must say "no data found", never "you blocked this".
+  - HealthKit imports are idempotent: sample UUID is the IndexedDB key; upserts
+    only, never delete (matches the CSV import rule).
   - Logging flow acceptance criteria (spec §"Acceptance criteria") are the
     make-or-break; ≤2 taps for a repeat set.
   - UK English, plain copy. Mobile-first, one-handed use, big touch targets.
   - Import is idempotent; upserts only, never delete (per §4 data rules).
+  - The app must stay fully functional as a plain PWA — Apple Health is a
+    progressive enhancement behind feature detection, never a dependency.
 - **Overrides & dormant sections:**
   - **§4 backend conventions (Python/FastAPI/SQLAlchemy) — dormant.** No backend
     in Phase 1. The import script follows the spirit (typed, small, tested).
@@ -327,5 +367,8 @@ cheaper to clarify than to recover.
     (bounded reads, no accidental full scans in hot paths) still applies.
   - **§2.1 "live product" rules** apply from the moment real workout data exists
     on Dan's phone: IndexedDB migrations must be additive and never destructive.
-  - **Out of scope this phase** (per handoff): MCP server code, Azure
-    provisioning/deploy, auth, multi-user, wearables, templates CRUD UI.
+    This now also covers end users' devices once the app ships — schema
+    versioning discipline is permanent.
+  - **Out of scope** (31 Jul 2026): MCP server code, Azure provisioning, cloud
+    sync of any kind, auth/accounts, Android (Capacitor makes it possible
+    later; not now), social features, templates CRUD UI beyond routines.
