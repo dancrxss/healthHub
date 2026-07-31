@@ -384,3 +384,76 @@ and the outer closed the inner — swiping a set actually swiped its card. And
 the gesture claim was permanent, so a pointerdown that never got its pointerup
 wedged swiping shut for the session. The claim is now keyed by pointerId, only
 blocks the same gesture, and is released document-wide on any pointerup.
+
+## Phase N — Native iOS shell + Apple Health (31 July 2026)
+
+Direction change (CLAUDE.md §10): healthHub becomes an end-user App Store app.
+Azure sync and the cloud MCP server are cancelled; Apple Health integration is
+on-device only, health data never leaves the phone. The web app stays a
+no-build vanilla-JS PWA and must keep working unchanged on GitHub Pages —
+everything below is progressive enhancement behind feature detection.
+
+### N1 — Capacitor shell (done)
+
+`package.json` + `capacitor.config.json` + `scripts/build-www.mjs` assemble
+`www/` and generate `ios/` (Capacitor 7, SPM, no CocoaPods). SW registration
+is skipped when `window.Capacitor.isNativePlatform()`. appId
+`com.dancross.gymtracker`, appName "Gym Tracker".
+
+### N2 — Pinned contracts
+
+**DB (js/db.js, DB_VERSION 2, additive):** new `health` store, keyPath `id`,
+index `by-type-start` on `['type','startedAt']`. `HEALTH_TYPES` and
+`HealthSampleRecord` are documented in db.js. Repository API:
+`putHealthSamples(samples)`, `listHealthSamples(type, {since, limit})`,
+`getLatestHealthSample(type)`, `clearHealthSamples()` (user-initiated only).
+
+**Meta keys:** `healthConnected` (bool), `healthLastSyncAt` (ISO string),
+`healthWriteWorkouts` (bool, default true — "save gym sessions to Apple
+Health").
+
+**Swift plugin (`HealthKit`, in-app CAPPlugin, registered via a
+CAPBridgeViewController subclass):** methods, all resolving plain objects:
+- `requestAuthorization()` → `{requested: true}` — presents the HealthKit
+  sheet for the §10 read set + workout write. Read denials are invisible by
+  design; never claim to know grant state.
+- `startSync({backfillDays})` → `{started: true}` — runs anchored queries per
+  type (anchors persisted in UserDefaults, so the first call is the backfill
+  and later calls are deltas), enables background delivery + observer queries,
+  and emits `samples` events as batches: `{type, samples: [HealthSampleRecord],
+  done: boolean}`. Per-type backfill caps: heartRate 30 days, sleepAnalysis 90,
+  everything else 365. activeEnergy arrives as daily totals
+  (HKStatisticsCollectionQuery) with deterministic ids `activeEnergy-YYYY-MM-DD`.
+- `stopSync()` → disables background delivery, clears anchors.
+- `saveWorkout({name, startedAt, endedAt, kcal})` → `{saved: boolean}` —
+  writes an HKWorkout (traditionalStrengthTraining) with optional total energy.
+- `getStatus()` → `{available: boolean, authorizationRequested: boolean}`.
+
+Workout samples carry `meta.avgHeartRate` (statistics query over the workout
+window) and `meta.kcal`, `meta.activityType`, `meta.distanceM`.
+
+**JS bridge (`js/health.js`):** the only file that touches
+`window.Capacitor.Plugins.HealthKit`. Public API:
+`healthAvailable()`, `getHealthState()` → `{available, connected, lastSyncAt}`,
+`connectHealth()`, `disconnectHealth({purge})`, `syncNow()`,
+`onHealthUpdate(cb)` (fires after each stored batch), `initHealth()` (called
+once from ui.js init; wires plugin event listeners → putHealthSamples → meta
+updates), `saveWorkoutToHealth(workout, sets)` (no-op unless native +
+connected + healthWriteWorkouts; computes kcal `null`, duration from
+startedAt/finishedAt).
+
+**UI:** Settings gains an "Apple Health" section (hidden in the PWA;
+Connect state → status/Sync now/write-toggle/Disconnect states when native).
+Stats gains a "Health" section (latest weight + 30-day trend, resting HR, HRV,
+last night's sleep, VO₂max) rendered only when connected and data exists.
+Workout finish calls `saveWorkoutToHealth`. Copy rule: absence of data is
+always "No data found — check Settings → Health → Data Access", never "you
+blocked this".
+
+### N3 — Store prep
+
+`privacy.html` (served on Pages — the App Store privacy policy URL),
+`APP_STORE.md` (submission checklist + Dan-only steps: Apple Developer
+account, Xcode install, signing, TestFlight, App Privacy labels). Purpose
+strings + HealthKit entitlements (incl. background delivery) wired into the
+Xcode project.

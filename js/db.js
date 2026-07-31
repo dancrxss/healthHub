@@ -65,12 +65,43 @@
 //   {Array<{exerciseId:string, targetSets:number, targetRepsLow:number,
 //           targetRepsHigh:number}>} entries   ordered
 //   {string|null} syncedAt
+//
+// @typedef {Object} HealthSampleRecord  (schema v3, 31 Jul 2026 — DB_VERSION 2,
+// additive: new 'health' store only, existing stores untouched. No syncedAt —
+// cloud sync is cancelled and health data never leaves the device.)
+//   {string} id        HealthKit sample UUID, or a deterministic derived id for
+//                      daily aggregates (e.g. "activeEnergy-2026-07-31") —
+//                      either way re-import is an idempotent upsert
+//   {string} type      one of HEALTH_TYPES
+//   {string} startedAt ISO datetime
+//   {string} endedAt   ISO datetime (== startedAt for point samples)
+//   {number|null} value  canonical unit per type (see HEALTH_TYPES)
+//   {string|null} unit   canonical unit label, e.g. 'kg', 'bpm', 'ms', 'kcal'
+//   {Object|null} meta   type-specific extras:
+//     workout: {activityType:string, kcal:number|null, avgHeartRate:number|null,
+//               distanceM:number|null}   (value = duration in seconds)
+//     sleepAnalysis: {stage:'inBed'|'asleepCore'|'asleepDeep'|'asleepREM'|'awake'}
+//                                        (value = duration in seconds)
 
 export const MUSCLE_GROUPS = ['chest', 'back', 'legs', 'shoulders', 'biceps', 'triceps', 'abs', 'cardio', 'accessory', 'rehab', 'other'];
 export const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'other'];
 
+// Apple Health sample types we store, with their canonical value unit. This is
+// the FULL permitted read set (CLAUDE.md §10) — adding a type is a flagged
+// change, there and here.
+//   workout           value = duration seconds
+//   heartRate         bpm
+//   restingHeartRate  bpm
+//   hrv               ms (SDNN)
+//   vo2max            ml/kg/min
+//   bodyMass          kg
+//   bodyFatPct        percent (0–100)
+//   sleepAnalysis     value = duration seconds (stage in meta)
+//   activeEnergy      kcal (stored as one daily-total sample per day)
+export const HEALTH_TYPES = ['workout', 'heartRate', 'restingHeartRate', 'hrv', 'vo2max', 'bodyMass', 'bodyFatPct', 'sleepAnalysis', 'activeEnergy'];
+
 export const DB_NAME = 'healthhub';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 // Object stores (all keyPath 'id' except meta, keyPath 'key'):
 //   exercises
@@ -78,6 +109,7 @@ export const DB_VERSION = 1;
 //   sets       — index 'by-workout' on `workoutId`, index 'by-exercise' on `exerciseId`
 //   templates
 //   meta       — key/value: settings, seed flag ({ key, value })
+//   health     — index 'by-type-start' on ['type', 'startedAt']  (DB v2, additive)
 
 let _dbName = DB_NAME;
 let _dbPromise = null;
@@ -133,6 +165,10 @@ export async function openDb() {
       }
       if (!db.objectStoreNames.contains('meta')) {
         db.createObjectStore('meta', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('health')) {
+        const s = db.createObjectStore('health', { keyPath: 'id' });
+        s.createIndex('by-type-start', ['type', 'startedAt'], { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -309,6 +345,72 @@ export async function bulkImport({ exercises = [], workouts = [], sets = [] }, o
     }
   }
   return { exercises: exercises.length, workouts: workouts.length, sets: sets.length };
+}
+
+// ---- Health samples (Apple Health import — DB v2, 31 Jul 2026) ----
+/**
+ * Bulk upsert of HealthSampleRecords, chunked like bulkImport. Idempotent:
+ * ids are HK UUIDs / deterministic aggregate ids, so re-delivery overwrites in
+ * place. Never deletes. Records are stored verbatim (no syncedAt).
+ * @param {HealthSampleRecord[]} samples
+ * @returns {Promise<number>} count written
+ */
+export async function putHealthSamples(samples) {
+  const db = await openDb();
+  const CHUNK = 500;
+  for (let i = 0; i < samples.length; i += CHUNK) {
+    const t = db.transaction('health', 'readwrite');
+    const store = t.objectStore('health');
+    for (const s of samples.slice(i, i + CHUNK)) store.put(s);
+    await txDone(t);
+  }
+  return samples.length;
+}
+
+/**
+ * Samples of one type, newest-first, bounded (defensive LIMIT per §6.3 intent).
+ * @param {string} type one of HEALTH_TYPES
+ * @param {{since?: string, limit?: number}} [opts] since = ISO datetime lower
+ *   bound on startedAt (inclusive); limit defaults to 500
+ * @returns {Promise<HealthSampleRecord[]>}
+ */
+export async function listHealthSamples(type, { since = '0000', limit = 500 } = {}) {
+  const db = await openDb();
+  const idx = db.transaction('health').objectStore('health').index('by-type-start');
+  const range = IDBKeyRange.bound([type, since], [type, '￿']);
+  const results = [];
+  return new Promise((resolve, reject) => {
+    const req = idx.openCursor(range, 'prev');
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor && results.length < limit) {
+        results.push(cursor.value);
+        cursor.continue();
+      } else {
+        resolve(results);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** Newest sample of a type, or undefined. */
+export async function getLatestHealthSample(type) {
+  const rows = await listHealthSamples(type, { limit: 1 });
+  return rows[0];
+}
+
+/**
+ * Remove ALL imported health samples. USER-INITIATED ONLY — the confirm sheet
+ * behind Settings → Apple Health → Disconnect ("also remove imported data").
+ * The never-delete rule covers imports/sync; an owner explicitly discarding
+ * their own imported copy is the sanctioned exception, mirroring deleteWorkout.
+ */
+export async function clearHealthSamples() {
+  const db = await openDb();
+  const t = db.transaction('health', 'readwrite');
+  t.objectStore('health').clear();
+  return txDone(t);
 }
 
 // ---- Meta (settings, seed flag) ----
