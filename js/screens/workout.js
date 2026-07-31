@@ -30,6 +30,7 @@ import {
 } from '../ui.js';
 import { normalizeExerciseType, blankSet } from '../exercise-types.js';
 import { getSetting } from '../settings.js';
+import { healthAvailable, saveWorkoutToHealth } from '../health.js';
 import { playOnce, playOut, stagger } from '../motion.js';
 import { swipeRow } from '../swipe.js';
 import { enhanceInput } from '../inputs.js';
@@ -295,7 +296,16 @@ function finishFlow(workout) {
     message: 'You can still edit it later from the Log.',
     confirmLabel: 'Finish',
     onConfirm: async () => {
-      await mutateWorkout(workout.id, { finishedAt: new Date().toISOString() });
+      const finishedAt = new Date().toISOString();
+      await mutateWorkout(workout.id, { finishedAt });
+      // Fire-and-forget: never awaited, never blocks navigation. health.js
+      // resolves this to a no-op unless native + connected + the write toggle
+      // is on, and never throws.
+      if (healthAvailable()) {
+        listSetsForWorkout(workout.id)
+          .then((sets) => saveWorkoutToHealth({ ...workout, finishedAt }, sets))
+          .catch((err) => console.error('workout: saveWorkoutToHealth failed', err));
+      }
       setCurrent(null);
       go('#/log');
     },

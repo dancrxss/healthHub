@@ -17,6 +17,7 @@ import { uid, nowISO, todayISO } from './util.js';
 import { EXERCISE_TYPE_GROUPS, blankSet } from './exercise-types.js';
 import { playOnce, motionOK } from './motion.js';
 import { closeOpenSwipe } from './swipe.js';
+import { initHealth } from './health.js';
 
 import { renderWorkoutScreen } from './screens/workout.js';
 import { renderPick } from './screens/picker.js';
@@ -634,6 +635,9 @@ async function init() {
     try { await navigator.serviceWorker.register('sw.js'); } catch (e) { /* file:// etc. */ }
   }
   try { await seedIfEmpty(); } catch (e) { console.error('seed failed', e); }
+  // Apple Health (native shell only — a guarded no-op in the PWA). Not awaited:
+  // startup must never block on HealthKit.
+  initHealth().catch((e) => console.error('health init failed', e));
   timer.bind({ tick: onTimerTick, done: onTimerDone });
 
   for (const btn of document.querySelectorAll('#tabbar button')) {

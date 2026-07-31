@@ -24,6 +24,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Gym Tracker reads your workouts, heart rate, body measurements and sleep from Apple Health to show them alongside your training log. Your health data never leaves your device.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Gym Tracker saves your logged gym sessions to Apple Health so they count towards your activity.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

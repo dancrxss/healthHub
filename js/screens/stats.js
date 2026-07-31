@@ -35,10 +35,11 @@ import {
 import {
   h, Icon, gearButton, go, openSheet, closeSheet, sheetHeader, sheetGroup,
   sheetRow, optionSheet, confirmSheet, formatWeight, formatDate, getUnits,
-  kgToDisplay, mmss,
+  kgToDisplay, mmss, trimNum, setScreenCleanup,
 } from '../ui.js';
 import { uid } from '../util.js';
 import { playOnce, playOut, stagger, flip, springHome, motionOK } from '../motion.js';
+import { healthAvailable, getHealthSummary, onHealthUpdate } from '../health.js';
 
 const PR_STORAGE_KEY = 'stats.prExercise';
 const CHART_PREFS_KEY = 'stats.chartPrefs';
@@ -96,6 +97,12 @@ function track(handle, token, owner) {
   if (!handle) return;
   if (token !== renderToken) { try { handle.destroy(); } catch (err) { /* ignore */ } return; }
   liveCharts.push({ handle, owner });
+}
+
+/** Live subscription to Apple Health updates while the grid screen is shown. */
+let unsubHealthStats = null;
+function stopHealthSubscription() {
+  if (unsubHealthStats) { unsubHealthStats(); unsubHealthStats = null; }
 }
 
 // ----------------------------------------------------------------------------
@@ -278,22 +285,39 @@ async function renderGrid(screen, token) {
     })),
   );
 
+  let healthSection = null;
+  try { healthSection = await buildHealthSection(token); } catch (err) { console.error('stats: health section failed', err); }
+  if (token !== renderToken) return;
+
   screen.replaceChildren(h('div', { class: 'tab-screen' + (editing ? ' stats-editing' : '') },
     head,
     grid,
     nav,
     h('div', { class: 'stats-section-label', text: 'Overall Statistics' }),
     overall,
+    healthSection,
   ));
 
   // The page assembles as ONE motion: module cards and the navigation below
   // share a single stagger sequence rather than reading as two lists. Toggling
   // edit mode gets the lighter `settle` instead — the list is already on
   // screen and merely changing mode; a full rise would read as a page reload.
-  stagger([...grid.children, nav, overall], editToggled ? 'anim-card-settle' : 'anim-card-in');
+  const staggerItems = [...grid.children, nav, overall];
+  if (healthSection) staggerItems.push(healthSection);
+  stagger(staggerItems, editToggled ? 'anim-card-settle' : 'anim-card-in');
   editToggled = false;
 
   if (editing) bindDragAndDrop(grid);
+
+  // Re-armed on every grid render (edit toggle, layout change) rather than
+  // only once, since a stale subscription would otherwise stack duplicates.
+  if (healthAvailable()) {
+    stopHealthSubscription();
+    unsubHealthStats = onHealthUpdate(() => {
+      refreshHealthSection().catch((err) => console.error('stats: health refresh failed', err));
+    });
+    setScreenCleanup(() => stopHealthSubscription());
+  }
 }
 
 /** Rebuild the whole grid (layout changed / edit mode toggled). */
@@ -915,6 +939,122 @@ function startDrag(e, grid) {
   window.addEventListener('pointercancel', finish);
   applyTransform();
   scrollRAF = requestAnimationFrame(autoScroll);
+}
+
+// ============================================================================
+// Health section (native shell only — absent entirely in the PWA). Sits below
+// "Overall Statistics" on the grid screen; not part of the customisable
+// layout, so it carries no module chrome (drag handle, remove, config sheet).
+// ============================================================================
+/** "7:32" — hours:minutes, matching mmss()'s look for a duration. */
+function hmm(totalSeconds) {
+  const mins = Math.max(0, Math.round((totalSeconds || 0) / 60));
+  return `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')}`;
+}
+function shortDayLabel(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+function healthMetricCard(title, value, atIso) {
+  return h('div', { class: 'tab-card stat-card health-metric-card' },
+    h('div', { class: 'stats-module-head' },
+      h('span', { class: 'stat-card-title stats-module-title', text: title }),
+      h('span', { class: 'stat-card-headline stats-module-headline', text: value }),
+    ),
+    atIso ? h('p', { class: 'health-metric-sub muted', text: formatDate(atIso) }) : null,
+  );
+}
+
+function weightCard(weight, token) {
+  const box = h('div', { class: 'stats-chart stats-chart-mini' });
+  const card = h('div', { class: 'tab-card stat-card health-metric-card' },
+    h('div', { class: 'stats-module-head' },
+      h('span', { class: 'stat-card-title stats-module-title', text: 'Weight' }),
+      h('span', { class: 'stat-card-headline stats-module-headline', text: formatWeight(weight.latestKg) }),
+    ),
+    h('div', { class: 'stats-module-body' }, box),
+  );
+
+  const trend = (weight.trend || [])
+    .slice()
+    .sort((a, b) => new Date(a.at) - new Date(b.at))
+    .map((p) => ({ t: new Date(p.at).getTime(), label: shortDayLabel(p.at), value: kgToDisplay(p.kg) }));
+
+  if (trend.length) {
+    track(renderChart(box, {
+      type: 'line', points: trend, unit: getUnits(), yFormat: compactNum, interactive: false,
+    }), token, box);
+  } else {
+    emptyChart(box, 'No data found — check Settings → Health → Data Access on your iPhone.');
+  }
+  return card;
+}
+
+function sleepCard(sleep) {
+  const asleep = hmm(sleep.totalAsleepSeconds);
+  const breakdown = `Deep ${hmm(sleep.deepSeconds)} · REM ${hmm(sleep.remSeconds)} · Core ${hmm(sleep.coreSeconds)}`;
+  return h('div', { class: 'tab-card stat-card health-metric-card' },
+    h('div', { class: 'stats-module-head' },
+      h('span', { class: 'stat-card-title stats-module-title', text: 'Sleep Last Night' }),
+      h('span', { class: 'stat-card-headline stats-module-headline', text: asleep }),
+    ),
+    h('p', { class: 'health-metric-sub muted', text: breakdown }),
+  );
+}
+
+/** Builds the health cards for whatever fields are non-null; empty array when
+ * there is nothing to show (the caller omits the section entirely). */
+function healthCardsFor(summary, token) {
+  if (!summary) return [];
+  const cards = [];
+  if (summary.weight) cards.push(weightCard(summary.weight, token));
+  if (summary.restingHr) cards.push(healthMetricCard('Resting Heart Rate', `${Math.round(summary.restingHr.bpm)} bpm`, summary.restingHr.at));
+  if (summary.hrv) cards.push(healthMetricCard('Heart Rate Variability', `${Math.round(summary.hrv.ms)} ms`, summary.hrv.at));
+  if (summary.sleepLastNight) cards.push(sleepCard(summary.sleepLastNight));
+  if (summary.vo2max) cards.push(healthMetricCard('VO₂max', `${trimNum(summary.vo2max.value)} mL/kg/min`, summary.vo2max.at));
+  if (summary.activeEnergyToday) {
+    cards.push(healthMetricCard('Active Energy Today', `${Math.round(summary.activeEnergyToday.kcal).toLocaleString('en-GB')} kcal`, null));
+  }
+  return cards;
+}
+
+async function buildHealthSection(token) {
+  if (!healthAvailable()) return null;
+  let summary = null;
+  try { summary = await getHealthSummary(); } catch (err) { console.error('stats: health summary failed', err); }
+  if (token !== renderToken) return null;
+  const cards = healthCardsFor(summary, token);
+  if (!cards.length) return null;
+  return h('div', { class: 'health-section' },
+    h('div', { class: 'stats-section-label', text: 'Health' }),
+    ...cards,
+  );
+}
+
+/** Rebuilds the Health section in place on a health.js update event. Adds or
+ * removes the whole section as data appears/disappears; otherwise only its
+ * own charts are torn down first, never the grid's. */
+async function refreshHealthSection() {
+  const screen = document.getElementById('s-stats');
+  const wrap = screen && screen.querySelector('.tab-screen');
+  if (!wrap) return; // a sub-route is showing, or the screen moved on
+  const existing = wrap.querySelector('.health-section');
+  let summary = null;
+  try { summary = await getHealthSummary(); } catch (err) { console.error('stats: health summary refresh failed', err); }
+  const cards = healthCardsFor(summary, renderToken);
+  if (!cards.length) {
+    if (existing) { destroyChartsIn(existing); existing.remove(); }
+    return;
+  }
+  if (existing) {
+    destroyChartsIn(existing);
+    existing.replaceChildren(h('div', { class: 'stats-section-label', text: 'Health' }), ...cards);
+  } else {
+    wrap.append(h('div', { class: 'health-section' },
+      h('div', { class: 'stats-section-label', text: 'Health' }), ...cards));
+  }
 }
 
 // ============================================================================

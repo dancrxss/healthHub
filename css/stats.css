@@ -234,3 +234,11 @@ body.stats-dragging { cursor: grabbing; }
 .chart-axis-btn:active { opacity: 0.6; }
 .chart-axis-btn.on { background: var(--accent); color: var(--accent-ink); }
 .chart-axis-btn svg { width: 16px; height: 16px; }
+
+/* ----------------------------------------------------------------------------
+   Health section (native shell only — absent entirely in the PWA). Reuses the
+   stat-card / stats-module chrome above; only its own spacing lives here.
+   ---------------------------------------------------------------------------- */
+.health-section { margin-top: 4px; }
+.health-metric-card .stats-module-head { margin-bottom: 4px; }
+.health-metric-sub { font-size: 12.5px; padding: 0 0 2px; margin: 0; }

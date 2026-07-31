@@ -13,10 +13,16 @@
 import * as timer from '../timer.js';
 import { getActiveAdapter } from '../sync.js';
 import { getSetting, setSetting } from '../settings.js';
-import { bulkImport, listExercises, listWorkouts } from '../db.js';
+import {
+  bulkImport, listExercises, listWorkouts, getMeta, setMeta,
+} from '../db.js';
 import {
   h, Icon, go, getUnits, mmss, openSheet, closeSheet, sheetHeader, sheetGroup,
+  setScreenCleanup,
 } from '../ui.js';
+import {
+  healthAvailable, getHealthState, connectHealth, disconnectHealth, syncNow, onHealthUpdate,
+} from '../health.js';
 
 const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const num = (n) => Number(n || 0).toLocaleString('en-GB');
@@ -28,6 +34,21 @@ function importDate(iso) {
     ? iso
     : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
+/** Coarse relative time for the Apple Health status line: "just now", "5 min
+ * ago", "3 hr ago", "2d ago", falling back to a plain date past a week. */
+function relTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return importDate(iso);
+}
 
 // ============================================================================
 // Render
@@ -36,6 +57,17 @@ export async function renderSettings() {
   const screen = document.getElementById('s-settings');
   const adapter = getActiveAdapter();
   const status = await adapter.status();
+
+  // Re-renders happen a lot on this screen (unit toggle, import flow) without a
+  // route change in between, so the subscription is torn down and re-armed
+  // here rather than relying solely on the route-change cleanup below.
+  stopHealthSubscription();
+
+  const healthOn = healthAvailable();
+  const health = healthOn ? await getHealthState() : null;
+  const healthWriteOn = health && health.connected
+    ? (await getMeta('healthWriteWorkouts')) !== false
+    : true;
 
   screen.replaceChildren(
     h('header', { class: 'pick-head' },
@@ -49,9 +81,17 @@ export async function renderSettings() {
       chartsCard(),
       dataCard(),
       syncCard(status),
+      health ? healthCard(health, healthWriteOn) : null,
       aboutCard(),
     ),
   );
+
+  if (health && health.connected) {
+    unsubHealth = onHealthUpdate(() => {
+      refreshHealthStatus().catch((err) => console.error('settings: health status refresh failed', err));
+    });
+    setScreenCleanup(() => stopHealthSubscription());
+  }
 }
 
 // ---- settings card ----------------------------------------------------
@@ -379,6 +419,132 @@ function syncCard(status) {
     ),
     h('p', { class: 'settings-note muted', text: note }),
   );
+}
+
+// ---- Apple Health card --------------------------------------------------
+// Rendered only when healthAvailable() — absent entirely in the PWA, so the
+// GitHub Pages build looks byte-for-byte unchanged. The Swift plugin behind
+// health.js never reports WHY data is missing (HealthKit read denials are
+// invisible by design), so the app never claims the user blocked anything —
+// see the copy in emptyHealthNote below.
+let unsubHealth = null;
+function stopHealthSubscription() {
+  if (unsubHealth) { unsubHealth(); unsubHealth = null; }
+}
+
+/** Update just the status line in place — no re-render, no lost scroll. */
+async function refreshHealthStatus() {
+  const el = document.querySelector('#s-settings .health-status');
+  if (!el) return; // screen moved on, or disconnected since the event fired
+  const state = await getHealthState();
+  el.textContent = `Connected · last updated ${state.lastSyncAt ? relTime(state.lastSyncAt) : '—'}`;
+}
+
+function healthCard(state, writeOn) {
+  return h('div', { class: 'settings-group' },
+    sectionLabel('Apple Health'),
+    state.connected ? connectedHealthCard(state, writeOn) : disconnectedHealthCard(),
+  );
+}
+
+function disconnectedHealthCard() {
+  return h('div', { class: 'tab-card health-card' },
+    h('p', {
+      class: 'settings-note muted',
+      text: 'Read your workouts, heart rate, body weight and sleep from Apple Health. Your health data never leaves your device.',
+    }),
+    h('button', {
+      class: 'sheet-btn', type: 'button', 'data-action': 'health-connect',
+      onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try { await connectHealth(); } finally { renderSettings(); }
+      },
+    }, 'Connect Apple Health'),
+  );
+}
+
+function connectedHealthCard(state, writeOn) {
+  const statusLine = h('p', {
+    class: 'health-status',
+    text: `Connected · last updated ${state.lastSyncAt ? relTime(state.lastSyncAt) : '—'}`,
+  });
+
+  const syncLabel = h('span', { class: 'settings-label', text: 'Sync now' });
+  const syncBtn = h('button', {
+    class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'health-sync',
+  },
+    syncLabel,
+    h('span', { class: 'settings-chev' }, Icon('chevron')),
+  );
+  syncBtn.addEventListener('click', async () => {
+    if (syncBtn.disabled) return;
+    syncBtn.disabled = true;
+    syncLabel.textContent = 'Syncing…';
+    try { await syncNow(); } finally {
+      syncLabel.textContent = 'Sync now';
+      syncBtn.disabled = false;
+      refreshHealthStatus();
+    }
+  });
+
+  return h('div', { class: 'tab-card settings-card settings-toggle-card health-card' },
+    statusLine,
+    syncBtn,
+    healthWriteToggleRow(writeOn),
+    h('button', {
+      class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'health-disconnect',
+      onclick: () => disconnectSheet(),
+    },
+      h('span', { class: 'settings-label danger', text: 'Disconnect…' }),
+      h('span', { class: 'settings-chev' }, Icon('chevron')),
+    ),
+  );
+}
+
+/** Mirrors toggleRow()'s pattern but is backed by IndexedDB meta (async), not
+ * localStorage — it repaints only itself, no re-render. */
+function healthWriteToggleRow(on) {
+  const btn = h('button', {
+    class: 'toggle' + (on ? ' on' : ''),
+    type: 'button', role: 'switch',
+    'aria-checked': on ? 'true' : 'false',
+    'aria-label': 'Save workouts to Apple Health',
+    'data-setting': 'healthWriteWorkouts',
+  });
+  btn.addEventListener('click', () => {
+    const next = btn.getAttribute('aria-checked') !== 'true';
+    setMeta('healthWriteWorkouts', next);
+    btn.setAttribute('aria-checked', next ? 'true' : 'false');
+    btn.classList.toggle('on', next);
+  });
+  return h('div', { class: 'settings-row' },
+    h('span', { class: 'settings-label', text: 'Save workouts to Apple Health' }),
+    btn,
+  );
+}
+
+/** Matches the app's destructive-confirm look (sheet-actions + danger pills)
+ * used by delete-workout, but offers two distinct destructive choices instead
+ * of one confirm/cancel pair. */
+function disconnectSheet() {
+  openSheet(h('div', {},
+    sheetHeader('Disconnect Apple Health', { onClose: () => closeSheet() }),
+    h('p', {
+      class: 'sheet-message muted',
+      text: 'You can reconnect at any time. Removing imported data deletes the Apple Health samples stored on this device.',
+    }),
+    h('div', { class: 'sheet-actions' },
+      h('button', {
+        class: 'sheet-btn danger', type: 'button', 'data-action': 'health-disconnect-only',
+        onclick: async () => { closeSheet(); await disconnectHealth({ purge: false }); renderSettings(); },
+      }, 'Disconnect'),
+      h('button', {
+        class: 'sheet-btn danger', type: 'button', 'data-action': 'health-disconnect-purge',
+        onclick: async () => { closeSheet(); await disconnectHealth({ purge: true }); renderSettings(); },
+      }, 'Disconnect and remove imported data'),
+      h('button', { class: 'sheet-btn cancel', type: 'button', 'data-action': 'cancel', onclick: () => closeSheet() }, 'Cancel'),
+    ),
+  ));
 }
 
 // ---- about card --------------------------------------------------------

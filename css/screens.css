@@ -239,6 +239,13 @@ button.tab-card {
 .about-line { font-size: 13.5px; }
 
 /* ----------------------------------------------------------------------------
+   Settings: Apple Health card (native shell only — absent entirely in the PWA)
+   ---------------------------------------------------------------------------- */
+.health-card .sheet-btn { margin-top: 2px; }
+.health-status { font-size: 15px; color: var(--text); padding: 2px 0 12px; }
+.settings-label.danger { color: var(--danger); }
+
+/* ----------------------------------------------------------------------------
    Settings: grouped toggle cards
    ---------------------------------------------------------------------------- */
 /* A section heading sitting above its card, RepCount-style. */
