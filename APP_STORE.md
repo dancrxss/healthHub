@@ -20,20 +20,29 @@ human decisions on App Store Connect).
   running natively — the GitHub Pages PWA is unchanged.
 - `privacy.html` — the App Store privacy policy page, live at
   `https://dancrxss.github.io/healthHub/privacy.html`.
+- **Native build verified (31 Jul 2026, Xcode 26.6 / iOS 26.5 SDK):**
+  `node scripts/build-www.mjs && npx cap sync ios` then a simulator
+  `xcodebuild` compiles with zero warnings or errors. Smoke-tested in the
+  iPhone 17 Pro simulator: app launches, Log/Statistics UI renders, and the
+  webview registers the HealthKit plugin (`To Native -> HealthKit
+  addListener`) with no JS errors. SPM pin committed
+  (`Package.resolved`, capacitor-swift-pm 7.6.8).
 
 ## Steps only Dan can do
 
 These need Apple credentials, a Mac with Xcode, and human sign-off — none of
 it can be scripted from here.
 
-1. **Install Xcode** (from the Mac App Store) if not already installed.
+1. ~~**Install Xcode**~~ — done 31 Jul 2026 (Xcode 26.6, iOS platform
+   component installed; simulator build + smoke test pass, see above).
 2. **Enrol in the Apple Developer Programme** — £79/year, at
    https://developer.apple.com/programs/enroll/. Required before a device
    build can be signed or before App Store Connect will accept an app.
-3. **Build locally**, then open the generated Xcode project:
+3. **Open the generated Xcode project** (the `www/` build + sync already
+   run and verified; re-run if the web code has changed since):
    ```
    node scripts/build-www.mjs && npx cap sync ios
-   open ios/App/App.xcworkspace
+   open ios/App/App.xcodeproj
    ```
 4. **In Xcode**, select the `App` target → Signing & Capabilities:
    - Set the Team to your enrolled Apple Developer account.
