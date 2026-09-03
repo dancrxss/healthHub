@@ -27,7 +27,17 @@ import {
   listTemplates,
   getMeta,
   setMeta,
+  DB_VERSION,
+  putCoachPlan,
+  getCoachPlan,
+  listCoachPlans,
+  putCoachInsight,
+  getCoachInsight,
+  getCoachInsightForWorkout,
+  listCoachInsights,
+  clearCoachData,
 } from '../js/db.js';
+import { getStringSetting, setStringSetting } from '../js/settings.js';
 import {
   getLastSession,
   getRecentWorkouts,
@@ -47,6 +57,8 @@ const TEST_DB = 'healthhub-test';
 const SEED_DB = 'healthhub-seed-test';
 const UPGRADE_DB = 'healthhub-upgrade-test';
 const STATS_DB = 'healthhub-statsdata-test';
+const COACH_DB = 'healthhub-coach-test';
+const COACH_UPGRADE_DB = 'healthhub-coach-upgrade-test';
 
 let root;
 let summaryEl;
@@ -123,7 +135,7 @@ export async function runTests(rootEl, summaryElement) {
     _setDbNameForTests(TEST_DB);
     await deleteDb(TEST_DB);
     const db = await openDb();
-    ok('openDb: object stores created', ['exercises', 'workouts', 'sets', 'templates', 'meta'].every((s) => db.objectStoreNames.contains(s)));
+    ok('openDb: object stores created', ['exercises', 'workouts', 'sets', 'templates', 'meta', 'health', 'coachPlans', 'coachInsights'].every((s) => db.objectStoreNames.contains(s)));
     ok('openDb: workouts by-date index exists', db.transaction('workouts').objectStore('workouts').indexNames.contains('by-date'));
     ok('openDb: sets by-workout & by-exercise indexes exist', (() => {
       const idx = db.transaction('sets').objectStore('sets').indexNames;
@@ -313,6 +325,93 @@ export async function runTests(rootEl, summaryElement) {
     const custom = await getExercise('my-custom');
     ok('upgrade: custom (isCustom) record untouched', custom.muscleGroup === 'arms' && custom.isCustom === true);
     await deleteDb(UPGRADE_DB);
+
+    // ---- Coach stores (Phase C, DB v3) ----
+    // A v2 install (health store, no coach stores) upgrades in place: the new
+    // stores appear and every pre-existing record survives untouched.
+    await deleteDb(COACH_UPGRADE_DB);
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open(COACH_UPGRADE_DB, 2);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        d.createObjectStore('exercises', { keyPath: 'id' });
+        d.createObjectStore('workouts', { keyPath: 'id' }).createIndex('by-date', 'date', { unique: false });
+        const sets = d.createObjectStore('sets', { keyPath: 'id' });
+        sets.createIndex('by-workout', 'workoutId', { unique: false });
+        sets.createIndex('by-exercise', 'exerciseId', { unique: false });
+        d.createObjectStore('templates', { keyPath: 'id' });
+        d.createObjectStore('meta', { keyPath: 'key' });
+        d.createObjectStore('health', { keyPath: 'id' }).createIndex('by-type-start', ['type', 'startedAt'], { unique: false });
+      };
+      req.onsuccess = () => {
+        const d = req.result;
+        const t = d.transaction(['workouts', 'meta'], 'readwrite');
+        t.objectStore('workouts').put({ id: 'w-old', date: '2026-08-01', startedAt: '2026-08-01T10:00:00.000Z', finishedAt: '2026-08-01T11:00:00.000Z', templateId: null, notes: null, syncedAt: null });
+        t.objectStore('meta').put({ key: 'healthConnected', value: true });
+        t.oncomplete = () => { d.close(); resolve(); };
+        t.onerror = () => reject(t.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    _setDbNameForTests(COACH_UPGRADE_DB);
+    const upDb = await openDb();
+    ok('coach upgrade: DB_VERSION is 3', DB_VERSION === 3 && upDb.version === 3);
+    ok('coach upgrade: v2 → v3 adds coachPlans + coachInsights', upDb.objectStoreNames.contains('coachPlans') && upDb.objectStoreNames.contains('coachInsights'));
+    ok('coach upgrade: coachInsights indexes exist', (() => {
+      const idx = upDb.transaction('coachInsights').objectStore('coachInsights').indexNames;
+      return idx.contains('by-kind-created') && idx.contains('by-workout');
+    })());
+    ok('coach upgrade: pre-existing workout survives', (await getWorkout('w-old'))?.date === '2026-08-01');
+    ok('coach upgrade: pre-existing meta survives', (await getMeta('healthConnected')) === true);
+    upDb.close();
+    await deleteDb(COACH_UPGRADE_DB);
+
+    _setDbNameForTests(COACH_DB);
+    await deleteDb(COACH_DB);
+    await openDb();
+    const planV1 = { id: 'plan-1', version: 1, createdAt: '2026-09-01T08:00:00.000Z', source: 'created', basedOnWorkoutId: null, rationale: 'start', weeks: 6, sessions: [{ id: 'ps-1', order: 1, name: 'Upper A', focus: null, exercises: [{ exerciseId: 'seed-barbell-bench-press', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 60, targetRpe: 7, note: null }] }] };
+    const planV2 = { ...planV1, id: 'plan-2', version: 2, createdAt: '2026-09-03T08:00:00.000Z', source: 'revised', basedOnWorkoutId: 'w-1' };
+    await putCoachPlan(planV1);
+    await putCoachPlan(planV2);
+    eq('coach: putCoachPlan/getCoachPlan round-trip', await getCoachPlan('plan-1'), planV1);
+    ok('coach: plan records carry no syncedAt', !('syncedAt' in (await getCoachPlan('plan-1'))));
+    eq('coach: listCoachPlans newest first', (await listCoachPlans()).map((p) => p.id), ['plan-2', 'plan-1']);
+    eq('coach: listCoachPlans honours limit', (await listCoachPlans({ limit: 1 })).map((p) => p.id), ['plan-2']);
+    await setMeta('coach.currentPlanId', 'plan-2');
+    ok('coach: currentPlanId pointer resolves', (await getCoachPlan(await getMeta('coach.currentPlanId'))).version === 2);
+
+    const insight = (id, kind, createdAt, workoutId = null) => ({ id, kind, createdAt, date: createdAt.slice(0, 10), workoutId, model: 'claude-sonnet-5', engineVersion: 'coach-engine-1', metrics: { hardSets: 12 }, narrative: { headline: 'ok' }, planId: 'plan-2', usage: { inputTokens: 1000, outputTokens: 300 } });
+    await putCoachInsight(insight('daily-2026-09-01', 'daily', '2026-09-01T07:00:00.000Z'));
+    await putCoachInsight(insight('daily-2026-09-03', 'daily', '2026-09-03T07:00:00.000Z'));
+    await putCoachInsight(insight('session-w-1', 'session', '2026-09-02T18:00:00.000Z', 'w-1'));
+    await putCoachInsight(insight('daily-2026-09-03', 'daily', '2026-09-03T07:30:00.000Z')); // re-run same day ⇒ upsert
+    eq('coach: deterministic insight id upserts (count stays 2)', (await listCoachInsights({ kind: 'daily' })).length, 2);
+    eq('coach: listCoachInsights newest first, per kind', (await listCoachInsights({ kind: 'daily' })).map((i) => i.id), ['daily-2026-09-03', 'daily-2026-09-01']);
+    eq('coach: listCoachInsights kind filter excludes sessions', (await listCoachInsights({ kind: 'daily' })).filter((i) => i.kind !== 'daily').length, 0);
+    ok('coach: upsert replaced the record', (await getCoachInsight('daily-2026-09-03')).createdAt === '2026-09-03T07:30:00.000Z');
+    ok('coach: getCoachInsightForWorkout via by-workout index', (await getCoachInsightForWorkout('w-1'))?.id === 'session-w-1');
+    ok('coach: getCoachInsightForWorkout unknown → undefined', (await getCoachInsightForWorkout('nope')) === undefined);
+
+    await putWorkout({ id: 'w-keep', date: '2026-09-02', startedAt: '2026-09-02T17:00:00.000Z', finishedAt: '2026-09-02T18:00:00.000Z', templateId: null, notes: null, planId: 'plan-2', planSessionId: 'ps-1' });
+    await setMeta('coach.shareRecovery', true);
+    await setMeta('coach.lastDailyDate', '2026-09-03');
+    await clearCoachData();
+    eq('coach: clearCoachData empties plans', (await listCoachPlans()).length, 0);
+    eq('coach: clearCoachData empties insights', (await listCoachInsights({ kind: 'daily' })).length + (await listCoachInsights({ kind: 'session' })).length, 0);
+    ok('coach: clearCoachData leaves workouts intact', (await getWorkout('w-keep'))?.planSessionId === 'ps-1');
+    ok('coach: clearCoachData removes coach.* meta', (await getMeta('coach.lastDailyDate')) === undefined && (await getMeta('coach.currentPlanId')) === undefined);
+    ok('coach: clearCoachData keeps the recovery consent', (await getMeta('coach.shareRecovery')) === true);
+    ok('coach: clearCoachData leaves other meta alone', (await getMeta('healthConnected')) === undefined); // never set in this DB — sanity
+    await deleteDb(COACH_DB);
+
+    // String settings (localStorage) — the API key path.
+    localStorage.removeItem('coach.apiKey');
+    eq('settings: string setting default is empty', getStringSetting('coachApiKey'), '');
+    setStringSetting('coachApiKey', '  sk-ant-test-123  ');
+    eq('settings: string setting trims and round-trips', getStringSetting('coachApiKey'), 'sk-ant-test-123');
+    setStringSetting('coachApiKey', '');
+    eq('settings: empty string clears the key', localStorage.getItem('coach.apiKey'), null);
+    ok('settings: unknown string setting throws', (() => { try { getStringSetting('nope'); return false; } catch { return true; } })());
 
     // ---- csv-import ----
     // Pure functions — no IndexedDB involved. Fixtures are inline CSV strings

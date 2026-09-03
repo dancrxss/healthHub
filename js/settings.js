@@ -42,6 +42,39 @@ export function setSetting(name, value) {
 }
 
 // ----------------------------------------------------------------------------
+// String settings. Kept apart from SETTING_DEFS on purpose: getSetting() parses
+// `raw === 'true'`, so a string routed through it silently reads as false.
+// The Coach API key lives here (localStorage, synchronous) because route()
+// must decide tab visibility without an async IndexedDB read. It is never
+// logged and never sent anywhere except as the x-api-key header to Anthropic.
+// ----------------------------------------------------------------------------
+
+export const STRING_SETTING_DEFS = {
+  coachApiKey: { key: 'coach.apiKey', default: '' },
+};
+
+/** @param {keyof typeof STRING_SETTING_DEFS} name @returns {string} */
+export function getStringSetting(name) {
+  const def = STRING_SETTING_DEFS[name];
+  if (!def) throw new Error(`unknown string setting: ${name}`);
+  try {
+    const raw = localStorage.getItem(def.key);
+    return raw === null ? def.default : raw;
+  } catch {
+    return def.default; // storage blocked (private mode) — behave as unset
+  }
+}
+
+/** @param {keyof typeof STRING_SETTING_DEFS} name @param {string} value empty string clears */
+export function setStringSetting(name, value) {
+  const def = STRING_SETTING_DEFS[name];
+  if (!def) throw new Error(`unknown string setting: ${name}`);
+  const v = typeof value === 'string' ? value.trim() : '';
+  if (v === '') localStorage.removeItem(def.key);
+  else localStorage.setItem(def.key, v);
+}
+
+// ----------------------------------------------------------------------------
 // Statistics page layout — the ordered list of module cards on #/stats.
 //
 // ModuleSpec:

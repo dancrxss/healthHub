@@ -39,6 +39,12 @@
 //                               logged); null/absent ⇒ legacy workout, derive
 //                               order from sets' completedAt. Consecutive entries
 //                               sharing a supersetGroup integer are one superset.
+//   Phase C additions (3 Sep 2026, optional):
+//   {string|null} planId          CoachPlanRecord this session was started from
+//   {string|null} planSessionId   PlanSession id ('ps-N') within that plan —
+//                                 when set, the workout screen shows the plan's
+//                                 targets as the grey placeholders instead of
+//                                 last session's sets
 //
 // @typedef {Object} SetRecord
 //   {string} id
@@ -82,6 +88,39 @@
 //               distanceM:number|null}   (value = duration in seconds)
 //     sleepAnalysis: {stage:'inBed'|'asleepCore'|'asleepDeep'|'asleepREM'|'awake'}
 //                                        (value = duration in seconds)
+//
+// Phase C — Coach (3 Sep 2026, DB_VERSION 3, additive: two new stores only).
+// Neither record carries syncedAt — cloud sync is cancelled. Contract pinned in
+// PLAN.md §"Phase C" C1.
+//
+// @typedef {Object} CoachPlanRecord   store 'coachPlans'
+//   {string} id
+//   {number} version        1-based, monotonic; revisions are NEW records
+//   {string} createdAt      ISO datetime
+//   {'created'|'revised'|'manual'} source
+//   {string|null} basedOnWorkoutId   the session whose feedback triggered a revision
+//   {string|null} rationale
+//   {number} weeks
+//   {Array<PlanSession>} sessions
+//   PlanSession:  {id:'ps-N' (assigned locally), order:number, name:string,
+//                  focus:string|null, exercises:Array<PlanExercise>}
+//   PlanExercise: {exerciseId, targetSets, targetRepsLow, targetRepsHigh,
+//                  targetWeightKg:number|null, targetRpe:number|null, note:string|null}
+//
+// @typedef {Object} CoachInsightRecord   store 'coachInsights'
+//   {string} id             'daily-YYYY-MM-DD' | 'session-<workoutId>' — deterministic,
+//                           so re-running is an idempotent upsert
+//   {'daily'|'session'} kind
+//   {string} createdAt      ISO datetime
+//   {string} date           ISO date the insight is about
+//   {string|null} workoutId
+//   {string} model          e.g. 'claude-sonnet-5'
+//   {string} engineVersion  coach-engine.js COACH_ENGINE_VERSION
+//   {Object} metrics        the local engine output that was sent (drill-down
+//                           screens render from this, offline)
+//   {Object} narrative      the parsed, validated model reply
+//   {string|null} planId    plan in force after this insight
+//   {{inputTokens:number, outputTokens:number}} usage
 
 export const MUSCLE_GROUPS = ['chest', 'back', 'legs', 'shoulders', 'biceps', 'triceps', 'abs', 'cardio', 'accessory', 'rehab', 'other'];
 export const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'other'];
@@ -101,7 +140,7 @@ export const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight
 export const HEALTH_TYPES = ['workout', 'heartRate', 'restingHeartRate', 'hrv', 'vo2max', 'bodyMass', 'bodyFatPct', 'sleepAnalysis', 'activeEnergy'];
 
 export const DB_NAME = 'healthhub';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 // Object stores (all keyPath 'id' except meta, keyPath 'key'):
 //   exercises
@@ -110,6 +149,9 @@ export const DB_VERSION = 2;
 //   templates
 //   meta       — key/value: settings, seed flag ({ key, value })
 //   health     — index 'by-type-start' on ['type', 'startedAt']  (DB v2, additive)
+//   coachPlans    — index 'by-created' on `createdAt`                (DB v3, additive)
+//   coachInsights — index 'by-kind-created' on ['kind', 'createdAt'],
+//                   index 'by-workout' on `workoutId`                 (DB v3, additive)
 
 let _dbName = DB_NAME;
 let _dbPromise = null;
@@ -169,6 +211,15 @@ export async function openDb() {
       if (!db.objectStoreNames.contains('health')) {
         const s = db.createObjectStore('health', { keyPath: 'id' });
         s.createIndex('by-type-start', ['type', 'startedAt'], { unique: false });
+      }
+      if (!db.objectStoreNames.contains('coachPlans')) {
+        const s = db.createObjectStore('coachPlans', { keyPath: 'id' });
+        s.createIndex('by-created', 'createdAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('coachInsights')) {
+        const s = db.createObjectStore('coachInsights', { keyPath: 'id' });
+        s.createIndex('by-kind-created', ['kind', 'createdAt'], { unique: false });
+        s.createIndex('by-workout', 'workoutId', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -410,6 +461,96 @@ export async function clearHealthSamples() {
   const db = await openDb();
   const t = db.transaction('health', 'readwrite');
   t.objectStore('health').clear();
+  return txDone(t);
+}
+
+// ---- Coach (Phase C: plans + insights) ----
+// Dedicated puts — no syncedAt (putRecord would add one). Upserts only.
+
+/** Newest-first cursor read over an index, bounded. */
+async function listByIndexDesc(storeName, indexName, range, limit) {
+  const db = await openDb();
+  const idx = db.transaction(storeName).objectStore(storeName).index(indexName);
+  const results = [];
+  return new Promise((resolve, reject) => {
+    const req = idx.openCursor(range, 'prev');
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor && results.length < limit) {
+        results.push(cursor.value);
+        cursor.continue();
+      } else {
+        resolve(results);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** @param {CoachPlanRecord} plan @returns {Promise<CoachPlanRecord>} */
+export async function putCoachPlan(plan) {
+  const db = await openDb();
+  const t = db.transaction('coachPlans', 'readwrite');
+  t.objectStore('coachPlans').put(plan);
+  await txDone(t);
+  return plan;
+}
+/** @returns {Promise<CoachPlanRecord|undefined>} */
+export function getCoachPlan(id) {
+  return getRecord('coachPlans', id);
+}
+/** Newest first (by createdAt), bounded. @returns {Promise<CoachPlanRecord[]>} */
+export function listCoachPlans({ limit = 50 } = {}) {
+  return listByIndexDesc('coachPlans', 'by-created', null, limit);
+}
+
+/** @param {CoachInsightRecord} insight @returns {Promise<CoachInsightRecord>} */
+export async function putCoachInsight(insight) {
+  const db = await openDb();
+  const t = db.transaction('coachInsights', 'readwrite');
+  t.objectStore('coachInsights').put(insight);
+  await txDone(t);
+  return insight;
+}
+/** @returns {Promise<CoachInsightRecord|undefined>} */
+export function getCoachInsight(id) {
+  return getRecord('coachInsights', id);
+}
+/**
+ * Insights of one kind, newest first, bounded.
+ * @param {{kind: 'daily'|'session', limit?: number}} opts
+ * @returns {Promise<CoachInsightRecord[]>}
+ */
+export function listCoachInsights({ kind, limit = 50 }) {
+  const range = IDBKeyRange.bound([kind, '0000'], [kind, '\uffff']);
+  return listByIndexDesc('coachInsights', 'by-kind-created', range, limit);
+}
+/** @returns {Promise<CoachInsightRecord|undefined>} the session insight for a workout */
+export async function getCoachInsightForWorkout(workoutId) {
+  const rows = await getAllByIndex('coachInsights', 'by-workout', workoutId);
+  return rows[0];
+}
+
+/**
+ * Remove ALL coach plans and insights, plus the coach.* meta keys. USER-INITIATED
+ * ONLY (Settings → Coach → Clear coach data) — the same sanctioned exception as
+ * clearHealthSamples. Never touches workouts, sets, exercises or templates.
+ */
+export async function clearCoachData() {
+  const db = await openDb();
+  const t = db.transaction(['coachPlans', 'coachInsights', 'meta'], 'readwrite');
+  t.objectStore('coachPlans').clear();
+  t.objectStore('coachInsights').clear();
+  const meta = t.objectStore('meta');
+  const req = meta.openCursor();
+  req.onsuccess = () => {
+    const cursor = req.result;
+    if (!cursor) return;
+    if (typeof cursor.key === 'string' && cursor.key.startsWith('coach.') && cursor.key !== 'coach.shareRecovery') {
+      cursor.delete();
+    }
+    cursor.continue();
+  };
   return txDone(t);
 }
 
