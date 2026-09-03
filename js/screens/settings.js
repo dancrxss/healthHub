@@ -25,10 +25,9 @@ import {
 } from '../health.js';
 import {
   hasApiKey, apiKeyMasked, setApiKey, checkApiKey, getShareRecovery, setShareRecovery,
-  getProfile, getCoachState, createPlan, clearCoachData, initCoach,
+  getCoachState, clearCoachData, initCoach,
 } from '../coach.js';
 import { userMessageFor } from '../coach-api.js';
-import { openCoachSetupSheet } from './coach.js';
 
 const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const num = (n) => Number(n || 0).toLocaleString('en-GB');
@@ -575,9 +574,8 @@ function coachCard(healthOn, health, hasKey, coachState, shareOn) {
       ...coachApiKeySection(hasKey),
       coachModelRow(),
       ...coachRecoveryRows(healthOn, health, shareOn),
-      hasKey ? coachProfileRow() : null,
+      hasKey ? coachBuilderRow() : null,
       hasKey && coachState && coachState.usageTotals ? coachUsageRow(coachState.usageTotals) : null,
-      ...coachRegenerateRows(),
       coachClearRow(),
     ),
   );
@@ -734,15 +732,13 @@ function coachShareRecoveryToggleRow(on) {
   );
 }
 
-function coachProfileRow() {
+/** Plan configuration lives in the Coach tab (Phase C2) — this is just the door. */
+function coachBuilderRow() {
   return h('button', {
-    class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'coach-edit-profile',
-    onclick: async () => {
-      const profile = await getProfile();
-      openCoachSetupSheet({ profile, onDone: () => renderSettings() });
-    },
+    class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'coach-open-builder',
+    onclick: () => go('#/coach/builder'),
   },
-    h('span', { class: 'settings-label', text: 'Edit coach profile…' }),
+    h('span', { class: 'settings-label', text: 'Open plan builder' }),
     h('span', { class: 'settings-chev' }, Icon('chevron')),
   );
 }
@@ -757,38 +753,6 @@ function coachUsageRow(usageTotals) {
       text: `${num(usageTotals.calls)} call${usageTotals.calls === 1 ? '' : 's'} · about $${cost}`,
     }),
   );
-}
-
-function coachRegenerateRows() {
-  const errNote = h('p', { class: 'settings-note danger', hidden: true });
-  const label = h('span', { class: 'settings-label', text: 'Regenerate plan…' });
-  const row = h('button', {
-    class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'coach-regenerate',
-    onclick: () => confirmSheet({
-      title: 'Regenerate plan?',
-      message: 'Builds a fresh plan from your history and profile. Your previous plans are kept.',
-      confirmLabel: 'Regenerate',
-      onConfirm: async () => {
-        errNote.hidden = true;
-        row.disabled = true;
-        label.textContent = 'Building plan…';
-        try {
-          await createPlan();
-          renderSettings();
-          return; // renderSettings rebuilds the whole screen
-        } catch (err) {
-          errNote.hidden = false;
-          errNote.textContent = userMessageFor(err);
-        }
-        label.textContent = 'Regenerate plan…';
-        row.disabled = false;
-      },
-    }),
-  },
-    label,
-    h('span', { class: 'settings-chev' }, Icon('chevron')),
-  );
-  return [row, errNote];
 }
 
 function coachClearRow() {

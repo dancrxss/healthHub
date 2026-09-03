@@ -21,10 +21,15 @@ import {
   putCoachInsight, getCoachInsight, listCoachInsights,
   clearCoachData as dbClearCoachData,
   listHealthSamples,
+  putChatMessage, listChatMessages,
+  MUSCLE_GROUPS,
 } from './db.js';
 import { getStringSetting, setStringSetting } from './settings.js';
 import { uid, nowISO, todayISO } from './util.js';
-import { buildDigest, nextPlanSession, COACH_ENGINE_VERSION } from './coach-engine.js';
+import {
+  buildDigest, nextPlanSession, COACH_ENGINE_VERSION,
+  currentPlanWeek, projectPlanWeek, projectedSessions, recentPRs,
+} from './coach-engine.js';
 import {
   callCoach, testApiKey, COACH_MODEL, estimateCostUsd, userMessageFor,
 } from './coach-api.js';
@@ -32,6 +37,10 @@ import { healthAvailable, getHealthState, getHealthSummary } from './health.js';
 
 const DAY_MS = 86400000;
 const GOALS = ['return-from-injury', 'build-muscle', 'get-stronger', 'general-fitness'];
+const SPLITS = ['auto', 'full-body', 'upper-lower', 'ppl'];
+const GROUP_PREFS = ['auto', 'include', 'emphasise', 'avoid'];
+const MEMORY_MAX = 20;
+const CHAT_RECENT = 6;
 
 // ----------------------------------------------------------------------------
 // Key + consent (synchronous key check — route() hides the tab without an await)
@@ -76,20 +85,39 @@ export async function getProfile() {
   const p = await getMeta('coach.profile');
   return p && typeof p === 'object' ? sanitiseProfile(p) : null;
 }
+/** Deep-merges the nested v2 fields so a partial patch never wipes a sibling. */
 export async function saveProfile(profile) {
-  const clean = sanitiseProfile({ ...(await getMeta('coach.profile')), ...profile, updatedAt: nowISO() });
+  const prev = (await getMeta('coach.profile')) || {};
+  const patch = profile || {};
+  const merged = {
+    ...prev, ...patch,
+    cardio: { ...(prev.cardio || {}), ...(patch.cardio || {}) },
+    core: { ...(prev.core || {}), ...(patch.core || {}) },
+    groupPrefs: { ...(prev.groupPrefs || {}), ...(patch.groupPrefs || {}) },
+    updatedAt: nowISO(),
+  };
+  const clean = sanitiseProfile(merged);
   await setMeta('coach.profile', clean);
   notify();
   return clean;
 }
-function sanitiseProfile(p) {
+/** Profile v2 (PLAN.md C2.1). Tolerates v1 records and junk; every field optional. */
+export function sanitiseProfile(p) {
   const int = (v, lo, hi, d) => {
     const n = Math.round(Number(v));
     return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d;
   };
   const str = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 600) : null);
+  const ids = (v) => (Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === 'string' && x))] : []);
+  const groupPrefs = {};
+  if (p.groupPrefs && typeof p.groupPrefs === 'object') {
+    for (const [g, v] of Object.entries(p.groupPrefs)) {
+      if (MUSCLE_GROUPS.includes(g) && GROUP_PREFS.includes(v) && v !== 'auto') groupPrefs[g] = v;
+    }
+  }
+  const cardio = p.cardio && typeof p.cardio === 'object' ? p.cardio : {};
   return {
-    version: 1,
+    version: 2,
     updatedAt: typeof p.updatedAt === 'string' ? p.updatedAt : nowISO(),
     injuryNotes: str(p.injuryNotes),
     goal: GOALS.includes(p.goal) ? p.goal : 'return-from-injury',
@@ -97,9 +125,73 @@ function sanitiseProfile(p) {
     sessionMinutes: int(p.sessionMinutes, 20, 120, 60),
     equipmentNotes: str(p.equipmentNotes),
     returnDate: /^\d{4}-\d{2}-\d{2}$/.test(p.returnDate || '') ? p.returnDate : null,
-    avoidExerciseIds: Array.isArray(p.avoidExerciseIds) ? p.avoidExerciseIds.filter((x) => typeof x === 'string') : [],
+    avoidExerciseIds: ids(p.avoidExerciseIds),
+    split: SPLITS.includes(p.split) ? p.split : 'auto',
+    groupPrefs,
+    cardio: {
+      include: cardio.include === true,
+      minutesPerSession: int(cardio.minutesPerSession, 5, 30, 10),
+      standaloneDay: cardio.standaloneDay === true,
+      exerciseIds: ids(cardio.exerciseIds),
+    },
+    core: { include: !!(p.core && p.core.include === true) },
+    favouriteExerciseIds: ids(p.favouriteExerciseIds),
+    notes: str(p.notes),
   };
 }
+
+// ----------------------------------------------------------------------------
+// Coach memory — short durable facts the coach has learned (meta coach.memory).
+// Sent with every request; user-editable in the plan builder. Model text is
+// data: clipped, capped, never rendered as HTML.
+// ----------------------------------------------------------------------------
+const clipText = (t, n) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+export async function getMemory() {
+  const m = await getMeta('coach.memory');
+  return Array.isArray(m) ? m.filter((x) => x && typeof x.id === 'string' && typeof x.text === 'string') : [];
+}
+async function writeMemory(items) {
+  const capped = items.slice(-MEMORY_MAX);
+  await setMeta('coach.memory', capped);
+  notify();
+  return capped;
+}
+/** @returns {Promise<Object|null>} the new item, or null when a duplicate/empty */
+export async function addMemory(text, source = 'user') {
+  const t = clipText(text, 160);
+  if (!t) return null;
+  const items = await getMemory();
+  if (items.some((m) => m.text.toLowerCase() === t.toLowerCase())) return null;
+  const item = { id: `m-${uid().slice(0, 8)}`, text: t, addedAt: nowISO(), source };
+  await writeMemory([...items, item]);
+  return item;
+}
+export async function removeMemory(id) {
+  const items = await getMemory();
+  const next = items.filter((m) => m.id !== id);
+  if (next.length !== items.length) await writeMemory(next);
+  return next.length !== items.length;
+}
+/** Apply a chat reply's memoryUpdates. @returns {Promise<{added:number, removed:number}>} */
+export async function applyMemoryUpdates(updates, source) {
+  if (!updates || typeof updates !== 'object') return { added: 0, removed: 0 };
+  let items = await getMemory();
+  const removeIds = new Set(Array.isArray(updates.removeIds) ? updates.removeIds : []);
+  const before = items.length;
+  items = items.filter((m) => !removeIds.has(m.id));
+  const removed = before - items.length;
+  let added = 0;
+  for (const raw of (Array.isArray(updates.add) ? updates.add : []).slice(0, 5)) {
+    const t = clipText(raw, 160);
+    if (!t || items.some((m) => m.text.toLowerCase() === t.toLowerCase())) continue;
+    items.push({ id: `m-${uid().slice(0, 8)}`, text: t, addedAt: nowISO(), source });
+    added += 1;
+  }
+  if (added || removed) await writeMemory(items);
+  return { added, removed };
+}
+const memoryForDigest = (items) => items.map((m) => ({ id: m.id, text: m.text }));
 
 // ----------------------------------------------------------------------------
 // Subscribers (mirrors onHealthUpdate)
@@ -242,8 +334,8 @@ export function runDaily({ force = false } = {}) {
     if (!profile) return null; // the Coach tab asks for a profile first
     const dataset = await loadDataset();
     if (!dataset.workouts.some((w) => w.finishedAt)) return null; // nothing to summarise yet
-    const [health, plan] = await Promise.all([buildHealthInput(), getCurrentPlan()]);
-    const digest = buildDigest({ dataset, profile, today, health, plan, kind: 'daily' });
+    const [health, plan, memory] = await Promise.all([buildHealthInput(), getCurrentPlan(), getMemory()]);
+    const digest = buildDigest({ dataset, profile, today, health, plan, kind: 'daily', memory: memoryForDigest(memory) });
     try {
       const { narrative, usage } = await callCoach({ kind: 'daily', digest, apiKey: apiKeyOrThrow() });
       const insight = {
@@ -281,13 +373,13 @@ export function runSessionFeedback(workoutId, { force = false } = {}) {
     if (!profile) return null;
     const dataset = await loadDataset();
     const today = todayISO();
-    const [health, plan] = await Promise.all([buildHealthInput(), getCurrentPlan()]);
-    const digest = buildDigest({ dataset, profile, today, health, workoutId, plan, kind: 'session' });
+    const [health, plan, memory] = await Promise.all([buildHealthInput(), getCurrentPlan(), getMemory()]);
+    const digest = buildDigest({ dataset, profile, today, health, workoutId, plan, kind: 'session', memory: memoryForDigest(memory) });
     try {
       const { narrative, usage } = await callCoach({ kind: 'session', digest, apiKey: apiKeyOrThrow() });
       let planId = plan ? plan.id : null;
       if (narrative.plan) {
-        const revised = await storePlan(narrative.plan, { source: 'revised', basedOnWorkoutId: workoutId });
+        const revised = await storePlan(narrative.plan, { source: 'revised', basedOnWorkoutId: workoutId, today });
         planId = revised.id;
       }
       const insight = {
@@ -321,11 +413,11 @@ export function createPlan(profileInput = null) {
     if (!profile) { const e = new Error('Tell the coach about yourself first.'); e.code = 'request'; throw e; }
     const dataset = await loadDataset();
     const today = todayISO();
-    const health = await buildHealthInput();
-    const digest = buildDigest({ dataset, profile, today, health, plan: null, kind: 'plan' });
+    const [health, memory] = await Promise.all([buildHealthInput(), getMemory()]);
+    const digest = buildDigest({ dataset, profile, today, health, plan: null, kind: 'plan', memory: memoryForDigest(memory) });
     try {
       const { narrative, usage } = await callCoach({ kind: 'plan', digest, apiKey: apiKeyOrThrow() });
-      const plan = await storePlan(narrative, { source: 'created', basedOnWorkoutId: null });
+      const plan = await storePlan(narrative, { source: 'created', basedOnWorkoutId: null, today });
       await setMeta('coach.lastError', null);
       await setMeta('coach.unreadAt', nowISO());
       await recordUsage(usage);
@@ -338,29 +430,134 @@ export function createPlan(profileInput = null) {
   });
 }
 
-/** Persist a validated PLAN object as the next plan version and point at it. */
-async function storePlan(planObj, { source, basedOnWorkoutId }) {
+/**
+ * Persist a validated PLAN object as the next plan version and point at it.
+ * Phase C2: a 'created' plan starts a new lineage (week 1 = today); a
+ * revision keeps the lineage and describes the CURRENT week (baseWeek), so
+ * later weeks project from what the person is actually lifting now.
+ */
+async function storePlan(planObj, { source, basedOnWorkoutId, today = todayISO() }) {
   const [latest] = await listCoachPlans({ limit: 1 });
+  const fresh = source === 'created' || !latest;
+  const lineageStart = fresh ? today : (latest.lineageStart || (latest.createdAt || today).slice(0, 10));
+  const baseWeek = fresh ? 1 : currentPlanWeek({ ...latest, lineageStart }, today);
+  const weeks = Math.max(Number(planObj.weeks) || 6, baseWeek);
   const record = {
     id: uid(),
     version: latest ? latest.version + 1 : 1,
     createdAt: nowISO(),
     source,
     basedOnWorkoutId,
-    rationale: planObj.rationale || null,
-    weeks: planObj.weeks,
+    planVersion: 2,
+    lineageStart,
+    baseWeek,
+    weeks,
+    rationale: planObj.rationale || null, // v1 field — null for v2 plans
+    overview: planObj.overview || null,
+    weekNotes: Array.isArray(planObj.weekNotes) ? planObj.weekNotes : [],
     sessions: planObj.sessions.map((s, i) => ({
       id: `ps-${i + 1}`, order: i + 1, name: s.name, focus: s.focus ?? null,
+      brief: Array.isArray(s.brief) ? s.brief : [],
       exercises: s.exercises.map((e) => ({
-        exerciseId: e.exerciseId, targetSets: e.targetSets, targetRepsLow: e.targetRepsLow,
-        targetRepsHigh: e.targetRepsHigh, targetWeightKg: e.targetWeightKg ?? null,
-        targetRpe: e.targetRpe ?? null, note: e.note ?? null,
+        exerciseId: e.exerciseId, targetSets: e.targetSets,
+        targetRepsLow: e.targetRepsLow ?? null, targetRepsHigh: e.targetRepsHigh ?? null,
+        targetWeightKg: e.targetWeightKg ?? null, targetDurationSec: e.targetDurationSec ?? null,
+        targetRpe: e.targetRpe ?? null, purpose: e.purpose ?? null, goal: e.goal ?? null,
+        note: e.note ?? null, progression: e.progression ?? null,
       })),
     })),
   };
   await putCoachPlan(record);
   await setMeta('coach.currentPlanId', record.id);
   return record;
+}
+
+// ----------------------------------------------------------------------------
+// Chat — two threads ('home' feedback, 'plan' changes) sharing the memory.
+// ----------------------------------------------------------------------------
+let chatInFlight = false;
+export function chatBusy() { return chatInFlight; }
+
+/** Map a chat reply's profilePatch onto the profile shape saveProfile expects. */
+function profileFromPatch(patch) {
+  if (!patch || typeof patch !== 'object') return null;
+  const out = {};
+  for (const k of ['daysPerWeek', 'sessionMinutes', 'injuryNotes', 'equipmentNotes', 'notes', 'split']) {
+    if (patch[k] !== null && patch[k] !== undefined) out[k] = patch[k];
+  }
+  if (typeof patch.cardioInclude === 'boolean') out.cardio = { include: patch.cardioInclude };
+  if (typeof patch.coreInclude === 'boolean') out.core = { include: patch.coreInclude };
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * Send one message to the coach on a thread. The user message is stored at
+ * once (pending) so the panel can show it while the call queues; the reply
+ * (or a user-facing error) is stored as the coach message. Resolves to the
+ * coach message; rejects only when there is no key or a chat is in flight.
+ */
+export async function sendChat(thread, text) {
+  const t = clipText(text, 1200);
+  if (!t) return null;
+  if (!hasApiKey()) { const e = new Error('No API key'); e.code = 'auth'; throw e; }
+  if (chatInFlight) { const e = new Error('The coach is still replying.'); e.code = 'busy'; throw e; }
+  chatInFlight = true;
+  const userMsg = {
+    id: uid(), thread, role: 'user', createdAt: nowISO(), text: t, points: null,
+    planId: null, changed: null, error: null, pending: true,
+  };
+  await putChatMessage(userMsg);
+  notify();
+  try {
+    return await enqueue('chat', async () => {
+      const [profile, dataset, health, plan, memory, history] = await Promise.all([
+        getProfile(), loadDataset(), buildHealthInput(), getCurrentPlan(), getMemory(),
+        listChatMessages({ thread, limit: CHAT_RECENT * 2 + 2 }),
+      ]);
+      const today = todayISO();
+      const recent = history
+        .filter((m) => m.id !== userMsg.id && !m.pending && !m.error && (m.text || (m.points && m.points.length)))
+        .slice(0, CHAT_RECENT)
+        .reverse()
+        .map((m) => ({ role: m.role, text: m.role === 'user' ? m.text : m.points.join(' ') }));
+      const digest = buildDigest({
+        dataset, profile, today, health, plan, kind: 'chat',
+        memory: memoryForDigest(memory), chat: { thread, recent, message: t },
+      });
+      const base = { id: uid(), thread, role: 'coach', createdAt: nowISO(), text: null, pending: false };
+      try {
+        const { narrative, usage } = await callCoach({ kind: 'chat', digest, apiKey: apiKeyOrThrow() });
+        const changed = { plan: false, profile: false, memory: false };
+        let planId = plan ? plan.id : null;
+        const mem = await applyMemoryUpdates(narrative.memoryUpdates, `chat-${thread}`);
+        changed.memory = mem.added + mem.removed > 0;
+        const patch = profileFromPatch(narrative.profilePatch);
+        if (patch) { await saveProfile(patch); changed.profile = true; }
+        const changes = Array.isArray(narrative.planChanges) ? narrative.planChanges : [];
+        if (narrative.plan && (thread === 'plan' || changes.length > 0)) {
+          const rec = await storePlan(narrative.plan, { source: 'revised', basedOnWorkoutId: null, today });
+          planId = rec.id;
+          changed.plan = true;
+        }
+        await putChatMessage({ ...userMsg, pending: false });
+        const coachMsg = { ...base, points: narrative.reply, planId, changed, error: null, planChanges: changes };
+        await putChatMessage(coachMsg);
+        await recordUsage(usage);
+        await setMeta('coach.lastError', null);
+        notify();
+        return coachMsg;
+      } catch (err) {
+        await putChatMessage({ ...userMsg, pending: false });
+        const coachMsg = { ...base, points: null, planId: null, changed: null, error: userMessageFor(err), planChanges: [] };
+        await putChatMessage(coachMsg);
+        await recordError(err);
+        return coachMsg;
+      }
+    });
+  } finally {
+    chatInFlight = false;
+    notify();
+  }
 }
 
 /** The digest minus the bulky plan echo — that lives in coachPlans already. */
@@ -445,19 +642,35 @@ export async function getCoachState() {
     getMeta('coach.pending'), getMeta('coach.lastError'), getMeta('coach.unreadAt'),
     getMeta('coach.usageTotals'), getShareRecovery(),
   ]);
+  const today = todayISO();
+  const dataset = await loadDataset();
   let nextSession = null;
+  let currentWeek = null;
+  let projected = null;
   if (plan) {
-    const workouts = await listWorkouts('0000');
-    nextSession = nextPlanSession(plan, finishedNewestFirst(workouts));
+    const next = nextPlanSession(plan, finishedNewestFirst(dataset.workouts));
+    currentWeek = currentPlanWeek(plan, today);
+    projected = projectPlanWeek(plan, currentWeek);
+    nextSession = next ? (projected.sessions.find((s) => s.id === next.id) || next) : null;
   }
   const latestDaily = dailies[0] || null;
+  const memory = await getMemory();
   return {
-    enabled, hasProfile: !!profile, profile, plan, nextSession,
-    todayInsight: latestDaily && latestDaily.date === todayISO() ? latestDaily : null,
+    enabled, hasProfile: !!profile, profile, plan, nextSession, currentWeek, projected,
+    todayInsight: latestDaily && latestDaily.date === today ? latestDaily : null,
     latestDaily, latestSession: sessions[0] || null,
     pending: pending || null, lastError: lastError || null, unreadAt: unreadAt || null,
     usageTotals: usageTotals || null, shareRecovery, running,
+    memoryCount: memory.length,
+    recentPRs: recentPRs(dataset, { today, days: 7 }),
+    chatBusy: chatInFlight,
   };
+}
+
+/** The current-week projection of the plan in force (or [] without one). */
+export async function currentPlanSessions() {
+  const plan = await getCurrentPlan();
+  return plan ? projectedSessions(plan, todayISO()) : [];
 }
 
 /** Settings → Coach → Clear. Keeps the recovery consent; optionally the key. */

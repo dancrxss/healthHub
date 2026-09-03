@@ -153,8 +153,8 @@ const DEFAULT_SETS = 3;
 const RAMP_SETS = 2;
 const RAMP_SETS_UNTIL_WEEK = 2;
 
-/** Digest budget. The API prompt is built from this, so it is a hard cap. */
-const DIGEST_MAX_BYTES = 4000;
+/** Digest budget. The API prompt is built from this, so it is a hard cap. Per kind (PLAN.md C2.2). */
+const DIGEST_MAX_BYTES = { daily: 4000, session: 4000, plan: 6000, chat: 6000 };
 const DIGEST_EXERCISE_CAP = { daily: 12, session: 12, plan: 20 };
 const DIGEST_EXERCISE_FLOOR = 4;
 const DIGEST_WINDOW_WEEKS = { daily: 8, session: 8, plan: 16 };
@@ -164,6 +164,17 @@ const DIGEST_SET_CAP = 6;
 const DIGEST_NOTE_CHARS = 160;
 /** Below this many trained exercises, a plan digest is topped up from the library. */
 const PLAN_MIN_EXERCISES = 8;
+/** Hard cap on a 'plan' digest's exercise list, after the group top-up, before the shrink loop. */
+const DIGEST_PLAN_HARD_CAP = 30;
+/** Per-group top-up: at most this many not-already-present library exercises per included/emphasised group. */
+const DIGEST_GROUP_TOP_UP = 4;
+/** `chat.recent`: initial cap, and the shrink-loop floor. */
+const DIGEST_CHAT_RECENT_CAP = 6;
+const DIGEST_CHAT_RECENT_FLOOR = 3;
+const DIGEST_CHAT_MESSAGE_CHARS = 1200;
+const DIGEST_CHAT_TURN_CHARS = 400;
+/** `memory`: the shrink-loop floor (items are stored capped at 20; no floor otherwise). */
+const DIGEST_MEMORY_FLOOR = 10;
 
 const DAY_MS = 86400000;
 
@@ -346,6 +357,26 @@ function volumeOf(sets) {
 /** Exercise types that log reps — the only ones the progression engine scores. */
 function isRepType(exerciseType) {
   return fieldsForType(normalizeExerciseType(exerciseType)).includes('reps');
+}
+
+/** Exercise types measured in seconds, not reps: cardio, time, weight_time (PLAN.md C2.2). */
+const DURATION_TYPES = ['cardio', 'time', 'weight_time'];
+
+/**
+ * True for a duration-measured exercise type (cardio, time, weight_time) —
+ * these log `targetDurationSec`/`durationSeconds` instead of reps. Mirrors
+ * the identically-named check in `js/coach-api.js`.
+ * @param {string} exerciseType
+ * @returns {boolean}
+ */
+export function isDurationType(exerciseType) {
+  return DURATION_TYPES.includes(normalizeExerciseType(exerciseType));
+}
+
+/** A "plannable" exercise: either logs reps or logs a duration. Excludes
+ * distance-only and notes-only types, which the digest never proposes. */
+function isPlannableType(exerciseType) {
+  return isRepType(exerciseType) || isDurationType(exerciseType);
 }
 
 /** True for bodyweight-ish exercises, where the bar weight is not the lever. */
@@ -1142,6 +1173,119 @@ function planSessionsSorted(plan) {
 }
 
 /**
+ * Which programme week (1-based) a plan is on today.
+ *
+ * `plan.lineageStart` (programme day 1, copied on every revision) wins; a
+ * plan predating Phase C2 has none, so `plan.createdAt` (date part) stands
+ * in. Clamped to `[1, plan.weeks || 1]` — a plan never projects past its own
+ * length, and a plan with no `weeks` at all behaves as a single-week plan
+ * rather than dividing by zero.
+ *
+ * @param {{lineageStart?: string, createdAt?: string, weeks?: number}|null} plan
+ * @param {string} today ISO date
+ * @returns {number}
+ */
+export function currentPlanWeek(plan, today) {
+  if (!plan) return 1;
+  const start = plan.lineageStart || String(plan.createdAt || today).slice(0, 10);
+  const weeks = Number.isFinite(plan.weeks) && plan.weeks > 0 ? plan.weeks : 1;
+  const week = Math.floor((dayNum(today) - dayNum(start)) / 7) + 1;
+  return Math.min(weeks, Math.max(1, week));
+}
+
+/**
+ * Project one PlanExercise's targets forward from `plan.baseWeek` (the
+ * programme week the STORED targets describe) to `week`, applying its own
+ * `progression` step. A PlanExercise with no `progression` (v1 plans, or a
+ * v2 exercise the model left unset) projects flat — every step multiplier
+ * below is `0` in that case.
+ *
+ * A `null` or `0` stored target (no weight to load, no duration set) is left
+ * exactly as stored — there is nothing to step forward. Reps are capped at
+ * 30; weight rounds to the nearest 0.5 kg. Everything else on the exercise
+ * (`exerciseId`, `targetRpe`, `purpose`, `goal`, `note`, `progression`
+ * itself) passes through untouched.
+ *
+ * @param {Object} pe PlanExercise
+ * @param {number} week
+ * @param {number} baseWeek
+ * @param {boolean} isDeload
+ * @returns {Object} a NEW PlanExercise-shaped object; `pe` is never mutated
+ */
+function projectPlanExercise(pe, week, baseWeek, isDeload) {
+  const prog = pe && pe.progression && typeof pe.progression === 'object' ? pe.progression : null;
+  const everyWeeks = prog && Number.isFinite(prog.everyWeeks) && prog.everyWeeks > 0 ? prog.everyWeeks : 1;
+  const steps = Math.max(0, Math.floor((week - baseWeek) / everyWeeks));
+
+  const weightStep = prog && Number.isFinite(prog.weightStepKg) ? prog.weightStepKg : 0;
+  const repStep = prog && Number.isFinite(prog.repStep) ? prog.repStep : 0;
+  const durationStep = prog && Number.isFinite(prog.durationStepSec) ? prog.durationStepSec : 0;
+
+  const baseWeightKg = pe.targetWeightKg;
+  let targetWeightKg =
+    baseWeightKg == null || baseWeightKg === 0 ? baseWeightKg : roundStep(baseWeightKg + steps * weightStep, 0.5, 'near');
+
+  const capRep = (v) => (v == null ? null : Math.min(30, v));
+  const targetRepsLow = pe.targetRepsLow == null ? null : capRep(pe.targetRepsLow + steps * repStep);
+  const targetRepsHigh = pe.targetRepsHigh == null ? null : capRep(pe.targetRepsHigh + steps * repStep);
+  const targetDurationSec = pe.targetDurationSec == null ? null : pe.targetDurationSec + steps * durationStep;
+
+  let targetSets = pe.targetSets;
+  if (isDeload) {
+    if (targetWeightKg != null) targetWeightKg = roundStep(targetWeightKg * DELOAD_MULTIPLIER, 2.5, 'down');
+    targetSets = Math.max(1, targetSets - 1);
+  }
+
+  return { ...pe, targetSets, targetRepsLow, targetRepsHigh, targetWeightKg, targetDurationSec };
+}
+
+/**
+ * Project every session of a plan onto one programme week — the later weeks
+ * a plan only ever describes implicitly, via each exercise's `progression`.
+ *
+ * `isPast` (`week < plan.baseWeek`) reports the stored targets unchanged —
+ * `baseWeek` describes what was ACTUALLY prescribed for that already-lived
+ * week, not a re-derived projection of it. `isDeload` is true exactly on
+ * `plan.overview.deloadWeek` (and never for a past week): every exercise's
+ * weight drops 10% (rounded down to 2.5 kg) and every exercise loses one set
+ * (minimum one), reps and duration unchanged.
+ *
+ * @param {Object|null} plan CoachPlanRecord
+ * @param {number} week 1-based programme week
+ * @returns {{week: number, isPast: boolean, isDeload: boolean, sessions: Array<Object>}}
+ */
+export function projectPlanWeek(plan, week) {
+  const baseWeek = plan && Number.isFinite(plan.baseWeek) && plan.baseWeek > 0 ? plan.baseWeek : 1;
+  const deloadWeek = plan && plan.overview && Number.isFinite(plan.overview.deloadWeek) ? plan.overview.deloadWeek : null;
+  const isPast = week < baseWeek;
+  const isDeload = !isPast && deloadWeek != null && week === deloadWeek;
+  const sessions = planSessionsSorted(plan).map((s) => ({
+    id: s.id,
+    order: s.order,
+    name: s.name,
+    focus: s.focus == null ? null : s.focus,
+    brief: Array.isArray(s.brief) ? s.brief.slice() : [],
+    exercises: (Array.isArray(s.exercises) ? s.exercises : []).map((pe) => projectPlanExercise(pe, week, baseWeek, isDeload)),
+  }));
+  return { week, isPast, isDeload, sessions };
+}
+
+/**
+ * The sessions of a plan, projected onto today's programme week. Every
+ * `plan.sessions` read outside the coach's own storage layer goes through
+ * this — the Coach root, the plan screen, the Log start-choice, `#/copy/plan`
+ * and the workout ghost override alike (PLAN.md C2.5).
+ *
+ * @param {Object|null} plan
+ * @param {string} today ISO date
+ * @returns {Array<Object>} `[]` for a null plan.
+ */
+export function projectedSessions(plan, today) {
+  if (!plan) return [];
+  return projectPlanWeek(plan, currentPlanWeek(plan, today)).sessions;
+}
+
+/**
  * The plan session to run next: the one after the newest finished workout that
  * was tagged with a `planSessionId` still present in the plan, wrapping round
  * the end. Falls back to the first session when nothing matches.
@@ -1170,20 +1314,66 @@ export function nextPlanSession(plan, recentWorkouts) {
 }
 
 /**
- * The "ghost" reference sets a planned exercise autofills from. The top of the
- * rep range is used deliberately — the placeholder should show the number to
- * beat, not the number to settle for.
+ * The "ghost" reference sets a planned exercise autofills from: ALWAYS an
+ * array (length `max(1, min(8, targetSets))` — even a misconfigured
+ * `targetSets: 0` still shows one set to beat), except for a null
+ * `planExercise` itself, which has no target sets to speak of.
  *
- * @param {{targetSets: number, targetRepsHigh: number, targetWeightKg: number|null}|null} planExercise
- * @returns {Array<{weightKg: number, reps: number, durationSeconds: null, distanceM: null, kcal: null}>}
+ * A duration exercise (`targetDurationSec > 0`) autofills the time only —
+ * weight and reps stay 0. Otherwise the top of the rep range is used
+ * deliberately — the placeholder should show the number to beat, not the
+ * number to settle for.
+ *
+ * @param {{targetSets: number, targetRepsHigh?: number, targetWeightKg?: number|null,
+ *   targetDurationSec?: number|null}|null} planExercise
+ * @returns {Array<{weightKg: number, reps: number, durationSeconds: number|null,
+ *   distanceM: null, kcal: null}>}
  */
 export function planRefSets(planExercise) {
   if (!planExercise) return [];
-  const n = Math.max(0, Math.min(8, Math.round(Number(planExercise.targetSets) || 0)));
+  const rawSets = Math.round(Number(planExercise.targetSets)) || 0;
+  const n = Math.max(1, Math.min(8, rawSets));
+  const out = [];
+  if (Number(planExercise.targetDurationSec) > 0) {
+    const durationSeconds = Math.round(Number(planExercise.targetDurationSec));
+    for (let i = 0; i < n; i++) out.push({ weightKg: 0, reps: 0, durationSeconds, distanceM: null, kcal: null });
+    return out;
+  }
   const reps = Math.max(0, Math.round(Number(planExercise.targetRepsHigh) || 0));
   const weightKg = planExercise.targetWeightKg == null ? 0 : Number(planExercise.targetWeightKg);
-  const out = [];
   for (let i = 0; i < n; i++) out.push({ weightKg, reps, durationSeconds: null, distanceM: null, kcal: null });
+  return out;
+}
+
+/**
+ * PRs (best estimated 1RM) set within the trailing `days` days — the "since
+ * you last opened the app" list a Home tab shows. Only rep-type exercises
+ * are scored (an e1RM needs weight and reps); duration types have no PR
+ * concept here. `prsFrom` already excludes warmups and cardio sets.
+ *
+ * Sorted newest first, then by name, then by id — deterministic even when
+ * two PRs land on the same date.
+ *
+ * @param {Object} dataset
+ * @param {{today: string, days?: number}} opts
+ * @returns {Array<{exerciseId: string, name: string, kind: 'e1rm', value: number, date: string}>}
+ */
+export function recentPRs(dataset, opts = {}) {
+  const { today, days = 7 } = opts;
+  const from = addDays(today, -days);
+  const out = [];
+  for (const ex of dataset.exercises || []) {
+    if (!ex || !isRepType(ex.exerciseType)) continue;
+    const best = prsFrom(dataset, ex.id).bestE1RM;
+    if (!best || !best.date) continue;
+    if (best.date < from || best.date > today) continue;
+    out.push({ exerciseId: ex.id, name: ex.name, kind: 'e1rm', value: round1(best.value), date: best.date });
+  }
+  out.sort((a, b) => {
+    if (a.date !== b.date) return a.date > b.date ? -1 : 1;
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    return a.exerciseId < b.exerciseId ? -1 : 1;
+  });
   return out;
 }
 
@@ -1290,23 +1480,211 @@ function untrainedEntry(exercise) {
   return entry;
 }
 
-/** Plan, stripped of `note` fields so it fits the digest budget. */
-function slimPlan(plan) {
+/** A working set of a duration-measured exercise: not a warmup, some time logged.
+ * Deliberately NOT `isHardSet` — cardio sets carry `setType: 'cardio'`, which
+ * `isHardSet` excludes on purpose (hard-set counts stay rep-based everywhere
+ * else: `hardSetsByGroup`/`muscleBalance` are UNCHANGED by this). This is
+ * only ever used to find plan-digest history for a duration-type exercise. */
+function isDurationHardSet(s) {
+  return !!s && s.isWarmup !== true && Number(s.durationSeconds) > 0;
+}
+
+/** Finished sessions containing duration sets of one exercise, NEWEST first. */
+function sessionsForDurationExercise(dataset, exerciseId) {
+  const byWorkout = new Map();
+  for (const s of dataset.sets || []) {
+    if (s.exerciseId !== exerciseId || !isDurationHardSet(s)) continue;
+    if (!byWorkout.has(s.workoutId)) byWorkout.set(s.workoutId, []);
+    byWorkout.get(s.workoutId).push(s);
+  }
+  const out = [];
+  for (const w of finishedWorkoutsAsc(dataset)) {
+    const sets = byWorkout.get(w.id);
+    if (!sets || !sets.length) continue;
+    out.push({ workout: w, sets });
+  }
+  out.reverse(); // newest first
+  return out;
+}
+
+/**
+ * Compact digest entry for a duration-measured exercise (cardio/time/
+ * weight_time) — trained or not, plan kind only. Mirrors `untrainedEntry`'s
+ * "omit rather than null" rule: `lastDate`/`lastDurationSec`/`weeksSince`
+ * only appear once there is history.
+ *
+ * proposal.durationSec is `profile.cardio.minutesPerSession × 60` for cardio,
+ * or the exercise's own last duration (else a 45 s default) for time/weight_time.
+ */
+function durationEntry(dataset, exercise, { today, profile }) {
+  const type = normalizeExerciseType(exercise.exerciseType);
+  const sessions = sessionsForDurationExercise(dataset, exercise.id);
+  const last = sessions[0] || null;
+  const lastDurationSec = last ? Math.max(...last.sets.map((s) => Number(s.durationSeconds) || 0)) : null;
+
+  const entry = { id: exercise.id, name: exercise.name, group: exercise.muscleGroup, type };
+  if (last) {
+    entry.lastDate = last.workout.date;
+    entry.lastDurationSec = lastDurationSec;
+    entry.weeksSince = Math.floor(Math.max(0, dayNum(today) - dayNum(last.workout.date)) / 7);
+  }
+  entry.proposal =
+    type === 'cardio'
+      ? {
+          durationSec:
+            (profile && profile.cardio && Number.isFinite(profile.cardio.minutesPerSession) ? profile.cardio.minutesPerSession : 10) *
+            60,
+          sets: 1,
+          rule: 'duration',
+        }
+      : { durationSec: lastDurationSec || 45, sets: 3, rule: 'duration' };
+  return entry;
+}
+
+/** Trained-or-not digest entry for one library exercise, routed by type. */
+function planExerciseEntry(dataset, exercise, { today, profile, gap }) {
+  const type = normalizeExerciseType(exercise.exerciseType);
+  if (isDurationType(type)) return durationEntry(dataset, exercise, { today, profile });
+  return sessionsForExercise(dataset, exercise.id).length
+    ? trainedEntry(dataset, exercise.id, { today, profile, gap })
+    : untrainedEntry(exercise);
+}
+
+/**
+ * Extends a 'plan' digest's exercise list (PLAN.md C2.2):
+ *  - every `profile.favouriteExerciseIds` not already present is added first
+ *    (so the hard cap below never crowds a favourite out for a low-priority
+ *    group top-up);
+ *  - then, for every muscle group the athlete asked for — `groupPrefs[g]`
+ *    'include'/'emphasise', plus 'abs' when `core.include`, plus 'cardio'
+ *    when `cardio.include` — up to 4 library exercises of that group not
+ *    already present are added, ordered favourites first (`cardio.exerciseIds`
+ *    count as favourites within the cardio group specifically), then seed
+ *    (`isCustom === false`) before custom, then name;
+ *  - `groupPrefs[g] === 'avoid'` then strips EVERY exercise of that group,
+ *    including ones the ranked/favourite/other-group passes already added;
+ *  - the result is capped at 30 entries total.
+ * Duration-type exercises are only ever added here — never by the
+ * rep-type-only `rankedExercises`/`libraryTopUp` used for every kind.
+ */
+function extendPlanExercises(dataset, entries, { today, profile, gap, avoid }) {
+  let out = entries.slice();
+  const present = new Set(out.map((e) => e.id));
+  const favourites = new Set(profile && Array.isArray(profile.favouriteExerciseIds) ? profile.favouriteExerciseIds : []);
+  const cardioFavourites = new Set(
+    profile && profile.cardio && Array.isArray(profile.cardio.exerciseIds) ? profile.cardio.exerciseIds : []
+  );
+  const groupPrefs = profile && profile.groupPrefs && typeof profile.groupPrefs === 'object' ? profile.groupPrefs : {};
+  const coreInclude = !!(profile && profile.core && profile.core.include === true);
+  const cardioInclude = !!(profile && profile.cardio && profile.cardio.include === true);
+  const exercises = exerciseIndex(dataset);
+
+  for (const id of favourites) {
+    if (present.has(id) || avoid.has(id)) continue;
+    const exRec = exercises.get(id);
+    if (!exRec || !isPlannableType(exRec.exerciseType)) continue;
+    out.push(planExerciseEntry(dataset, exRec, { today, profile, gap }));
+    present.add(id);
+  }
+
+  for (const group of MUSCLE_GROUPS) {
+    const pref = groupPrefs[group];
+    const eligible =
+      pref === 'include' || pref === 'emphasise' || (group === 'abs' && coreInclude) || (group === 'cardio' && cardioInclude);
+    if (!eligible) continue;
+    const favSet = group === 'cardio' ? new Set([...favourites, ...cardioFavourites]) : favourites;
+    const candidates = (dataset.exercises || [])
+      .filter((e) => e && e.muscleGroup === group && !avoid.has(e.id) && !present.has(e.id) && isPlannableType(e.exerciseType))
+      .slice()
+      .sort((a, b) => {
+        const af = favSet.has(a.id) ? 0 : 1;
+        const bf = favSet.has(b.id) ? 0 : 1;
+        if (af !== bf) return af - bf;
+        const ac = a.isCustom === true ? 1 : 0;
+        const bc = b.isCustom === true ? 1 : 0;
+        if (ac !== bc) return ac - bc;
+        if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+        return a.id < b.id ? -1 : 1;
+      });
+    for (const cand of candidates.slice(0, DIGEST_GROUP_TOP_UP)) {
+      out.push(planExerciseEntry(dataset, cand, { today, profile, gap }));
+      present.add(cand.id);
+    }
+  }
+
+  const avoidGroups = new Set(Object.entries(groupPrefs).filter(([, v]) => v === 'avoid').map(([g]) => g));
+  if (avoidGroups.size) out = out.filter((e) => !avoidGroups.has(e.group));
+
+  return out.length > DIGEST_PLAN_HARD_CAP ? out.slice(0, DIGEST_PLAN_HARD_CAP) : out;
+}
+
+/**
+ * `profile` as it appears in the digest. Tolerates a v1 profile or null:
+ * every v2-only field (`split`, `groupPrefs`, `cardio`, `core`) is simply
+ * omitted rather than sent as an empty/default value the model would have
+ * to learn means nothing.
+ */
+function buildProfileDigest(dataset, profile, avoid) {
+  const out = {
+    goal: (profile && profile.goal) || 'general-fitness',
+    daysPerWeek: profile && Number.isFinite(profile.daysPerWeek) ? profile.daysPerWeek : 3,
+    sessionMinutes: profile && Number.isFinite(profile.sessionMinutes) ? profile.sessionMinutes : null,
+    injuryNotes: clip(profile && profile.injuryNotes),
+    equipmentNotes: clip(profile && profile.equipmentNotes),
+    avoid: [...avoid].sort(),
+  };
+  if (profile && profile.split && profile.split !== 'auto') out.split = profile.split;
+  if (profile && profile.groupPrefs && typeof profile.groupPrefs === 'object') {
+    const gp = {};
+    for (const [g, v] of Object.entries(profile.groupPrefs)) {
+      if (v && v !== 'auto') gp[g] = v;
+    }
+    if (Object.keys(gp).length) out.groupPrefs = gp;
+  }
+  if (profile && profile.cardio && profile.cardio.include === true) {
+    out.cardio = {
+      include: true,
+      minutesPerSession: Number.isFinite(profile.cardio.minutesPerSession) ? profile.cardio.minutesPerSession : 10,
+      standaloneDay: profile.cardio.standaloneDay === true,
+      exerciseIds: Array.isArray(profile.cardio.exerciseIds) ? [...profile.cardio.exerciseIds].sort() : [],
+    };
+  }
+  if (profile && profile.core && profile.core.include === true) out.core = { include: true };
+  const favIds = profile && Array.isArray(profile.favouriteExerciseIds) ? profile.favouriteExerciseIds : [];
+  const exercises = exerciseIndex(dataset);
+  out.favourites = favIds.map((id) => exercises.get(id)).filter(Boolean).map((e) => ({ id: e.id, name: e.name }));
+  out.notes = clip(profile && profile.notes);
+  return out;
+}
+
+/**
+ * Plan echo for a 'daily'/'session'/'chat' digest: NOT the stored plan —
+ * the CURRENT WEEK's projection (`projectPlanWeek`), slimmed to just enough
+ * to keep the model consistent with what the athlete will actually see
+ * (`purpose`/`goal`/`note`/`progression`/`brief` are dropped; the model gets
+ * projected numbers, not the recipe that produced them).
+ */
+function slimPlan(plan, today) {
   if (!plan) return null;
+  const currentWeek = currentPlanWeek(plan, today);
+  const deloadWeek = plan.overview && Number.isFinite(plan.overview.deloadWeek) ? plan.overview.deloadWeek : null;
+  const projected = projectPlanWeek(plan, currentWeek);
   return {
     version: plan.version,
-    sessions: planSessionsSorted(plan).map((s) => ({
+    weeks: plan.weeks,
+    baseWeek: plan.baseWeek || 1,
+    currentWeek,
+    deloadWeek,
+    sessions: projected.sessions.map((s) => ({
       id: s.id,
-      order: s.order,
       name: s.name,
-      focus: s.focus == null ? null : clip(s.focus, 60),
       exercises: (s.exercises || []).map((e) => ({
         exerciseId: e.exerciseId,
         targetSets: e.targetSets,
         targetRepsLow: e.targetRepsLow,
         targetRepsHigh: e.targetRepsHigh,
         targetWeightKg: e.targetWeightKg == null ? null : round1(e.targetWeightKg),
-        targetRpe: e.targetRpe == null ? null : e.targetRpe,
+        targetDurationSec: e.targetDurationSec == null ? null : e.targetDurationSec,
       })),
     })),
   };
@@ -1316,29 +1694,36 @@ function slimPlan(plan) {
  * The complete, JSON-serialisable payload sent to the model. Deterministic:
  * the same inputs always produce a deep-equal object.
  *
- * Size: `JSON.stringify(digest).length` is guaranteed below 4000. The exercise
- * list is trimmed first (down to a floor of 4), then the session's exercise
- * list (floor 3), then the attached plan is dropped — in that order.
+ * Size: `JSON.stringify(digest).length` is guaranteed below the per-kind
+ * budget (`daily`/`session` 4000, `plan`/`chat` 6000). Shrunk deterministically
+ * in this order: the exercise list (floor 4), the session's exercise list
+ * (floor 3), the attached plan dropped, `chat.recent` cut to 3 turns, then
+ * `memory` cut to the 10 most recent.
  *
  * The exercise window is anchored to the LAST TRAINING SESSION, not to today,
  * so a layoff never empties the list: 8 weeks back for 'daily'/'session'
- * (≤ 12 exercises), 16 weeks for 'plan' (≤ 20). For kind 'plan' with fewer
- * than 8 trained exercises in the window the list is topped up with untrained
- * library exercises so the model has something to build a plan out of.
+ * (≤ 12 exercises), 16 weeks for 'plan' (≤ 20, before the group top-up can
+ * take it to 30). For kind 'plan' with fewer than 8 trained exercises in the
+ * window the list is topped up with untrained library exercises so the model
+ * has something to build a plan out of; `extendPlanExercises` then layers on
+ * favourites and the per-group top-up described there.
  *
  * `recovery` appears only when `health` is passed (the caller passes it only
  * with the athlete's consent) and then carries exactly its seven fields.
+ * `memory` is always present (`[]` when none). `chat` appears only for
+ * kind 'chat'.
  *
  * @param {{dataset: Object, profile?: Object|null, today: string,
  *   health?: Object|null, workoutId?: string|null, plan?: Object|null,
- *   kind: 'daily'|'session'|'plan'}} args
+ *   kind: 'daily'|'session'|'plan'|'chat', memory?: Array<{id: string, text: string}>|null,
+ *   chat?: {thread: 'home'|'plan', recent: Array<{role: string, text: string}>, message: string}|null}} args
  * @returns {Object}
  */
 export function buildDigest(args) {
-  const { dataset, profile = null, today, health = null, workoutId = null, plan = null, kind = 'daily' } = args || {};
+  const {
+    dataset, profile = null, today, health = null, workoutId = null, plan = null, kind = 'daily', memory = null, chat = null,
+  } = args || {};
 
-  const goal = (profile && profile.goal) || 'general-fitness';
-  const daysPerWeek = profile && Number.isFinite(profile.daysPerWeek) ? profile.daysPerWeek : 3;
   const avoid = new Set((profile && profile.avoidExerciseIds) || []);
 
   const gap = trainingGap(dataset, today);
@@ -1359,22 +1744,30 @@ export function buildDigest(args) {
       entries.push(untrainedEntry(ex));
     }
   }
+  if (kind === 'plan') {
+    entries = extendPlanExercises(dataset, entries, { today, profile, gap, avoid });
+  }
 
   const sessionBlock =
     kind === 'session' && workoutId ? sessionDiff(dataset, workoutId) : null;
+
+  const memoryFull = Array.isArray(memory)
+    ? memory.filter((m) => m && typeof m.id === 'string').map((m) => ({ id: m.id, text: clip(String(m.text || ''), 200) }))
+    : [];
+  const chatRecentFull =
+    kind === 'chat' && chat && Array.isArray(chat.recent)
+      ? chat.recent
+          .slice(-DIGEST_CHAT_RECENT_CAP)
+          .map((m) => ({ role: m && m.role, text: clip(String((m && m.text) || ''), DIGEST_CHAT_TURN_CHARS) }))
+      : [];
+  const chatMessage = kind === 'chat' && chat ? clip(String(chat.message || ''), DIGEST_CHAT_MESSAGE_CHARS) : '';
+  const chatThread = kind === 'chat' && chat ? chat.thread : null;
 
   const base = {
     schemaVersion: 1,
     kind,
     today,
-    profile: {
-      goal,
-      daysPerWeek,
-      sessionMinutes: profile && Number.isFinite(profile.sessionMinutes) ? profile.sessionMinutes : null,
-      injuryNotes: clip(profile && profile.injuryNotes),
-      equipmentNotes: clip(profile && profile.equipmentNotes),
-      avoid: [...avoid].sort(),
-    },
+    profile: buildProfileDigest(dataset, profile, avoid),
     gap,
     week: {
       isoWeek: totals.isoWeek,
@@ -1390,7 +1783,7 @@ export function buildDigest(args) {
     flags,
   };
 
-  const assemble = (exerciseCount, sessionExerciseCount, includePlan) => {
+  const assemble = (exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount) => {
     const out = { ...base, exercises: entries.slice(0, exerciseCount) };
     if (health) {
       out.recovery = {
@@ -1425,7 +1818,11 @@ export function buildDigest(args) {
         })),
       };
     }
-    out.plan = kind === 'plan' || !includePlan ? null : slimPlan(plan);
+    out.plan = kind === 'plan' || !includePlan ? null : slimPlan(plan, today);
+    out.memory = memoryCount < memoryFull.length ? memoryFull.slice(-memoryCount) : memoryFull;
+    if (kind === 'chat') {
+      out.chat = { thread: chatThread, recent: chatRecentFull.slice(-chatRecentCount), message: chatMessage };
+    }
     return out;
   };
 
@@ -1433,13 +1830,18 @@ export function buildDigest(args) {
   let exerciseCount = entries.length;
   let sessionExerciseCount = sessionBlock ? Math.min(sessionBlock.exercises.length, DIGEST_SESSION_EXERCISE_CAP) : 0;
   let includePlan = true;
-  let digest = assemble(exerciseCount, sessionExerciseCount, includePlan);
-  while (JSON.stringify(digest).length >= DIGEST_MAX_BYTES) {
+  let chatRecentCount = DIGEST_CHAT_RECENT_CAP;
+  let memoryCount = memoryFull.length;
+  const maxBytes = DIGEST_MAX_BYTES[kind] || DIGEST_MAX_BYTES.daily;
+  let digest = assemble(exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount);
+  while (JSON.stringify(digest).length >= maxBytes) {
     if (exerciseCount > DIGEST_EXERCISE_FLOOR) exerciseCount -= 1;
     else if (sessionExerciseCount > DIGEST_SESSION_EXERCISE_FLOOR) sessionExerciseCount -= 1;
     else if (includePlan && kind !== 'plan' && plan) includePlan = false;
+    else if (kind === 'chat' && chatRecentCount > DIGEST_CHAT_RECENT_FLOOR) chatRecentCount = DIGEST_CHAT_RECENT_FLOOR;
+    else if (memoryCount > DIGEST_MEMORY_FLOOR) memoryCount = DIGEST_MEMORY_FLOOR;
     else break;
-    digest = assemble(exerciseCount, sessionExerciseCount, includePlan);
+    digest = assemble(exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount);
   }
   return digest;
 }

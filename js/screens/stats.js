@@ -155,7 +155,7 @@ function formatMetricValue(v, unit) {
   return unit ? `${s} ${unit}` : s;
 }
 
-function chartHash(scope, metricId) {
+export function chartHash(scope, metricId) {
   if (scope.kind === 'exercise') return `#/stats/exercise/${scope.id}/chart/${metricId}`;
   if (scope.kind === 'category') return `#/stats/category/${scope.id}/chart/${metricId}`;
   return `#/stats/overall/${metricId}`;
@@ -378,6 +378,41 @@ function moduleTitle(spec, def, ctx) {
   }
   if (spec.scope.kind === 'category') return `${titleCase(spec.scope.id)} · ${def.label}`;
   return def.label;
+}
+
+/**
+ * The Home tab's key-stats tiles want a module's title + latest value without
+ * building a chart or holding the grid's exercise-map context (Phase C2,
+ * PLAN.md §"Phase C2" C2.5). Same read as loadModuleChart below — pie sums
+ * categoryBreakdown, everything else takes computeSeries's last point — just
+ * returned instead of painted into a live chart.
+ * @param {Object} spec a kind:'metric' module spec (settings.js ModuleSpec)
+ * @returns {Promise<{title: string, value: string}>}
+ */
+export async function moduleHeadline(spec) {
+  const def = metricDef(spec.scope.kind, spec.metric);
+  let title = def.label;
+  if (spec.scope.kind === 'exercise') {
+    const ex = await getExercise(spec.scope.id);
+    title = `${ex ? ex.name : 'Exercise'} · ${def.label}`;
+  } else if (spec.scope.kind === 'category') {
+    title = `${titleCase(spec.scope.id)} · ${def.label}`;
+  }
+  let value = '—';
+  try {
+    if (spec.chart === 'pie' && pieAllowed(spec.scope, def.id)) {
+      const { slices, unit } = await categoryBreakdown({ metric: def.id, range: spec.range, ...seriesOpts() });
+      if (slices && slices.length) value = formatMetricValue(slices.reduce((a, s) => a + s.value, 0), unit);
+    } else {
+      const { points, unit } = await computeSeries({
+        scope: spec.scope, metric: def.id, groupBy: spec.groupBy, range: spec.range, ...seriesOpts(),
+      });
+      if (points && points.length) value = formatMetricValue(points[points.length - 1].value, unit);
+    }
+  } catch (err) {
+    console.error('stats: module headline failed', err);
+  }
+  return { title, value };
 }
 
 function buildMetricModule(card, spec, ctx) {

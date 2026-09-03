@@ -44,10 +44,10 @@ const poll = async (expr, ms = 10000) => {
 await send('Page.enable');
 await send('Page.navigate', { url: APP_URL });
 // Reworked shell: the app boots to #/log with the bottom tab bar (no more #s-home).
-if (!(await poll(`location.hash === '#/log' && !document.getElementById('s-log').hidden && document.getElementById('s-log').childElementCount > 0`))) {
+if (!(await poll(`location.hash === '#/home' && !document.getElementById('s-home').hidden && document.getElementById('s-home').childElementCount > 0`))) {
   console.log('FAIL — initial load never rendered'); process.exit(1);
 }
-await poll(`caches.has('healthhub-v2')`); // sw.js CACHE_VERSION = 'v2'
+await poll(`caches.keys().then((k) => k.some((n) => n.startsWith('healthhub-')))`); // the SW shell cache exists (any CACHE_VERSION)
 await new Promise((r) => setTimeout(r, 500));
 
 // Kill the server — genuinely no network origin any more.
@@ -61,7 +61,9 @@ try {
 
 await send('Page.reload');
 // Served entirely from the SW cache: the Log tab must render with the tab bar.
-const ok = await poll(`location.hash === '#/log' && !document.getElementById('s-log').hidden && document.getElementById('s-log').childElementCount > 0 && document.querySelector('#tabbar button[data-tab="log"]') !== null`);
+const home = await poll(`location.hash === '#/home' && !document.getElementById('s-home').hidden && document.getElementById('s-home').childElementCount > 0 && document.querySelector('#tabbar button[data-tab="home"]') !== null`);
+if (home) await evalJS(`location.hash = '#/log'`);
+const ok = home && await poll(`location.hash === '#/log' && !document.getElementById('s-log').hidden && document.getElementById('s-log').childElementCount > 0`);
 // Prove interactivity offline too: start a workout (writes to IndexedDB).
 let flow = false;
 if (ok) {

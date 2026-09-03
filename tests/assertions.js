@@ -36,6 +36,9 @@ import {
   getCoachInsightForWorkout,
   listCoachInsights,
   clearCoachData,
+  putChatMessage,
+  listChatMessages,
+  clearChat,
 } from '../js/db.js';
 import { getStringSetting, setStringSetting } from '../js/settings.js';
 import {
@@ -135,7 +138,7 @@ export async function runTests(rootEl, summaryElement) {
     _setDbNameForTests(TEST_DB);
     await deleteDb(TEST_DB);
     const db = await openDb();
-    ok('openDb: object stores created', ['exercises', 'workouts', 'sets', 'templates', 'meta', 'health', 'coachPlans', 'coachInsights'].every((s) => db.objectStoreNames.contains(s)));
+    ok('openDb: object stores created', ['exercises', 'workouts', 'sets', 'templates', 'meta', 'health', 'coachPlans', 'coachInsights', 'coachChat'].every((s) => db.objectStoreNames.contains(s)));
     ok('openDb: workouts by-date index exists', db.transaction('workouts').objectStore('workouts').indexNames.contains('by-date'));
     ok('openDb: sets by-workout & by-exercise indexes exist', (() => {
       const idx = db.transaction('sets').objectStore('sets').indexNames;
@@ -355,8 +358,9 @@ export async function runTests(rootEl, summaryElement) {
     });
     _setDbNameForTests(COACH_UPGRADE_DB);
     const upDb = await openDb();
-    ok('coach upgrade: DB_VERSION is 3', DB_VERSION === 3 && upDb.version === 3);
-    ok('coach upgrade: v2 → v3 adds coachPlans + coachInsights', upDb.objectStoreNames.contains('coachPlans') && upDb.objectStoreNames.contains('coachInsights'));
+    ok('coach upgrade: DB_VERSION is 4', DB_VERSION === 4 && upDb.version === 4);
+    ok('coach upgrade: v2 → v4 adds coachPlans + coachInsights + coachChat', upDb.objectStoreNames.contains('coachPlans') && upDb.objectStoreNames.contains('coachInsights') && upDb.objectStoreNames.contains('coachChat'));
+    ok('coach upgrade: coachChat by-thread-created index exists', upDb.transaction('coachChat').objectStore('coachChat').indexNames.contains('by-thread-created'));
     ok('coach upgrade: coachInsights indexes exist', (() => {
       const idx = upDb.transaction('coachInsights').objectStore('coachInsights').indexNames;
       return idx.contains('by-kind-created') && idx.contains('by-workout');
@@ -392,12 +396,26 @@ export async function runTests(rootEl, summaryElement) {
     ok('coach: getCoachInsightForWorkout via by-workout index', (await getCoachInsightForWorkout('w-1'))?.id === 'session-w-1');
     ok('coach: getCoachInsightForWorkout unknown → undefined', (await getCoachInsightForWorkout('nope')) === undefined);
 
+    // Chat store (Phase C2): two threads, newest first, per-thread clear.
+    const chat = (id, thread, role, createdAt, extra = {}) => ({ id, thread, role, createdAt, text: role === 'user' ? 'hi' : null, points: role === 'coach' ? ['ok'] : null, planId: null, changed: null, error: null, pending: false, ...extra });
+    await putChatMessage(chat('c1', 'home', 'user', '2026-09-03T09:00:00.000Z'));
+    await putChatMessage(chat('c2', 'home', 'coach', '2026-09-03T09:00:05.000Z'));
+    await putChatMessage(chat('c3', 'plan', 'user', '2026-09-03T09:01:00.000Z', { pending: true }));
+    eq('chat: listChatMessages newest first per thread', (await listChatMessages({ thread: 'home' })).map((m) => m.id), ['c2', 'c1']);
+    eq('chat: thread filter excludes the other thread', (await listChatMessages({ thread: 'plan' })).map((m) => m.id), ['c3']);
+    eq('chat: limit honoured', (await listChatMessages({ thread: 'home', limit: 1 })).map((m) => m.id), ['c2']);
+    await putChatMessage(chat('c3', 'plan', 'user', '2026-09-03T09:01:00.000Z', { pending: false }));
+    ok('chat: put upserts (pending flag flipped, count unchanged)', (await listChatMessages({ thread: 'plan' })).length === 1 && (await listChatMessages({ thread: 'plan' }))[0].pending === false);
+    await clearChat('home');
+    eq('chat: clearChat(thread) empties only that thread', [(await listChatMessages({ thread: 'home' })).length, (await listChatMessages({ thread: 'plan' })).length], [0, 1]);
+
     await putWorkout({ id: 'w-keep', date: '2026-09-02', startedAt: '2026-09-02T17:00:00.000Z', finishedAt: '2026-09-02T18:00:00.000Z', templateId: null, notes: null, planId: 'plan-2', planSessionId: 'ps-1' });
     await setMeta('coach.shareRecovery', true);
     await setMeta('coach.lastDailyDate', '2026-09-03');
     await clearCoachData();
     eq('coach: clearCoachData empties plans', (await listCoachPlans()).length, 0);
     eq('coach: clearCoachData empties insights', (await listCoachInsights({ kind: 'daily' })).length + (await listCoachInsights({ kind: 'session' })).length, 0);
+    eq('coach: clearCoachData empties chat too', (await listChatMessages({ thread: 'plan' })).length, 0);
     ok('coach: clearCoachData leaves workouts intact', (await getWorkout('w-keep'))?.planSessionId === 'ps-1');
     ok('coach: clearCoachData removes coach.* meta', (await getMeta('coach.lastDailyDate')) === undefined && (await getMeta('coach.currentPlanId')) === undefined);
     ok('coach: clearCoachData keeps the recovery consent', (await getMeta('coach.shareRecovery')) === true);

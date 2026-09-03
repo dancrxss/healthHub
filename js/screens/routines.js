@@ -23,6 +23,8 @@ import {
   listExercises, listWorkouts, listSetsForWorkout, getWorkout, putSet, putWorkout,
 } from '../db.js';
 import { coachEnabled, getCurrentPlan } from '../coach.js';
+import { projectedSessions } from '../coach-engine.js';
+import { todayISO } from '../util.js';
 import { uid } from '../util.js';
 import {
   h, Icon, go,
@@ -240,7 +242,8 @@ async function renderPlanList(screen, workout) {
   const [plan, exercises] = await Promise.all([coachEnabled() ? getCurrentPlan() : null, listExercises()]);
   const exMap = new Map(exercises.map((e) => [e.id, e]));
   const list = h('div', { class: 'pick-list' });
-  const sessions = plan ? (plan.sessions || []) : [];
+  // Projected for the current programme week (a deload week copies fewer sets).
+  const sessions = plan ? projectedSessions(plan, todayISO()) : [];
 
   if (!sessions.length) {
     list.append(h('p', { class: 'pick-empty muted', text: 'No plan yet. Set one up from the Coach tab.' }));

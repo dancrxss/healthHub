@@ -16,11 +16,11 @@ import {
   listSetsForWorkout, putSet, getSet, deleteSet,
   listExercises, listSetsForExercise, getCoachPlan,
 } from '../db.js';
-import { planRefSets } from '../coach-engine.js';
+import { planRefSets, projectedSessions } from '../coach-engine.js';
+import { nowISO, todayISO } from '../util.js';
 import { onWorkoutFinished } from '../coach.js';
 import { getPRs, getLastSession } from '../queries.js';
 import * as timer from '../timer.js';
-import { nowISO } from '../util.js';
 import {
   h, Icon, go, setCurrent,
   currentWorkout, getEntries, saveEntries, displayName,
@@ -212,7 +212,8 @@ export async function renderWorkoutScreen(workoutId) {
   // fromPlan so the card can show a chip — a silent swap would read as a bug.
   if (workout.planSessionId && workout.planId) {
     const plan = await getCoachPlan(workout.planId);
-    const ps = plan && (plan.sessions || []).find((x) => x.id === workout.planSessionId);
+    // Phase C2: targets are projected for THIS week of the programme.
+    const ps = plan && projectedSessions(plan, todayISO()).find((x) => x.id === workout.planSessionId);
     for (const pe of (ps ? ps.exercises : [])) {
       const refs = planRefSets(pe);
       refs.fromPlan = true;

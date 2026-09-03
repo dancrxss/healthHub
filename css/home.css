@@ -1,0 +1,94 @@
+/* ============================================================================
+   css/home.css — the Home tab (#s-home, Phase C2). Reuses the shared tab
+   chrome (.tab-screen/.tab-head/.tab-card) and the Coach vocabulary
+   (.coach-card, .coach-label, .coach-verdict-*, .coach-btn-primary,
+   .coach-link-row, .coach-chat-* — see css/coach.css) rather than re-cutting
+   it; only genuinely Home-specific layout lives here, all `home-` prefixed.
+   ============================================================================ */
+
+.home-section { margin-bottom: 24px; }
+.home-section:last-child { margin-bottom: 8px; }
+
+.home-label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+/* ----------------------------------------------------------------------------
+   Last session — workoutRow() is a bare row; it needs its own card chrome
+   here (normally its .month-card parent supplies it).
+   ---------------------------------------------------------------------------- */
+.home-last-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.home-last-card .workout-card { border-bottom: 0; }
+
+/* ----------------------------------------------------------------------------
+   Empty / nudge states
+   ---------------------------------------------------------------------------- */
+.home-empty { padding: 16px; }
+.home-empty > p:first-child { margin: 0 0 4px; }
+p.home-empty { padding: 4px; font-size: 14px; }
+
+.home-coach-cta {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
+  border: 0; border-radius: var(--radius);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 14.5px; line-height: 1.4; text-align: left;
+  cursor: pointer;
+}
+.home-coach-cta:active { opacity: 0.7; }
+
+.home-analyse-btn {
+  text-align: center;
+  color: var(--accent);
+  font-size: 15.5px; font-weight: 700;
+  padding: 16px;
+}
+.home-analyse-btn:disabled { color: var(--muted); }
+
+.home-session-card { cursor: pointer; }
+
+/* ----------------------------------------------------------------------------
+   Key stats strip
+   ---------------------------------------------------------------------------- */
+.home-stats {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 2px;
+  margin: 0 -18px 10px;
+  padding-left: 18px;
+  padding-right: 18px;
+}
+.home-stats::-webkit-scrollbar { display: none; }
+
+.home-stat {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+  min-width: 132px;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px;
+  border: 0; border-radius: var(--radius);
+  background: var(--card);
+  color: inherit; text-align: left;
+  cursor: pointer;
+}
+.home-stat:active { opacity: 0.75; }
+.home-stat-title {
+  font-size: 12px; color: var(--muted);
+  line-height: 1.3;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.home-stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
+
+.home-prs { margin: 0; font-size: 13.5px; line-height: 1.4; color: var(--text); }

@@ -166,6 +166,10 @@ button.coach-card { cursor: pointer; }
 .coach-status-error { background: rgba(255, 90, 82, 0.12); }
 .coach-status-error .coach-status-text { color: var(--danger); }
 
+/* Building a plan / waiting on a chat reply read the same as "thinking", just
+   with their own hook for anyone who wants to tell them apart later. */
+.coach-status-plan, .coach-status-chat { background: var(--card); }
+
 .coach-status-dot {
   flex: 0 0 auto;
   width: 8px; height: 8px;
@@ -189,6 +193,31 @@ button.coach-card { cursor: pointer; }
 .coach-ex-note { font-size: 12.5px; line-height: 1.35; margin-top: 2px; }
 
 .coach-plan-session.is-next { box-shadow: inset 0 0 0 1px rgba(78, 205, 214, 0.35); }
+
+/* Expandable plan-exercise rows (the plan screen; the next-session card on
+   root/plan uses the plain .coach-ex line above instead — v1 plans have no
+   purpose/goal to expand). */
+.coach-plan-ex-list { display: flex; flex-direction: column; margin-top: 10px; }
+.coach-plan-ex-wrap + .coach-plan-ex-wrap { border-top: 1px solid var(--line); }
+.coach-plan-ex-wrap .coach-ex { padding: 8px 0; }
+.coach-plan-ex {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; min-height: 44px;
+  padding: 8px 0;
+  border: 0; background: none; text-align: left; cursor: pointer;
+}
+.coach-plan-ex-text { flex: 1 1 auto; font-size: 14.5px; line-height: 1.35; color: var(--text); }
+.coach-plan-ex-chev { flex: 0 0 auto; display: inline-flex; color: var(--faint); transition: transform var(--dur-base, 0.2s) ease; }
+.coach-plan-ex-chev svg { width: 16px; height: 16px; }
+.coach-plan-ex.is-open .coach-plan-ex-chev { transform: rotate(90deg); }
+.coach-plan-ex-detail { display: flex; flex-direction: column; gap: 6px; padding: 0 0 10px 2px; }
+.coach-plan-ex-detail-line { display: flex; gap: 8px; align-items: baseline; }
+.coach-plan-ex-detail-label {
+  flex: 0 0 auto; min-width: 38px;
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.coach-plan-ex-detail-text { flex: 1 1 auto; font-size: 13.5px; line-height: 1.4; color: var(--text); }
 
 /* ----------------------------------------------------------------------------
    Muscle balance bars
@@ -260,14 +289,14 @@ button.coach-card { cursor: pointer; }
 .coach-change-reason { font-size: 12.5px; line-height: 1.35; }
 
 /* ----------------------------------------------------------------------------
-   Plan footer
+   Plan footer (root summary's mini footer + the plan screen's footer) — a
+   stack of .coach-link-row rows plus a muted caption line.
    ---------------------------------------------------------------------------- */
-.coach-plan-footer { padding: 0 4px 8px; }
-.coach-plan-footer-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px;
-}
-.coach-footer-text { font-size: 12.5px; }
+.coach-plan-footer { padding: 4px 4px 8px; }
+.coach-plan-footer .coach-link-row { padding-top: 10px; padding-bottom: 10px; margin-top: 0; }
+.coach-plan-footer .coach-link-row + .coach-link-row { border-top: 1px solid var(--line); }
+.coach-plan-footer > .coach-footer-text:first-child { margin: 0 0 2px; }
+.coach-footer-text { display: block; font-size: 12.5px; margin: 10px 0 0; }
 
 /* ----------------------------------------------------------------------------
    Recovery card
@@ -276,20 +305,62 @@ button.coach-card { cursor: pointer; }
 .coach-recovery-note { margin: 10px 0 0; font-size: 14px; }
 
 /* ----------------------------------------------------------------------------
-   "About you" sheet
+   Plan builder (#/coach/builder)
    ---------------------------------------------------------------------------- */
-.coach-setup-sheet .coach-sheet-stepper,
-.coach-setup-sheet .coach-sheet-date { padding: 8px 16px; }
-.coach-setup-sheet .coach-sheet-stepper + .coach-sheet-date,
-.coach-setup-sheet .sheet-row + .coach-sheet-stepper { border-top: 1px solid var(--line); }
+.coach-builder-body { display: flex; flex-direction: column; gap: 12px; padding-bottom: 8px; }
+.coach-builder-card .coach-card-title { margin-bottom: 2px; }
+.coach-builder-card .sheet-row + .coach-sheet-stepper,
+.coach-builder-card .coach-sheet-stepper + .coach-sheet-date,
+.coach-builder-card .coach-sheet-stepper + .settings-row { border-top: 1px solid var(--line); }
 .coach-date-input {
   flex: 0 0 auto;
   width: auto; min-height: 40px;
   text-align: right;
   color: var(--text);
 }
-.coach-sheet-error:empty { display: none; }
-.coach-sheet-save { width: 100%; }
+
+/* Segmented controls inside builder cards — wide enough to need wrapping
+   (Split) or squeezed into four equal cells (per-muscle-group prefs). */
+.coach-seg-wrap { flex-wrap: wrap; row-gap: 4px; }
+.coach-group-row { flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 0; }
+.coach-group-row + .coach-group-row { border-top: 1px solid var(--line); }
+.coach-seg-4 { display: flex; width: 100%; }
+.coach-seg-4 .seg-btn { flex: 1 1 0; padding: 7px 4px; min-height: 40px; font-size: 12.5px; }
+
+/* "What the coach knows about you" */
+.coach-memory-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.coach-memory-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--card-2);
+}
+.coach-memory-text { flex: 1 1 auto; font-size: 14px; line-height: 1.4; color: var(--text); }
+.coach-memory-remove {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px;
+  border: 0; border-radius: 50%; background: none; color: var(--muted);
+  cursor: pointer;
+}
+.coach-memory-remove:active { opacity: 0.6; background: rgba(255, 255, 255, 0.06); }
+.coach-memory-remove svg { width: 16px; height: 16px; }
+
+.coach-builder-footer { padding: 6px 4px 24px; display: flex; flex-direction: column; gap: 8px; }
+.coach-builder-actions { display: flex; align-items: center; gap: 12px; }
+.coach-builder-actions .coach-btn-primary { flex: 1 1 auto; margin-top: 0; }
+.coach-builder-msg:empty { display: none; }
+
+/* ----------------------------------------------------------------------------
+   Chat (#/coach/chat) — a tall container so the shared chatPanel can flex.
+   ---------------------------------------------------------------------------- */
+.coach-chat-screen { display: flex; flex-direction: column; }
+.coach-chat-wrap {
+  display: flex; flex-direction: column;
+  min-height: calc(100svh - var(--tabbar-h) - var(--safe-bottom) - 160px);
+}
+.coach-chat-note { margin: 10px 0 12px; }
+.coach-chat-container { flex: 1 1 auto; min-height: 420px; display: flex; flex-direction: column; }
 
 /* ----------------------------------------------------------------------------
    Tab-bar unread dot (ui.js toggles `has-unread` after a coach call)
@@ -304,3 +375,147 @@ button.coach-card { cursor: pointer; }
   border-radius: 50%;
   background: var(--accent);
 }
+
+/* ============================================================================
+   Shared components (Phase C2) — js/screens/coach-shared.js. Used by the Home
+   tab, the Coach tab and the plan builder, so nothing here is scoped to
+   #s-coach.
+   ============================================================================ */
+
+/* ---- bullets() — a model-written bullet list ------------------------------ */
+.coach-bullets {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.coach-bullets:first-child { margin-top: 0; }
+.coach-bullets li {
+  position: relative;
+  padding-left: 14px;
+  font-size: 14.5px; line-height: 1.4; color: var(--text);
+}
+.coach-bullets li::before {
+  content: '';
+  position: absolute; left: 0; top: 8px;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--faint);
+}
+
+/* ---- chatPanel() ----------------------------------------------------------- */
+.coach-chat { display: flex; flex-direction: column; min-height: 0; }
+.coach-chat-list {
+  display: flex; flex-direction: column; gap: 10px;
+  overflow-y: auto;
+  padding: 2px 2px 6px;
+}
+.coach-chat-compact .coach-chat-list { max-height: 55vh; }
+.coach-chat:not(.coach-chat-compact) { flex: 1; min-height: 0; }
+.coach-chat:not(.coach-chat-compact) .coach-chat-list { flex: 1; min-height: 240px; }
+
+.coach-chat-row { display: flex; }
+.coach-chat-row-user { justify-content: flex-end; }
+.coach-chat-row-coach { justify-content: flex-start; }
+
+.coach-chat-user {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 14.5px; line-height: 1.4;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.coach-chat-wait { font-size: 12px; margin-top: 4px; text-align: right; }
+
+.coach-chat-coach {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 16px 16px 16px 4px;
+  background: var(--card-2);
+}
+.coach-chat-coach-empty { margin: 0; font-size: 14px; }
+
+.coach-chat-error {
+  max-width: 88%;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 10px 14px;
+  border-radius: 16px 16px 16px 4px;
+  background: rgba(255, 90, 82, 0.12);
+}
+.coach-chat-error-text { font-size: 14px; line-height: 1.4; color: var(--danger); }
+
+.coach-chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.coach-chat-chip {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(78, 205, 214, 0.16); color: var(--accent);
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+
+.coach-chat-thinking {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  border-radius: 16px 16px 16px 4px;
+  background: var(--card-2);
+}
+
+.coach-chat-empty { padding: 18px 4px; font-size: 14px; text-align: center; }
+
+.coach-chat-input-row { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; }
+.coach-chat-input {
+  flex: 1 1 auto;
+  min-height: 40px; max-height: 96px;
+  resize: none;
+  border: 0; border-radius: 14px;
+  background: var(--card-2); color: var(--text);
+  font: inherit; font-size: 15px; line-height: 1.35;
+  padding: 10px 14px;
+}
+.coach-chat-input::placeholder { color: var(--faint); }
+.coach-chat-input:disabled { opacity: 0.6; }
+.coach-chat-send {
+  flex: 0 0 auto;
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%;
+  background: var(--accent); color: var(--accent-ink);
+  cursor: pointer;
+}
+.coach-chat-send svg { width: 18px; height: 18px; }
+.coach-chat-send:disabled { opacity: 0.5; cursor: default; }
+.coach-chat-send-error { margin: 6px 2px 0; font-size: 12.5px; color: var(--danger); }
+.coach-chat-send-error:empty { display: none; }
+
+/* ---- weekSelector() --------------------------------------------------------- */
+.coach-week-row {
+  display: flex; gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 6px;
+}
+.coach-week-chip {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 44px;
+  padding: 8px 12px;
+  border: 0; border-radius: 999px;
+  background: var(--card-2); color: var(--muted);
+  font-size: 13px; font-weight: 700;
+  cursor: pointer;
+}
+.coach-week-chip.is-current { background: var(--accent); color: var(--accent-ink); }
+.coach-week-chip.is-selected:not(.is-current) { box-shadow: inset 0 0 0 2px var(--accent); color: var(--text); }
+.coach-week-chip.is-past { opacity: 0.55; }
+.coach-week-chip.is-deload::after {
+  content: '';
+  position: absolute; bottom: 5px; left: 50%;
+  transform: translateX(-50%);
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--danger);
+}
+.coach-week-chip.is-current.is-deload::after { background: var(--accent-ink); }
+
+/* ---- multiSelectSheet() ----------------------------------------------------- */
+.coach-ms-search-row { padding-top: 10px; }
+.coach-ms-row.is-selected { color: var(--text); }
+.coach-ms-footer { padding: 10px 6px 4px; font-size: 13px; text-align: center; }

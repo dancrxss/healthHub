@@ -23,6 +23,11 @@ import {
   nextPlanSession,
   planRefSets,
   buildDigest,
+  isDurationType,
+  currentPlanWeek,
+  projectPlanWeek,
+  projectedSessions,
+  recentPRs,
 } from '../js/coach-engine.js';
 
 let passed = 0;
@@ -954,8 +959,13 @@ const bigPlan = {
   })),
 };
 
+// Per-kind digest byte budget (PLAN.md §"Phase C2" C2.2): daily/session 4000,
+// plan/chat 6000 — the plan budget grew in C2 to fit the richer v2 profile,
+// the group top-up and `memory`.
+const DIGEST_BUDGET = { daily: 4000, session: 4000, plan: 6000, chat: 6000 };
+
 const bigSizes = {};
-check('buildDigest: a 300-workout, 25-exercise, two-year history stays under 4 kB for every kind', () => {
+check('buildDigest: a 300-workout, 25-exercise, two-year history stays inside its per-kind budget', () => {
   assert.equal(bigWorkouts.length, 300);
   assert.equal(bigExercises.length, 25);
   for (const kind of ['daily', 'session', 'plan']) {
@@ -970,7 +980,7 @@ check('buildDigest: a 300-workout, 25-exercise, two-year history stays under 4 k
     });
     const size = JSON.stringify(d).length;
     bigSizes[kind] = size;
-    assert.ok(size < 4000, `${kind} digest was ${size} bytes`);
+    assert.ok(size < DIGEST_BUDGET[kind], `${kind} digest was ${size} bytes`);
     assert.ok(d.exercises.length >= 4, `${kind} digest kept too few exercises`);
     assert.deepEqual(JSON.parse(JSON.stringify(d)), d, 'digest must be JSON round-trippable');
   }
@@ -989,6 +999,467 @@ check('buildDigest: the big fixture is deterministic across kinds', () => {
     };
     assert.equal(JSON.stringify(buildDigest(args)), JSON.stringify(buildDigest(args)));
   }
+});
+
+// ---------------------------------------------------------------------------
+// 12. Coach v2 — isDurationType
+// ---------------------------------------------------------------------------
+
+check('isDurationType: cardio, time and weight_time are duration types; reps/weight_reps are not', () => {
+  assert.equal(isDurationType('cardio'), true);
+  assert.equal(isDurationType('time'), true);
+  assert.equal(isDurationType('weight_time'), true);
+  assert.equal(isDurationType('weight_reps'), false);
+  assert.equal(isDurationType('reps'), false);
+  assert.equal(isDurationType('bw_weight_reps'), false);
+  assert.equal(isDurationType('strength'), false); // legacy value normalises to weight_reps
+  assert.equal(isDurationType(null), false);
+});
+
+// ---------------------------------------------------------------------------
+// 13. Coach v2 — currentPlanWeek / projectPlanWeek / projectedSessions
+// ---------------------------------------------------------------------------
+
+/** One session, one exercise, everything else a sensible v2 default — override just what a test needs. */
+function planWithExercise(peOverrides = {}, planOverrides = {}) {
+  return {
+    id: 'p-proj',
+    version: 1,
+    createdAt: '2026-08-01T00:00:00Z',
+    source: 'created',
+    basedOnWorkoutId: null,
+    planVersion: 2,
+    lineageStart: '2026-08-01',
+    baseWeek: 1,
+    weeks: 8,
+    overview: { points: [], muscleFocus: [], progression: [], deloadWeek: null },
+    weekNotes: [],
+    sessions: [
+      {
+        id: 'ps-1',
+        order: 1,
+        name: 'S',
+        focus: null,
+        brief: [],
+        exercises: [
+          {
+            exerciseId: 'ex-1',
+            targetSets: 3,
+            targetRepsLow: 6,
+            targetRepsHigh: 10,
+            targetWeightKg: 60,
+            targetDurationSec: null,
+            targetRpe: 8,
+            purpose: 'p',
+            goal: 'g',
+            note: null,
+            progression: null,
+            ...peOverrides,
+          },
+        ],
+      },
+    ],
+    ...planOverrides,
+  };
+}
+
+check('currentPlanWeek: day 0 is week 1, day 20 is week 3, clamps at plan.weeks', () => {
+  assert.equal(currentPlanWeek({ lineageStart: TODAY, weeks: 8 }, TODAY), 1);
+  assert.equal(currentPlanWeek({ lineageStart: addDays(TODAY, -20), weeks: 8 }, TODAY), 3);
+  assert.equal(currentPlanWeek({ lineageStart: addDays(TODAY, -70), weeks: 8 }, TODAY), 8);
+});
+
+check('currentPlanWeek: missing lineageStart falls back to createdAt', () => {
+  const p = { createdAt: `${addDays(TODAY, -20)}T00:00:00Z`, weeks: 8 };
+  assert.equal(currentPlanWeek(p, TODAY), 3);
+});
+
+check('currentPlanWeek: a null plan or a plan with no weeks behaves as a single week', () => {
+  assert.equal(currentPlanWeek(null, TODAY), 1);
+  assert.equal(currentPlanWeek({ lineageStart: addDays(TODAY, -20) }, TODAY), 1);
+});
+
+check('projectPlanWeek: weight steps 2.5 kg/week from baseWeek (week 4 → 67.5)', () => {
+  const plan = planWithExercise({ progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } });
+  const pe = projectPlanWeek(plan, 4).sessions[0].exercises[0];
+  assert.equal(pe.targetWeightKg, 67.5); // 3 steps × 2.5
+});
+
+check('projectPlanWeek: everyWeeks throttles the cadence (everyWeeks 2, week 4 → 62.5)', () => {
+  const plan = planWithExercise({ progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 2 } });
+  const pe = projectPlanWeek(plan, 4).sessions[0].exercises[0];
+  assert.equal(pe.targetWeightKg, 62.5); // steps = floor(3/2) = 1
+});
+
+check('projectPlanWeek: reps step up together and cap at 30', () => {
+  const plan = planWithExercise({ progression: { weightStepKg: null, repStep: 1, durationStepSec: null, everyWeeks: 1 } });
+  const pe = projectPlanWeek(plan, 3).sessions[0].exercises[0];
+  assert.equal(pe.targetRepsLow, 8); // steps = 2
+  assert.equal(pe.targetRepsHigh, 12);
+
+  const nearCap = planWithExercise({
+    targetRepsLow: 28,
+    targetRepsHigh: 29,
+    progression: { weightStepKg: null, repStep: 3, durationStepSec: null, everyWeeks: 1 },
+  });
+  const capped = projectPlanWeek(nearCap, 8).sessions[0].exercises[0]; // steps = 7 → +21 uncapped
+  assert.equal(capped.targetRepsLow, 30);
+  assert.equal(capped.targetRepsHigh, 30);
+});
+
+check('projectPlanWeek: duration steps forward', () => {
+  const plan = planWithExercise({
+    targetRepsLow: null,
+    targetRepsHigh: null,
+    targetWeightKg: null,
+    targetDurationSec: 30,
+    progression: { weightStepKg: null, repStep: null, durationStepSec: 10, everyWeeks: 1 },
+  });
+  const pe = projectPlanWeek(plan, 3).sessions[0].exercises[0];
+  assert.equal(pe.targetDurationSec, 50); // 30 + 2 × 10
+});
+
+check('projectPlanWeek: a base of 0 or null is never stepped', () => {
+  const zero = planWithExercise({ targetWeightKg: 0, progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } });
+  assert.equal(projectPlanWeek(zero, 5).sessions[0].exercises[0].targetWeightKg, 0);
+  const nul = planWithExercise({ targetWeightKg: null, progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } });
+  assert.equal(projectPlanWeek(nul, 5).sessions[0].exercises[0].targetWeightKg, null);
+});
+
+check('projectPlanWeek: deload week cuts weight 10% (floored to 2.5) and one set; reps untouched; isDeload true', () => {
+  const plan = planWithExercise(
+    { progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } },
+    { overview: { points: [], muscleFocus: [], progression: [], deloadWeek: 4 } }
+  );
+  const proj = projectPlanWeek(plan, 4);
+  const pe = proj.sessions[0].exercises[0];
+  assert.equal(proj.isDeload, true);
+  assert.equal(pe.targetWeightKg, 60); // 60+3×2.5=67.5 → ×0.9=60.75 → floor to 2.5 → 60.0
+  assert.equal(pe.targetSets, 2); // 3 − 1
+  assert.equal(pe.targetRepsLow, 6);
+  assert.equal(pe.targetRepsHigh, 10);
+});
+
+check('projectPlanWeek: deload never drops sets below one', () => {
+  const plan = planWithExercise(
+    { targetSets: 1, progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } },
+    { overview: { points: [], muscleFocus: [], progression: [], deloadWeek: 4 } }
+  );
+  assert.equal(projectPlanWeek(plan, 4).sessions[0].exercises[0].targetSets, 1);
+});
+
+check('projectPlanWeek: a week before baseWeek reports the stored targets and isPast', () => {
+  const plan = planWithExercise(
+    { progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } },
+    { baseWeek: 4 }
+  );
+  const proj = projectPlanWeek(plan, 2);
+  assert.equal(proj.isPast, true);
+  assert.equal(proj.isDeload, false);
+  assert.equal(proj.sessions[0].exercises[0].targetWeightKg, 60);
+});
+
+check('projectPlanWeek: no progression on the exercise stays flat for every week 1..8', () => {
+  const plan = planWithExercise({ progression: null });
+  for (let w = 1; w <= 8; w++) {
+    const pe = projectPlanWeek(plan, w).sessions[0].exercises[0];
+    assert.equal(pe.targetWeightKg, 60);
+    assert.equal(pe.targetRepsLow, 6);
+    assert.equal(pe.targetRepsHigh, 10);
+  }
+});
+
+check('projectPlanWeek: a v1 plan (no baseWeek/overview/progression at all) is flat too', () => {
+  // reuses the v1 `plan` fixture from the Plans section above
+  const week1 = projectPlanWeek(plan, 1).sessions[0].exercises[0];
+  const week6 = projectPlanWeek(plan, 6).sessions[0].exercises[0];
+  assert.deepEqual(week1, week6);
+  assert.equal(week1.targetWeightKg, 72.5);
+});
+
+check('projectPlanWeek: keeps id/order/name/focus/brief and every other exercise field untouched', () => {
+  const prog = { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 };
+  const planFixture = planWithExercise({ progression: prog });
+  const proj = projectPlanWeek(planFixture, 2);
+  const s = proj.sessions[0];
+  assert.equal(s.id, 'ps-1');
+  assert.equal(s.order, 1);
+  assert.equal(s.name, 'S');
+  assert.equal(s.focus, null);
+  assert.deepEqual(s.brief, []);
+  const pe = s.exercises[0];
+  assert.equal(pe.exerciseId, 'ex-1');
+  assert.equal(pe.targetRpe, 8);
+  assert.equal(pe.purpose, 'p');
+  assert.equal(pe.goal, 'g');
+  assert.equal(pe.note, null);
+  assert.deepEqual(pe.progression, prog);
+});
+
+check('projectPlanWeek: never mutates the input plan', () => {
+  const planFixture = planWithExercise({ progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } });
+  const before = JSON.stringify(planFixture);
+  projectPlanWeek(planFixture, 5);
+  assert.equal(JSON.stringify(planFixture), before);
+});
+
+check('projectedSessions: picks the current week', () => {
+  const planFixture = planWithExercise(
+    { progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } },
+    { lineageStart: addDays(TODAY, -14) } // → week 3
+  );
+  assert.equal(currentPlanWeek(planFixture, TODAY), 3);
+  const sessions = projectedSessions(planFixture, TODAY);
+  assert.equal(sessions[0].exercises[0].targetWeightKg, 65); // 60 + 2 × 2.5
+});
+
+check('projectedSessions: a null plan is an empty array', () => {
+  assert.deepEqual(projectedSessions(null, TODAY), []);
+});
+
+// ---------------------------------------------------------------------------
+// 14. Coach v2 — planRefSets: duration branch and targetSets: 0
+// ---------------------------------------------------------------------------
+
+check('planRefSets: a duration exercise autofills time only, weight/reps stay 0', () => {
+  const pe = { targetSets: 2, targetRepsLow: null, targetRepsHigh: null, targetWeightKg: null, targetDurationSec: 45 };
+  const refs = planRefSets(pe);
+  assert.equal(refs.length, 2);
+  assert.deepEqual(refs[0], { weightKg: 0, reps: 0, durationSeconds: 45, distanceM: null, kcal: null });
+  assert.deepEqual(refs[0], refs[1]);
+});
+
+check('planRefSets: targetSets 0 still shows one ghost set (never an empty array for a real exercise)', () => {
+  const pe = { targetSets: 0, targetRepsHigh: 10, targetWeightKg: 50 };
+  const refs = planRefSets(pe);
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0].weightKg, 50);
+  assert.equal(refs[0].reps, 10);
+});
+
+// ---------------------------------------------------------------------------
+// 15. Coach v2 — recentPRs
+// ---------------------------------------------------------------------------
+
+check('recentPRs: a PR 3 days ago is found, one 20 days ago is not', () => {
+  const ds = {
+    workouts: [wo('prA', addDays(TODAY, -20)), wo('prB', addDays(TODAY, -3))],
+    sets: [...straight('prA', 'ex-bench', 3, 100, 5, { rpe: 8 }), ...straight('prB', 'ex-squat', 3, 120, 5, { rpe: 8 })],
+    exercises: [ex('ex-bench', 'Bench Press', 'chest', 'barbell'), ex('ex-squat', 'Squat', 'legs', 'barbell')],
+  };
+  const prs = recentPRs(ds, { today: TODAY, days: 7 });
+  assert.equal(prs.length, 1);
+  assert.equal(prs[0].exerciseId, 'ex-squat');
+  assert.equal(prs[0].name, 'Squat');
+  assert.equal(prs[0].kind, 'e1rm');
+  assert.equal(prs[0].date, addDays(TODAY, -3));
+  assert.equal(prs[0].value, Math.round(120 * (1 + 5 / 30) * 10) / 10);
+});
+
+check('recentPRs: sorted by date desc, then name', () => {
+  const ds = {
+    workouts: [wo('a', addDays(TODAY, -1)), wo('b', addDays(TODAY, -2))],
+    sets: [...straight('a', 'ex-bench', 3, 100, 5, { rpe: 8 }), ...straight('b', 'ex-squat', 3, 100, 5, { rpe: 8 })],
+    exercises: [ex('ex-bench', 'Bench Press', 'chest', 'barbell'), ex('ex-squat', 'Squat', 'legs', 'barbell')],
+  };
+  const prs = recentPRs(ds, { today: TODAY, days: 7 });
+  assert.deepEqual(prs.map((p) => p.exerciseId), ['ex-bench', 'ex-squat']); // -1 day sorts before -2 day
+});
+
+check('recentPRs: only rep-type exercises are scored; the default window is 7 days', () => {
+  const ds = {
+    workouts: [wo('c', addDays(TODAY, -1))],
+    sets: [st('c', 'ex-run', 1, 0, 0, { setType: 'cardio' })],
+    exercises: [ex('ex-run', 'Treadmill', 'cardio', 'other', 'cardio')],
+  };
+  assert.deepEqual(recentPRs(ds, { today: TODAY }), []);
+});
+
+// ---------------------------------------------------------------------------
+// 16. Coach v2 — buildDigest: profile v2, group top-up, duration types, chat, memory
+// ---------------------------------------------------------------------------
+
+const v2EmptyProfile = { ...emptyProfile, version: 2, groupPrefs: {}, cardio: { include: false, minutesPerSession: 10 }, core: { include: false }, favouriteExerciseIds: [], notes: null };
+
+// Eight distinct TRAINED exercises today, none of them 'legs' — enough that the
+// old PLAN_MIN_EXERCISES top-up (rep-type, group-blind) never fires, so any legs
+// entries below can only come from the NEW group top-up.
+const groupDS = {
+  workouts: [wo('gd1', TODAY)],
+  sets: [
+    ...straight('gd1', 'ex-01', 3, 60, 8, { rpe: 7 }), // chest
+    ...straight('gd1', 'ex-02', 3, 50, 8, { rpe: 7 }), // chest
+    ...straight('gd1', 'ex-04', 3, 60, 8, { rpe: 7 }), // back
+    ...straight('gd1', 'ex-11', 3, 40, 8, { rpe: 7 }), // shoulders
+    ...straight('gd1', 'ex-14', 3, 20, 8, { rpe: 7 }), // biceps
+    ...straight('gd1', 'ex-18', 3, 20, 8, { rpe: 7 }), // triceps
+    ...straight('gd1', 'ex-22', 3, 20, 8, { rpe: 7 }), // abs
+    ...straight('gd1', 'ex-25', 3, 20, 8, { rpe: 7 }), // accessory
+  ],
+  exercises: library,
+};
+
+check('buildDigest plan: groupPrefs emphasise tops up an untrained group (≤ 4 entries)', () => {
+  const profile = { ...v2EmptyProfile, groupPrefs: { legs: 'emphasise' } };
+  const d = buildDigest({ dataset: groupDS, profile, today: TODAY, kind: 'plan' });
+  const legs = d.exercises.filter((e) => e.group === 'legs');
+  assert.ok(legs.length > 0 && legs.length <= 4, `expected 1-4 legs entries, got ${legs.length}`);
+  assert.ok(legs.every((e) => e.proposal.rule === 'first-time'));
+});
+
+check('buildDigest plan: groupPrefs avoid removes a trained group entirely', () => {
+  const profile = { ...v2EmptyProfile, groupPrefs: { chest: 'avoid' } };
+  const d = buildDigest({ dataset: groupDS, profile, today: TODAY, kind: 'plan' });
+  assert.equal(d.exercises.find((e) => e.group === 'chest'), undefined);
+});
+
+check('buildDigest plan: cardio.include adds cardio proposals sized from minutesPerSession; absent when off', () => {
+  const cardioLib = [...library, ex('ex-run', 'Treadmill Run', 'cardio', 'other', 'cardio')];
+  const ds = { workouts: groupDS.workouts, sets: groupDS.sets, exercises: cardioLib };
+  const on = { ...v2EmptyProfile, cardio: { include: true, minutesPerSession: 15, standaloneDay: false, exerciseIds: [] } };
+  const dOn = buildDigest({ dataset: ds, profile: on, today: TODAY, kind: 'plan' });
+  const cardioEntries = dOn.exercises.filter((e) => e.group === 'cardio');
+  assert.ok(cardioEntries.length > 0);
+  assert.ok(cardioEntries.every((e) => e.proposal.durationSec === 15 * 60 && e.proposal.rule === 'duration' && e.proposal.sets === 1));
+
+  const off = { ...v2EmptyProfile, cardio: { include: false, minutesPerSession: 15 } };
+  const dOff = buildDigest({ dataset: ds, profile: off, today: TODAY, kind: 'plan' });
+  assert.equal(dOff.exercises.find((e) => e.group === 'cardio'), undefined);
+});
+
+check('buildDigest plan: core.include adds abs entries including a duration-type plank', () => {
+  const abLib = [...library, ex('ex-plank', 'Front Plank', 'abs', 'other', 'time')];
+  const ds = { workouts: groupDS.workouts, sets: groupDS.sets, exercises: abLib };
+  const profile = { ...v2EmptyProfile, core: { include: true } };
+  const d = buildDigest({ dataset: ds, profile, today: TODAY, kind: 'plan' });
+  const plank = d.exercises.find((e) => e.id === 'ex-plank');
+  assert.ok(plank, 'expected the plank to appear via the core top-up');
+  assert.equal(plank.type, 'time');
+  assert.equal(plank.proposal.rule, 'duration');
+  assert.equal(plank.proposal.sets, 3);
+});
+
+check('buildDigest plan: favouriteExerciseIds are always present', () => {
+  const profile = { ...v2EmptyProfile, favouriteExerciseIds: ['ex-09'] }; // Leg Curl — untrained, no groupPref
+  const d = buildDigest({ dataset: groupDS, profile, today: TODAY, kind: 'plan' });
+  assert.ok(d.exercises.some((e) => e.id === 'ex-09'));
+});
+
+check("buildDigest: daily kind never lists duration-type exercises, even when trained", () => {
+  const durDS = {
+    workouts: [wo('du1', TODAY)],
+    sets: [{ ...st('du1', 'ex-run', 1, 0, 0, { setType: 'cardio' }), durationSeconds: 600 }],
+    exercises: [ex('ex-run', 'Treadmill', 'cardio', 'other', 'cardio')],
+  };
+  const d = buildDigest({ dataset: durDS, profile: null, today: TODAY, kind: 'daily' });
+  assert.deepEqual(d.exercises, []);
+});
+
+check('buildDigest plan: a 30-exercise library with a full v2 profile stays under its 6 kB budget', () => {
+  const cardioLib = [...library, ex('ex-run', 'Treadmill Run', 'cardio', 'other', 'cardio')];
+  const profile = {
+    ...v2EmptyProfile,
+    split: 'ppl',
+    groupPrefs: { legs: 'emphasise', shoulders: 'include' },
+    cardio: { include: true, minutesPerSession: 20, standaloneDay: true, exerciseIds: [] },
+    core: { include: true },
+    favouriteExerciseIds: ['ex-01', 'ex-14'],
+    notes: 'Prefers machines over free weights where possible.',
+  };
+  const d = buildDigest({ dataset: { workouts: [], sets: [], exercises: cardioLib }, profile, today: TODAY, kind: 'plan' });
+  assert.ok(d.exercises.length <= 30);
+  const size = JSON.stringify(d).length;
+  assert.ok(size < 6000, `plan digest was ${size} bytes`);
+});
+
+check('buildDigest: memory is always present ([] when none) on every kind', () => {
+  const daily = buildDigest({ dataset: balanceDS, profile: balanceProfile, today: TODAY, kind: 'daily' });
+  const session = buildDigest({ dataset: diffDS, profile: balanceProfile, today: TODAY, workoutId: 'dB', kind: 'session' });
+  const planKind = buildDigest({ dataset: balanceDS, profile: balanceProfile, today: TODAY, kind: 'plan' });
+  assert.deepEqual(daily.memory, []);
+  assert.deepEqual(session.memory, []);
+  assert.deepEqual(planKind.memory, []);
+});
+
+check('buildDigest: a supplied memory list is carried through as {id, text}', () => {
+  const mem = [{ id: 'm-1', text: 'Left shoulder — avoid overhead pressing past 80 kg.' }];
+  const d = buildDigest({ dataset: balanceDS, profile: balanceProfile, today: TODAY, kind: 'daily', memory: mem });
+  assert.deepEqual(d.memory, mem);
+});
+
+check('buildDigest: kind chat carries recent turns (capped at 6) and a truncated message', () => {
+  const recent = Array.from({ length: 10 }, (_, i) => ({ role: i % 2 ? 'coach' : 'user', text: `turn ${i}` }));
+  const d = buildDigest({
+    dataset: balanceDS,
+    profile: balanceProfile,
+    today: TODAY,
+    kind: 'chat',
+    chat: { thread: 'home', recent, message: 'x'.repeat(2000) },
+  });
+  assert.equal(d.chat.thread, 'home');
+  assert.equal(d.chat.recent.length, 6);
+  assert.deepEqual(d.chat.recent.map((r) => r.text), recent.slice(-6).map((r) => r.text));
+  assert.equal(d.chat.message.length, 1200);
+});
+
+check('buildDigest: chat is absent on every kind but chat', () => {
+  const d = buildDigest({ dataset: balanceDS, profile: balanceProfile, today: TODAY, kind: 'daily' });
+  assert.equal('chat' in d, false);
+});
+
+check('buildDigest: the shrink loop trims chat.recent then memory under real size pressure', () => {
+  // 20 memory items at their storage-side cap (160 chars) is the dominant
+  // pressure here — deliberately oversized relative to what a 6-kB budget
+  // can hold once the 300-workout dataset and a big plan are also in play.
+  const bigMemory = Array.from({ length: 20 }, (_, i) => ({ id: `m-${i}`, text: 'x'.repeat(160) }));
+  const recent = Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? 'coach' : 'user', text: `turn ${i} short note` }));
+  const d = buildDigest({
+    dataset: bigDS,
+    profile: balanceProfile,
+    today: TODAY,
+    health: HEALTH,
+    plan: bigPlan,
+    kind: 'chat',
+    memory: bigMemory,
+    chat: { thread: 'plan', recent, message: 'What should I do about my sore shoulder this week?' },
+  });
+  const size = JSON.stringify(d).length;
+  assert.ok(size < 6000, `chat digest was ${size} bytes`);
+  assert.ok(d.memory.length <= 10 || d.chat.recent.length <= 3, 'expected the shrink loop to have trimmed memory or chat.recent');
+});
+
+check("buildDigest: the plan echo on daily/session/chat is the CURRENT WEEK's projection, not the stored plan", () => {
+  const planFixture = planWithExercise(
+    { exerciseId: 'ex-bench', targetWeightKg: 60, progression: { weightStepKg: 2.5, repStep: null, durationStepSec: null, everyWeeks: 1 } },
+    { lineageStart: addDays(TODAY, -14), baseWeek: 1, weeks: 8 } // → week 3
+  );
+  const d = buildDigest({ dataset: diffDS, profile: balanceProfile, today: TODAY, workoutId: 'dB', plan: planFixture, kind: 'session' });
+  assert.equal(d.plan.currentWeek, 3);
+  assert.equal(d.plan.baseWeek, 1);
+  assert.equal(d.plan.weeks, 8);
+  const pe = d.plan.sessions[0].exercises.find((e) => e.exerciseId === 'ex-bench');
+  assert.ok(pe, 'expected the plan echo to carry the projected exercise');
+  assert.equal(pe.targetWeightKg, 65); // 60 + 2 × 2.5
+  assert.equal(JSON.stringify(d.plan).includes('purpose'), false); // purpose/goal/note/progression/brief are dropped
+});
+
+check('buildDigest: profile v2 fields — split omitted when auto, groupPrefs/cardio/core omitted when off, favourites resolved', () => {
+  const auto = buildDigest({ dataset: groupDS, profile: v2EmptyProfile, today: TODAY, kind: 'plan' });
+  assert.equal('split' in auto.profile, false);
+  assert.equal('groupPrefs' in auto.profile, false);
+  assert.equal('cardio' in auto.profile, false);
+  assert.equal('core' in auto.profile, false);
+  assert.deepEqual(auto.profile.favourites, []);
+
+  const rich = buildDigest({
+    dataset: groupDS,
+    profile: { ...v2EmptyProfile, split: 'ppl', groupPrefs: { legs: 'emphasise', chest: 'auto' }, favouriteExerciseIds: ['ex-01'] },
+    today: TODAY,
+    kind: 'plan',
+  });
+  assert.equal(rich.profile.split, 'ppl');
+  assert.deepEqual(rich.profile.groupPrefs, { legs: 'emphasise' }); // 'auto' entries filtered out
+  assert.deepEqual(rich.profile.favourites, [{ id: 'ex-01', name: 'Bench Press' }]);
 });
 
 console.log(`digest sizes (300-workout fixture): ${JSON.stringify(bigSizes)}`);

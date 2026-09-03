@@ -22,16 +22,18 @@
   <link rel="stylesheet" href="css/screens.css" />
   <link rel="stylesheet" href="css/stats.css" />
   <link rel="stylesheet" href="css/coach.css" />
+  <link rel="stylesheet" href="css/home.css" />
 </head>
 <body>
   <!-- Screens: all present in the DOM, toggled by the hash router in ui.js.
        #s-coach (Phase C) is a tab screen whose tab button stays hidden until
        a Claude API key has been entered in Settings.
        Each is filled by its render function; JS never uses innerHTML with data.
-       Tab screens (#s-log, #s-stats) show the bottom tab bar; the fullscreen
+       Tab screens (#s-home, #s-log, #s-stats, #s-coach) show the bottom tab bar; the fullscreen
        screens (#s-workout, #s-pick, #s-settings, #s-copy, #s-routine) hide it
        via the `fullscreen` body class. -->
   <main id="app">
+    <section id="s-home" class="screen" hidden></section>
     <section id="s-log" class="screen" hidden></section>
     <section id="s-copy" class="screen" hidden></section>
     <section id="s-routine" class="screen" hidden></section>
@@ -45,6 +47,13 @@
   <!-- Bottom tab bar. ui.js wires clicks by data-tab and marks the active one.
        Hidden on fullscreen routes. -->
   <nav id="tabbar" aria-label="Primary">
+    <button type="button" data-tab="home" aria-label="Home">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 11l9-8 9 8" />
+        <path d="M5 10v10a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V10" />
+      </svg>
+      <span>Home</span>
+    </button>
     <button type="button" data-tab="log" aria-label="Log">
       <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M4 5a2 2 0 0 1 2-2h11a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6a2 2 0 0 1-2-2z" />

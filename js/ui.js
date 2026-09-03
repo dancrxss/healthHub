@@ -27,6 +27,7 @@ import { renderCopyPicker, renderRoutineEditor } from './screens/routines.js';
 import { renderStats } from './screens/stats.js';
 import { renderSettings } from './screens/settings.js';
 import { renderCoach } from './screens/coach.js';
+import { renderHome } from './screens/home.js';
 
 // ----------------------------------------------------------------------------
 // Constants
@@ -40,6 +41,7 @@ let currentRouteKey = null;
 let screenCleanup = null; // per-screen teardown (e.g. the elapsed ticker)
 
 const screens = {
+  home: document.getElementById('s-home'),
   log: document.getElementById('s-log'),
   stats: document.getElementById('s-stats'),
   coach: document.getElementById('s-coach'),
@@ -49,7 +51,7 @@ const screens = {
   copy: document.getElementById('s-copy'),
   routine: document.getElementById('s-routine'),
 };
-const TABS = ['log', 'stats', 'coach']; // coach is hidden until an API key exists (refreshCoachTab)
+const TABS = ['home', 'log', 'stats', 'coach']; // home is the default; coach is hidden until an API key exists (refreshCoachTab)
 
 // ----------------------------------------------------------------------------
 // Tiny DOM builder (hyperscript). No innerHTML anywhere.
@@ -507,7 +509,7 @@ async function route() {
   const changed = key !== currentRouteKey;
   currentRouteKey = key;
 
-  if (!a) { location.replace('#/log'); return; }
+  if (!a) { location.replace('#/home'); return; } // Home is the default tab (Phase C2)
   if (a === 'profile') { location.replace('#/settings'); return; } // legacy route
   // The Routines tab became the Copy Routine picker + a routine editor reached
   // from a workout's menu (30 Jul 2026); keep the old route working.
@@ -521,7 +523,8 @@ async function route() {
   try {
     if (tab) {
       showScreen(tab);
-      if (tab === 'log') await renderLogTab();
+      if (tab === 'home') await renderHome(parts.slice(1));
+      else if (tab === 'log') await renderLogTab();
       // Coach owns its sub-routes too (#/coach/balance, #/coach/session/:id,
       // #/coach/plan …); reachable by URL even with the tab button hidden.
       else if (tab === 'coach') await renderCoach(parts.slice(1));
@@ -544,7 +547,7 @@ async function route() {
       showScreen('pick');
       await renderPick(b || null);
     } else {
-      location.replace('#/log');
+      location.replace('#/home');
       return;
     }
   } catch (err) {

@@ -6,14 +6,17 @@
 //                                 today, balance, last session, recovery)
 //   #/coach/balance               muscle balance in full, all groups
 //   #/coach/session/:workoutId    per-exercise session diff + the coach's read
-//   #/coach/plan                  the whole plan, session by session
+//   #/coach/plan                  the whole plan, week by week
 //   #/coach/history               the last 14 daily summaries
-//   #/coach/setup                 the summary screen + the "About you" sheet
+//   #/coach/builder                the plan builder (profile + memory + build)
+//   #/coach/chat                  chat with the coach about the plan
+//   #/coach/setup                 legacy — redirects to #/coach/builder
 //
 // Everything here reads from IndexedDB or computes live from the pure engine
-// (js/coach-engine.js) — nothing on these screens touches the network. The one
-// exception is a button the user presses: "Get started", "Regenerate…" and
-// "Analyse this session" call into js/coach.js, which owns the API queue.
+// (js/coach-engine.js) — nothing on these screens touches the network. The
+// exceptions are buttons the user presses ("Get started", "Build plan",
+// "Analyse this session", chat) which call into js/coach.js, which owns the
+// API queue.
 //
 // Model-written text (headlines, notes, plan reasons) is untrusted content and
 // only ever reaches the DOM through textContent / the h() `text` prop — never
@@ -21,13 +24,14 @@
 // ============================================================================
 
 import {
-  listExercises, getWorkout, listCoachInsights, getCoachInsightForWorkout,
+  listExercises, getWorkout, listCoachInsights, getCoachInsightForWorkout, MUSCLE_GROUPS,
 } from '../db.js';
-import { muscleBalance, sessionDiff } from '../coach-engine.js';
-import { userMessageFor } from '../coach-api.js';
+import { muscleBalance, sessionDiff, projectPlanWeek } from '../coach-engine.js';
+import { userMessageFor, normaliseNarrative } from '../coach-api.js';
 import {
-  getCoachState, getProfile, loadDataset, createPlan, saveProfile,
+  getCoachState, getProfile, loadDataset, createPlan, saveProfile, sanitiseProfile,
   runSessionFeedback, dismissError, markCoachRead, onCoachUpdate,
+  getMemory, addMemory, removeMemory,
 } from '../coach.js';
 import {
   h, Icon, gearButton, go, openSheet, closeSheet, sheetHeader,
@@ -37,6 +41,10 @@ import {
 } from '../ui.js';
 import { todayISO } from '../util.js';
 import { stagger } from '../motion.js';
+import { normalizeExerciseType } from '../exercise-types.js';
+import {
+  bullets, targetText, chatPanel, multiSelectSheet, weekSelector, tonePill,
+} from './coach-shared.js';
 
 // ----------------------------------------------------------------------------
 // Vocabularies (mirrors of the enums pinned in coach-api.js — kept as display
@@ -47,6 +55,18 @@ const GOAL_OPTIONS = [
   { value: 'build-muscle', label: 'Build muscle' },
   { value: 'get-stronger', label: 'Get stronger' },
   { value: 'general-fitness', label: 'General fitness' },
+];
+const SPLIT_OPTIONS = [
+  { value: 'auto', label: 'Let coach decide' },
+  { value: 'full-body', label: 'Full body' },
+  { value: 'upper-lower', label: 'Upper–Lower' },
+  { value: 'ppl', label: 'Push–Pull–Legs' },
+];
+const GROUP_PREF_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'include', label: 'Include' },
+  { value: 'emphasise', label: 'Emph.' },
+  { value: 'avoid', label: 'Avoid' },
 ];
 
 const DAILY_TONES = {
@@ -113,6 +133,11 @@ let currentParts = [];
  * from inside a notification: onCoachUpdate iterates a Set, and adding to it
  * mid-notification would re-enter the same loop. */
 let unsubCoach = null;
+/** The week shown on #/coach/plan. Persists across coach-update re-renders of
+ * the same route; reset (to the current week) whenever the route is left. */
+let planSelectedWeek = null;
+/** The open chat panel on #/coach/chat, destroyed on cleanup. */
+let activeChatPanel = null;
 
 function stopCoachSubscription() {
   if (unsubCoach) { unsubCoach(); unsubCoach = null; }
@@ -174,24 +199,6 @@ function exName(id, exMap) {
   return ex ? ex.name : 'Unknown exercise';
 }
 
-/** "3 × 6–8 @ 60 kg" — the @ half is dropped when the plan set no weight. */
-function targetText(e) {
-  const lo = numOrNull(e.targetRepsLow);
-  const hi = numOrNull(e.targetRepsHigh);
-  const reps = lo == null && hi == null ? '—'
-    : lo != null && hi != null && lo !== hi ? `${trimNum(lo)}–${trimNum(hi)}`
-      : trimNum(lo ?? hi);
-  const sets = numOrNull(e.targetSets);
-  const base = `${sets == null ? '—' : trimNum(sets)} × ${reps}`;
-  return e.targetWeightKg == null ? base : `${base} @ ${formatWeight(Number(e.targetWeightKg))}`;
-}
-
-function tonePill(value, map) {
-  const def = map[value];
-  if (!def) return null;
-  return h('span', { class: `coach-pill coach-pill-${def.tone}`, text: def.label });
-}
-
 /** Back-header in the picker style (mirrors stats.js). */
 function backHeader(title, backHash = '#/coach') {
   return h('header', { class: 'pick-head coach-head' },
@@ -224,15 +231,29 @@ function pairRow(label, value) {
   );
 }
 
+/** A quiet full-width link row — used in both plan footers. */
+function linkRow(label, action, onClick) {
+  return h('button', {
+    class: 'coach-link-row', type: 'button', 'data-action': action, onclick: onClick,
+  },
+    h('span', { text: label }),
+    h('span', { class: 'coach-link-chev' }, Icon('chevron')),
+  );
+}
+
 // ============================================================================
 // Router entry
 // ============================================================================
 /**
  * @param {string[]} parts hash path after 'coach' — [] | ['balance'] |
- *   ['session', workoutId] | ['plan'] | ['history'] | ['setup']
+ *   ['session', workoutId] | ['plan'] | ['history'] | ['builder'] | ['chat'] |
+ *   ['setup'] (redirects)
  */
 export async function renderCoach(parts = []) {
+  const prevHead = currentParts[0];
   currentParts = Array.isArray(parts) ? parts.slice() : [];
+  if (prevHead === 'plan' && currentParts[0] !== 'plan') planSelectedWeek = null;
+
   const screen = document.getElementById('s-coach');
   if (!screen) return;
   const token = ++renderToken;
@@ -246,7 +267,9 @@ export async function renderCoach(parts = []) {
     if (a === 'session' && b) return await renderSessionScreen(screen, b, token);
     if (a === 'plan') return await renderPlanScreen(screen, token);
     if (a === 'history') return await renderHistoryScreen(screen, token);
-    if (a === 'setup') return await renderSetupRoute(screen, token);
+    if (a === 'builder') return await renderBuilderScreen(screen, token);
+    if (a === 'chat') return await renderChatScreen(screen, token);
+    if (a === 'setup') { location.replace('#/coach/builder'); return undefined; }
     if (a) { go('#/coach'); return undefined; }
     return await renderRoot(screen, token);
   } catch (err) {
@@ -308,7 +331,7 @@ async function renderRoot(screen, token) {
     if (state.latestSession) cards.push(lastSessionCard(state.latestSession));
     const recovery = recoveryCard(state);
     if (recovery) cards.push(recovery);
-    if (state.plan) cards.push(planFooter(state.plan));
+    if (state.plan) cards.push(rootPlanFooter(state));
     if (cards.length === (strip ? 1 : 0)) {
       cards.push(h('div', { class: 'tab-card coach-card' },
         h('div', { class: 'coach-card-title', text: 'Nothing to show yet' }),
@@ -355,18 +378,24 @@ function profileCard() {
     h('p', { class: 'coach-body', text: 'It takes a minute, and you can change your answers whenever you like.' }),
     h('button', {
       class: 'coach-btn-primary', type: 'button', 'data-action': 'coach-setup',
-      onclick: () => openCoachSetupSheet({ profile: null, onDone: () => go('#/coach') }),
+      onclick: () => go('#/coach/builder'),
     }, 'Get started'),
   );
 }
 
 // ---- running / pending / error -------------------------------------------
+function runningLabel(running) {
+  if (running === 'plan') return 'Building your plan…';
+  if (running === 'chat') return 'Coach is replying…';
+  return 'Coach is thinking…';
+}
+
 function statusStrip(state) {
   const rows = [];
   if (state.running) {
-    rows.push(h('div', { class: 'coach-status-row coach-status-running' },
+    rows.push(h('div', { class: `coach-status-row coach-status-running coach-status-${state.running}` },
       h('span', { class: 'coach-status-dot' }),
-      h('span', { class: 'coach-status-text', text: 'Coach is thinking…' })));
+      h('span', { class: 'coach-status-text', text: runningLabel(state.running) })));
   }
   if (state.pending) {
     rows.push(h('div', { class: 'coach-status-row' },
@@ -396,9 +425,12 @@ function statusStrip(state) {
 // ---- next session ---------------------------------------------------------
 function nextSessionCard(state, exMap, active) {
   const s = state.nextSession;
+  const plan = state.plan;
   const exercises = Array.isArray(s.exercises) ? s.exercises : [];
+  const week = trimNum(Number(state.currentWeek) || 1);
+  const weeks = trimNum(Number(plan.weeks) || 1);
   return h('div', { class: 'tab-card coach-card coach-next' },
-    h('div', { class: 'coach-label', text: 'Next session' }),
+    h('div', { class: 'coach-label', text: `Next session · Week ${week} of ${weeks}` }),
     h('div', { class: 'coach-card-title', text: s.name || 'Session' }),
     s.focus ? h('div', { class: 'coach-sub muted', text: s.focus }) : null,
     exercises.length
@@ -406,28 +438,22 @@ function nextSessionCard(state, exMap, active) {
       : emptyLine('No exercises in this session.'),
     h('button', {
       class: 'coach-btn-primary', type: 'button', 'data-action': 'coach-start-session',
-      onclick: () => (active ? go('#/workout') : startPlannedWorkout(state.plan, s)),
+      onclick: () => (active ? go('#/workout') : startPlannedWorkout(plan, s)),
     }, active ? 'Resume workout' : 'Start session'),
-    h('button', {
-      class: 'coach-link-row', type: 'button', 'data-action': 'coach-view-plan',
-      onclick: () => go('#/coach/plan'),
-    },
-      h('span', { text: 'View whole plan' }),
-      h('span', { class: 'coach-link-chev' }, Icon('chevron')),
-    ),
+    linkRow('View whole plan', 'coach-view-plan', () => go('#/coach/plan')),
   );
 }
 
 function planExerciseLine(e, exMap) {
   return h('div', { class: 'coach-ex' },
-    h('div', { class: 'coach-ex-main', text: `${exName(e.exerciseId, exMap)} · ${targetText(e)}` }),
+    h('div', { class: 'coach-ex-main', text: targetText(e, { exMap, withName: true }) }),
     e.note ? h('div', { class: 'coach-ex-note muted', text: e.note }) : null,
   );
 }
 
 // ---- today ----------------------------------------------------------------
 function todayCard(insight) {
-  const n = (insight && insight.narrative) || {};
+  const n = normaliseNarrative('daily', (insight && insight.narrative) || {});
   const stale = insight.date && insight.date !== todayISO();
   return h('button', {
     class: 'tab-card coach-card coach-today', type: 'button',
@@ -439,8 +465,8 @@ function todayCard(insight) {
     ),
     stale ? h('div', { class: 'coach-stale muted', text: `From ${formatDate(insight.date)}` }) : null,
     n.headline ? h('div', { class: 'coach-headline', text: n.headline }) : null,
-    n.body ? h('p', { class: 'coach-body', text: n.body }) : null,
-    n.todayAdvice ? h('div', { class: 'coach-advice', text: n.todayAdvice }) : null,
+    bullets(n.points),
+    bullets(n.advice, { cls: 'coach-advice' }),
   );
 }
 
@@ -497,7 +523,7 @@ function balanceRow(r) {
 
 // ---- last session ---------------------------------------------------------
 function lastSessionCard(insight) {
-  const n = (insight && insight.narrative) || {};
+  const n = normaliseNarrative('session', (insight && insight.narrative) || {});
   const better = Array.isArray(n.better) ? n.better.slice(0, 2) : [];
   const worse = Array.isArray(n.worse) ? n.worse.slice(0, 2) : [];
   return h('button', {
@@ -510,7 +536,7 @@ function lastSessionCard(insight) {
       tonePill(n.overallTone, SESSION_TONES),
     ),
     insight.date ? h('div', { class: 'coach-sub muted', text: formatDate(insight.date) }) : null,
-    n.summary ? h('p', { class: 'coach-body', text: n.summary }) : null,
+    bullets(n.points),
     better.length || worse.length
       ? h('div', { class: 'coach-verdict-list' },
           ...better.map((b) => verdictLine('better', b)),
@@ -561,39 +587,18 @@ function recoveryCard(state) {
   );
 }
 
-// ---- plan footer ----------------------------------------------------------
-function planFooter(plan) {
-  const err = h('p', { class: 'coach-inline-msg muted' });
-  const label = `Plan v${trimNum(Number(plan.version) || 1)} · ${plan.source === 'revised' ? 'revised' : 'created'} ${shortDate(plan.createdAt)}`;
+// ---- plan footer (root summary) -------------------------------------------
+function rootPlanFooter(state) {
+  const plan = state.plan;
+  const week = trimNum(Number(state.currentWeek) || 1);
+  const weeks = trimNum(Number(plan.weeks) || 1);
+  const version = trimNum(Number(plan.version) || 1);
   return h('div', { class: 'coach-plan-footer' },
-    h('div', { class: 'coach-plan-footer-row' },
-      h('span', { class: 'coach-footer-text muted', text: label }),
-      h('button', {
-        class: 'coach-text-btn', type: 'button', 'data-action': 'coach-regenerate',
-        onclick: () => regeneratePlan(err),
-      }, 'Regenerate…'),
-    ),
-    err,
+    h('p', { class: 'coach-footer-text muted', text: `Plan · week ${week} of ${weeks} · v${version}` }),
+    linkRow('Open plan', 'coach-view-plan', () => go('#/coach/plan')),
+    linkRow('Change the plan…', 'coach-open-chat', () => go('#/coach/chat')),
+    linkRow('Plan builder', 'coach-open-builder', () => go('#/coach/builder')),
   );
-}
-
-function regeneratePlan(msgEl) {
-  confirmSheet({
-    title: 'Build a new plan?',
-    message: 'The coach writes a fresh plan from your history and profile. Your old plans are kept.',
-    confirmLabel: 'Build plan',
-    onConfirm: async () => {
-      msgEl.textContent = 'Building your plan…';
-      msgEl.classList.remove('danger');
-      try {
-        await createPlan();
-        msgEl.textContent = '';
-      } catch (err) {
-        msgEl.textContent = userMessageFor(err);
-        msgEl.classList.add('danger');
-      }
-    },
-  });
 }
 
 // ============================================================================
@@ -695,9 +700,9 @@ async function renderSessionScreen(screen, workoutId, token) {
   if (!cards.length) cards.push(h('div', { class: 'tab-card coach-card' }, emptyLine('No data found for this session.')));
 
   if (insight) {
-    cards.push(sessionInsightCard(insight));
-    const changes = insight.narrative && Array.isArray(insight.narrative.planChanges)
-      ? insight.narrative.planChanges : [];
+    const n = normaliseNarrative('session', insight.narrative || {});
+    cards.push(sessionInsightCard(n));
+    const changes = Array.isArray(n.planChanges) ? n.planChanges : [];
     if (changes.length) cards.push(planChangesCard(changes, exMap));
   } else {
     cards.push(analyseCard(workout));
@@ -765,8 +770,7 @@ function sameWeightText(v) {
   return `Same weight${at}: ${trimNum(reps)} reps${prev != null ? ` (was ${trimNum(prev)})` : ''}`;
 }
 
-function sessionInsightCard(insight) {
-  const n = insight.narrative || {};
+function sessionInsightCard(n) {
   const better = Array.isArray(n.better) ? n.better : [];
   const worse = Array.isArray(n.worse) ? n.worse : [];
   const flags = Array.isArray(n.flags) ? n.flags : [];
@@ -775,7 +779,7 @@ function sessionInsightCard(insight) {
       h('span', { class: 'coach-label', text: 'The coach says' }),
       tonePill(n.overallTone, SESSION_TONES),
     ),
-    n.summary ? h('p', { class: 'coach-body', text: n.summary }) : null,
+    bullets(n.points),
     better.length || worse.length
       ? h('div', { class: 'coach-verdict-list' },
           ...better.map((b) => verdictLine('better', b)),
@@ -871,45 +875,145 @@ async function renderPlanScreen(screen, token) {
   if (token !== renderToken) return;
   const exMap = new Map(exercises.map((e) => [e.id, e]));
   const plan = state.plan;
+  const current = Number(state.currentWeek) || 1;
+  if (planSelectedWeek == null) planSelectedWeek = current;
+  const selected = planSelectedWeek;
   const nextId = state.nextSession ? state.nextSession.id : null;
+  const deloadWeek = plan.overview && plan.overview.deloadWeek != null ? Number(plan.overview.deloadWeek) : null;
 
   const cards = [];
-  const changes = state.latestSession && state.latestSession.narrative
-    && Array.isArray(state.latestSession.narrative.planChanges)
-    ? state.latestSession.narrative.planChanges : [];
+
+  // 1. What changed
+  const sessionNarrative = state.latestSession ? normaliseNarrative('session', state.latestSession.narrative || {}) : null;
+  const changes = sessionNarrative && Array.isArray(sessionNarrative.planChanges) ? sessionNarrative.planChanges : [];
   if (changes.length) cards.push(planChangesCard(changes, exMap));
 
-  if (plan.rationale) {
+  // 2. Overview
+  cards.push(planOverviewCard(plan, deloadWeek));
+
+  // 3. Week selector
+  cards.push(weekSelector({
+    weeks: plan.weeks, current, selected, deloadWeek,
+    onPick: (week) => {
+      planSelectedWeek = week;
+      renderCoach(['plan']).catch((err) => console.error('coach: week switch failed', err));
+    },
+  }));
+
+  // 4. Selected week
+  let proj = null;
+  try { proj = projectPlanWeek(plan, selected); } catch (err) { console.error('coach: projectPlanWeek failed', err); }
+  const weekNote = Array.isArray(plan.weekNotes) ? plan.weekNotes.find((wn) => wn.week === selected) : null;
+  if (weekNote) {
     cards.push(h('div', { class: 'tab-card coach-card' },
-      h('div', { class: 'coach-label', text: 'Why this plan' }),
-      h('p', { class: 'coach-body', text: plan.rationale }),
-      plan.weeks ? h('p', { class: 'coach-note muted', text: `${trimNum(Number(plan.weeks))} weeks` }) : null,
+      weekNote.focus ? h('div', { class: 'coach-card-title', text: weekNote.focus }) : null,
+      bullets(weekNote.points),
     ));
   }
-
-  for (const s of plan.sessions || []) {
-    const isNext = s.id === nextId;
-    cards.push(h('div', { class: 'tab-card coach-card coach-plan-session' + (isNext ? ' is-next' : ''), 'data-plan-session-id': s.id },
-      h('div', { class: 'coach-card-head' },
-        h('span', { class: 'coach-card-title', text: s.name || 'Session' }),
-        isNext ? h('span', { class: 'coach-pill coach-pill-good', text: 'Next' }) : null,
-      ),
-      s.focus ? h('div', { class: 'coach-sub muted', text: s.focus }) : null,
-      h('div', { class: 'coach-ex-list' }, ...(s.exercises || []).map((e) => planExerciseLine(e, exMap))),
-      isNext ? h('button', {
-        class: 'coach-btn-primary', type: 'button', 'data-action': 'coach-start-session',
-        onclick: () => (active ? go('#/workout') : startPlannedWorkout(plan, s)),
-      }, active ? 'Resume workout' : 'Start session') : null,
-    ));
+  if (proj && (proj.isPast || proj.isDeload)) {
+    cards.push(h('p', { class: 'coach-note muted coach-week-flag', text: proj.isDeload ? 'Deload week' : 'Past week' }));
   }
+  const sessions = proj && Array.isArray(proj.sessions) ? proj.sessions : (plan.sessions || []);
+  const isCurrentWeek = selected === current;
+  for (const s of sessions) {
+    const isNext = isCurrentWeek && s.id === nextId;
+    cards.push(planSessionCard(s, exMap, { isNext, active, plan }));
+  }
+  if (!sessions.length) cards.push(h('div', { class: 'tab-card coach-card' }, emptyLine('No sessions this week.')));
 
-  cards.push(planFooter(plan));
+  // 5. Footer
+  cards.push(planScreenFooter(plan));
 
   screen.replaceChildren(h('div', { class: 'coach-sub-screen' },
     backHeader('Your plan'),
     h('div', { class: 'coach-body-wrap' }, ...cards),
   ));
   stagger(cards);
+}
+
+function planOverviewCard(plan, deloadWeek) {
+  const overview = plan.overview;
+  if (!overview) {
+    return h('div', { class: 'tab-card coach-card' },
+      h('div', { class: 'coach-label', text: 'Why this plan' }),
+      plan.rationale ? bullets(plan.rationale) : emptyLine('No data found.'),
+      plan.weeks ? h('p', { class: 'coach-note muted', text: `${trimNum(Number(plan.weeks))} weeks` }) : null,
+    );
+  }
+  const focus = Array.isArray(overview.muscleFocus) ? overview.muscleFocus : [];
+  const progression = Array.isArray(overview.progression) ? overview.progression : [];
+  return h('div', { class: 'tab-card coach-card' },
+    h('div', { class: 'coach-label', text: 'Why this plan' }),
+    bullets(overview.points),
+    focus.length ? h('div', { class: 'coach-muscle-focus' },
+      h('div', { class: 'coach-sub-label', text: 'Muscle focus' }),
+      ...focus.map((m) => h('div', { class: 'coach-muscle-focus-row' },
+        h('span', { class: 'coach-muscle-focus-group', text: titleCase(m.group) }),
+        h('span', { class: 'coach-muscle-focus-why muted', text: m.why || '' }),
+      ))) : null,
+    progression.length ? h('div', { class: 'coach-progression' },
+      h('div', { class: 'coach-sub-label', text: 'Progression' }),
+      bullets(progression)) : null,
+    deloadWeek ? h('p', { class: 'coach-note muted', text: `Deload in week ${trimNum(deloadWeek)}` }) : null,
+  );
+}
+
+function planSessionCard(s, exMap, { isNext, active, plan }) {
+  return h('div', { class: 'tab-card coach-card coach-plan-session' + (isNext ? ' is-next' : ''), 'data-plan-session-id': s.id },
+    h('div', { class: 'coach-card-head' },
+      h('span', { class: 'coach-card-title', text: s.name || 'Session' }),
+      isNext ? h('span', { class: 'coach-pill coach-pill-good', text: 'Next' }) : null,
+    ),
+    s.focus ? h('div', { class: 'coach-sub muted', text: s.focus }) : null,
+    bullets(s.brief),
+    h('div', { class: 'coach-plan-ex-list' }, ...(s.exercises || []).map((e) => planExerciseRow(e, exMap))),
+    isNext ? h('button', {
+      class: 'coach-btn-primary', type: 'button', 'data-action': 'coach-start-session',
+      onclick: () => (active ? go('#/workout') : startPlannedWorkout(plan, s)),
+    }, active ? 'Resume workout' : 'Start session') : null,
+  );
+}
+
+/** A plan exercise row; expandable into Why/Goal/Note when the plan carries them. */
+function planExerciseRow(e, exMap) {
+  const hasDetail = !!(e.purpose || e.goal || e.note);
+  if (!hasDetail) {
+    return h('div', { class: 'coach-plan-ex-wrap' }, planExerciseLine(e, exMap));
+  }
+  const detail = h('div', { class: 'coach-plan-ex-detail', hidden: true },
+    e.purpose ? detailLine('Why', e.purpose) : null,
+    e.goal ? detailLine('Goal', e.goal) : null,
+    e.note ? detailLine('Note', e.note) : null,
+  );
+  const row = h('button', {
+    class: 'coach-plan-ex', type: 'button', 'data-action': 'coach-ex-toggle',
+    onclick: () => {
+      const opening = detail.hidden;
+      detail.hidden = !opening;
+      row.classList.toggle('is-open', opening);
+    },
+  },
+    h('span', { class: 'coach-plan-ex-text', text: targetText(e, { exMap, withName: true }) }),
+    h('span', { class: 'coach-plan-ex-chev' }, Icon('chevron')),
+  );
+  return h('div', { class: 'coach-plan-ex-wrap' }, row, detail);
+}
+
+function detailLine(label, text) {
+  return h('div', { class: 'coach-plan-ex-detail-line' },
+    h('span', { class: 'coach-plan-ex-detail-label', text: label }),
+    h('span', { class: 'coach-plan-ex-detail-text', text }),
+  );
+}
+
+function planScreenFooter(plan) {
+  const version = trimNum(Number(plan.version) || 1);
+  const source = plan.source === 'revised' ? 'revised' : plan.source === 'manual' ? 'manual' : 'created';
+  return h('div', { class: 'coach-plan-footer' },
+    linkRow('Ask for a change…', 'coach-open-chat', () => go('#/coach/chat')),
+    linkRow('Rebuild plan…', 'coach-open-builder', () => go('#/coach/builder')),
+    h('p', { class: 'coach-footer-text muted', text: `Plan v${version} · ${source} ${shortDate(plan.createdAt)}` }),
+  );
 }
 
 // ============================================================================
@@ -925,15 +1029,15 @@ async function renderHistoryScreen(screen, token) {
   if (token !== renderToken) return;
 
   const cards = (rows || []).map((insight) => {
-    const n = insight.narrative || {};
+    const n = normaliseNarrative('daily', insight.narrative || {});
     return h('div', { class: 'tab-card coach-card coach-history-card', 'data-insight-id': insight.id },
       h('div', { class: 'coach-card-head' },
         h('span', { class: 'coach-label', text: insight.date ? formatDate(insight.date) : '' }),
         tonePill(n.tone, DAILY_TONES),
       ),
       n.headline ? h('div', { class: 'coach-headline', text: n.headline }) : null,
-      n.body ? h('p', { class: 'coach-body', text: n.body }) : null,
-      n.todayAdvice ? h('div', { class: 'coach-advice', text: n.todayAdvice }) : null,
+      bullets(n.points),
+      bullets(n.advice, { cls: 'coach-advice' }),
     );
   });
 
@@ -946,159 +1050,382 @@ async function renderHistoryScreen(screen, token) {
 }
 
 // ============================================================================
-// 6. Setup route (#/coach/setup) — the summary screen with the sheet on top
+// 6. Plan builder (#/coach/builder)
 // ============================================================================
-async function renderSetupRoute(screen, token) {
-  await renderRoot(screen, token);
+async function renderBuilderScreen(screen, token) {
+  const [profile, state, exercises] = await Promise.all([
+    getProfile().catch(() => null),
+    safeState(),
+    listExercises().catch(() => []),
+  ]);
   if (token !== renderToken) return;
-  // A coach update re-renders this route; the sheet must not stack.
-  const root = document.getElementById('sheet-root');
-  if (root && root.childElementCount > 0) return;
-  const profile = await getProfile().catch(() => null);
+  let memoryItems = await getMemory().catch(() => []);
   if (token !== renderToken) return;
-  openCoachSetupSheet({ profile, onDone: () => go('#/coach') });
+
+  const draft = profile ? { ...profile } : sanitiseProfile({});
+  draft.cardio = { ...draft.cardio };
+  draft.core = { ...draft.core };
+  draft.groupPrefs = { ...draft.groupPrefs };
+  draft.avoidExerciseIds = [...(draft.avoidExerciseIds || [])];
+  draft.favouriteExerciseIds = [...(draft.favouriteExerciseIds || [])];
+  const hasPlan = !!(state && state.plan);
+
+  const body = h('div', { class: 'coach-body-wrap coach-builder-body' });
+  function paint() {
+    body.replaceChildren(
+      aboutCard(draft, paint),
+      splitCard(draft, paint),
+      muscleGroupsCard(draft, paint),
+      cardioCard(draft, paint, exercises),
+      coreCard(draft),
+      exercisesCard(draft, exercises, paint),
+      notesCard(draft, paint),
+      memoryCard(memoryItems),
+      builderFooter(draft, hasPlan),
+    );
+  }
+  paint();
+
+  screen.replaceChildren(h('div', { class: 'coach-sub-screen' },
+    backHeader('Plan builder'),
+    body,
+  ));
+}
+
+function stepperRow(label, value, { min, max, step, format, onChange }) {
+  let current = Math.min(max, Math.max(min, Number(value) || min));
+  const val = h('span', { class: 'timer-val small', text: format(current) });
+  const adjust = (delta) => {
+    current = Math.min(max, Math.max(min, current + delta));
+    val.textContent = format(current);
+    onChange(current);
+  };
+  return h('div', { class: 'settings-row coach-sheet-stepper' },
+    h('span', { class: 'settings-label', text: label }),
+    h('div', { class: 'rest-stepper' },
+      h('button', {
+        class: 'round-btn', type: 'button', 'aria-label': `Decrease ${label.toLowerCase()}`,
+        onclick: () => adjust(-step),
+      }, Icon('minus')),
+      val,
+      h('button', {
+        class: 'round-btn', type: 'button', 'aria-label': `Increase ${label.toLowerCase()}`,
+        onclick: () => adjust(step),
+      }, Icon('plus')),
+    ),
+  );
+}
+
+/** A label + iOS-style switch, mirroring settings.js's toggleRow but bound to
+ * an arbitrary getter/setter instead of the global settings store. */
+function switchRow(label, on, onChange) {
+  const btn = h('button', {
+    class: 'toggle' + (on ? ' on' : ''), type: 'button', role: 'switch',
+    'aria-checked': on ? 'true' : 'false', 'aria-label': label,
+  });
+  btn.addEventListener('click', () => {
+    const next = btn.getAttribute('aria-checked') !== 'true';
+    btn.setAttribute('aria-checked', next ? 'true' : 'false');
+    btn.classList.toggle('on', next);
+    onChange(next);
+  });
+  return h('div', { class: 'settings-row' },
+    h('span', { class: 'settings-label', text: label }),
+    btn,
+  );
+}
+
+function aboutCard(draft, paint) {
+  const goalLabel = () => (GOAL_OPTIONS.find((o) => o.value === draft.goal) || {}).label || 'Choose';
+  const dateInput = h('input', { class: 'sheet-input coach-date-input', type: 'date', 'aria-label': 'Return date' });
+  dateInput.value = draft.returnDate || '';
+  dateInput.addEventListener('change', () => {
+    draft.returnDate = /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value) ? dateInput.value : null;
+  });
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'About you' }),
+    sheetRow({
+      label: 'Goal', value: goalLabel(), chevron: true, action: 'coach-goal',
+      onClick: () => optionSheet({
+        title: 'Goal', options: GOAL_OPTIONS, current: draft.goal,
+        onPick: (v) => { draft.goal = v; paint(); },
+      }),
+    }),
+    stepperRow('Days per week', draft.daysPerWeek, {
+      min: 1, max: 7, step: 1, format: (n) => String(n), onChange: (n) => { draft.daysPerWeek = n; },
+    }),
+    stepperRow('Session length', draft.sessionMinutes, {
+      min: 20, max: 120, step: 5, format: (n) => `${n} min`, onChange: (n) => { draft.sessionMinutes = n; },
+    }),
+    h('div', { class: 'settings-row coach-sheet-date' },
+      h('span', { class: 'settings-label', text: 'Return date' }),
+      dateInput,
+    ),
+  );
+}
+
+function splitCard(draft, paint) {
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'Split' }),
+    h('div', { class: 'seg-toggle coach-seg-wrap' },
+      ...SPLIT_OPTIONS.map((o) => h('button', {
+        class: 'seg-btn' + (draft.split === o.value ? ' on' : ''), type: 'button',
+        onclick: () => { draft.split = o.value; paint(); },
+      }, o.label)),
+    ),
+  );
+}
+
+function muscleGroupsCard(draft, paint) {
+  const groups = MUSCLE_GROUPS.filter((g) => g !== 'cardio' && g !== 'other');
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'Muscle groups' }),
+    ...groups.map((g) => groupPrefRow(g, draft, paint)),
+    h('p', { class: 'coach-note muted', text: "Include means it appears every week even if you've never logged it. Emphasise means more sets." }),
+  );
+}
+
+function groupPrefRow(group, draft, paint) {
+  const current = draft.groupPrefs[group] || 'auto';
+  return h('div', { class: 'settings-row coach-group-row' },
+    h('span', { class: 'settings-label', text: titleCase(group) }),
+    h('div', { class: 'seg-toggle coach-seg-4' },
+      ...GROUP_PREF_OPTIONS.map((o) => h('button', {
+        class: 'seg-btn' + (current === o.value ? ' on' : ''), type: 'button',
+        onclick: () => {
+          if (o.value === 'auto') delete draft.groupPrefs[group];
+          else draft.groupPrefs[group] = o.value;
+          paint();
+        },
+      }, o.label)),
+    ),
+  );
+}
+
+function cardioCard(draft, paint, exercises) {
+  const rows = [switchRow('Include cardio', draft.cardio.include, (v) => { draft.cardio.include = v; paint(); })];
+  if (draft.cardio.include) {
+    rows.push(stepperRow('Minutes', draft.cardio.minutesPerSession, {
+      min: 5, max: 30, step: 5, format: (n) => `${n} min`,
+      onChange: (n) => { draft.cardio.minutesPerSession = n; },
+    }));
+    rows.push(switchRow('Standalone cardio day', draft.cardio.standaloneDay, (v) => { draft.cardio.standaloneDay = v; }));
+    const cardioExercises = exercises.filter((e) => normalizeExerciseType(e.exerciseType) === 'cardio');
+    const selectedNames = cardioExercises
+      .filter((e) => draft.cardio.exerciseIds.includes(e.id))
+      .map((e) => e.name);
+    rows.push(sheetRow({
+      label: 'Preferred cardio',
+      sub: selectedNames.length ? selectedNames.join(', ') : 'Any',
+      chevron: true, action: 'coach-cardio-pick',
+      onClick: () => multiSelectSheet({
+        title: 'Preferred cardio',
+        groups: [{ label: 'Cardio', items: cardioExercises.map((e) => ({ id: e.id, label: e.name, sub: e.equipment })) }],
+        selected: new Set(draft.cardio.exerciseIds),
+        onSave: (set) => { draft.cardio.exerciseIds = [...set]; paint(); },
+      }),
+    }));
+  }
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'Cardio' }),
+    ...rows,
+  );
+}
+
+function coreCard(draft) {
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'Core' }),
+    switchRow('Include core work', draft.core.include, (v) => { draft.core.include = v; }),
+  );
+}
+
+/** All non-cardio-type exercises, grouped by muscle group in MUSCLE_GROUPS order. */
+function groupedExerciseGroups(exercises) {
+  const buckets = new Map(MUSCLE_GROUPS.filter((g) => g !== 'cardio').map((g) => [g, []]));
+  for (const e of exercises) {
+    if (normalizeExerciseType(e.exerciseType) === 'cardio') continue;
+    const g = buckets.has(e.muscleGroup) ? e.muscleGroup : 'other';
+    buckets.get(g).push(e);
+  }
+  const groups = [];
+  for (const [g, items] of buckets) {
+    if (items.length) groups.push({ label: titleCase(g), items: items.map((e) => ({ id: e.id, label: e.name, sub: e.equipment })) });
+  }
+  return groups;
+}
+
+function exercisesCard(draft, exercises, paint) {
+  const groups = groupedExerciseGroups(exercises);
+  const nameFor = (id) => { const ex = exercises.find((e) => e.id === id); return ex ? ex.name : null; };
+  const favCount = draft.favouriteExerciseIds.map(nameFor).filter(Boolean).length;
+  const avoidCount = draft.avoidExerciseIds.map(nameFor).filter(Boolean).length;
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'Exercises' }),
+    sheetRow({
+      label: 'Favourite exercises',
+      sub: favCount ? `${favCount} selected` : 'None',
+      chevron: true, action: 'coach-fav-pick',
+      onClick: () => multiSelectSheet({
+        title: 'Favourite exercises', groups,
+        selected: new Set(draft.favouriteExerciseIds),
+        onSave: (set) => { draft.favouriteExerciseIds = [...set]; paint(); },
+      }),
+    }),
+    sheetRow({
+      label: 'Exercises to avoid',
+      sub: avoidCount ? `${avoidCount} selected` : 'None',
+      chevron: true, action: 'coach-avoid-pick',
+      onClick: () => multiSelectSheet({
+        title: 'Exercises to avoid', groups,
+        selected: new Set(draft.avoidExerciseIds),
+        onSave: (set) => { draft.avoidExerciseIds = [...set]; paint(); },
+      }),
+    }),
+  );
+}
+
+function notesCard(draft, paint) {
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'Notes' }),
+    sheetRow({
+      label: 'Injury or limits', sub: draft.injuryNotes || 'None given',
+      chevron: true, action: 'coach-injury',
+      onClick: () => textareaSheet({
+        title: 'Injury or limits', value: draft.injuryNotes,
+        placeholder: 'e.g. left shoulder — no overhead pressing for now',
+        onSave: (v) => { draft.injuryNotes = v; paint(); },
+      }),
+    }),
+    sheetRow({
+      label: 'Equipment', sub: draft.equipmentNotes || 'None given',
+      chevron: true, action: 'coach-equipment',
+      onClick: () => textareaSheet({
+        title: 'Equipment', value: draft.equipmentNotes,
+        placeholder: 'e.g. home gym, dumbbells to 30 kg, no barbell',
+        onSave: (v) => { draft.equipmentNotes = v; paint(); },
+      }),
+    }),
+    sheetRow({
+      label: 'Anything else', sub: draft.notes || 'None given',
+      chevron: true, action: 'coach-notes',
+      onClick: () => textareaSheet({
+        title: 'Anything else', value: draft.notes,
+        placeholder: 'e.g. I want to train legs again, gently',
+        onSave: (v) => { draft.notes = v; paint(); },
+      }),
+    }),
+  );
+}
+
+function memoryCard(memoryItems) {
+  const list = h('div', { class: 'coach-memory-list' });
+  function paintList() {
+    list.replaceChildren(
+      ...(memoryItems.length
+        ? memoryItems.map((m) => memoryItemRow(m, memoryItems, paintList))
+        : [emptyLine('Nothing yet — the coach adds facts you tell it in chat.')]),
+    );
+  }
+  paintList();
+  return h('div', { class: 'tab-card coach-card coach-builder-card' },
+    h('div', { class: 'coach-card-title', text: 'What the coach knows about you' }),
+    list,
+    h('button', {
+      class: 'coach-text-btn', type: 'button', 'data-action': 'coach-memory-add',
+      onclick: () => textareaSheet({
+        title: 'Add a note', value: null,
+        placeholder: 'e.g. Trains at a home gym with dumbbells up to 30 kg',
+        onSave: async (v) => {
+          if (!v) return;
+          try {
+            const item = await addMemory(v, 'user');
+            if (item) { memoryItems.push(item); paintList(); }
+          } catch (err) { console.error('coach: add memory failed', err); }
+        },
+      }),
+    }, 'Add a note'),
+  );
+}
+
+function memoryItemRow(m, memoryItems, paintList) {
+  return h('div', { class: 'coach-memory-item' },
+    h('span', { class: 'coach-memory-text', text: m.text }),
+    h('button', {
+      class: 'coach-memory-remove', type: 'button', 'data-action': 'coach-memory-remove', 'aria-label': 'Remove note',
+      onclick: async () => {
+        try { await removeMemory(m.id); } catch (err) { console.error('coach: remove memory failed', err); }
+        const idx = memoryItems.indexOf(m);
+        if (idx >= 0) memoryItems.splice(idx, 1);
+        paintList();
+      },
+    }, Icon('close')),
+  );
+}
+
+function builderFooter(draft, hasPlan) {
+  const msg = h('p', { class: 'coach-inline-msg coach-builder-msg' });
+  let savedTimer = null;
+  const saveBtn = h('button', {
+    class: 'coach-text-btn', type: 'button', 'data-action': 'coach-builder-save',
+    onclick: async () => {
+      msg.textContent = '';
+      msg.classList.remove('danger');
+      try {
+        await saveProfile(draft);
+        msg.textContent = 'Saved';
+        clearTimeout(savedTimer);
+        savedTimer = setTimeout(() => { if (msg.textContent === 'Saved') msg.textContent = ''; }, 2000);
+      } catch (err) {
+        msg.textContent = userMessageFor(err);
+        msg.classList.add('danger');
+      }
+    },
+  }, 'Save');
+  const buildBtn = h('button', {
+    class: 'coach-btn-primary', type: 'button', 'data-action': 'coach-builder-build',
+    onclick: async () => {
+      const original = buildBtn.textContent;
+      buildBtn.disabled = true;
+      buildBtn.textContent = 'Building your plan…';
+      msg.textContent = '';
+      msg.classList.remove('danger');
+      try {
+        await saveProfile(draft);
+        await createPlan();
+        go('#/coach/plan');
+      } catch (err) {
+        buildBtn.disabled = false;
+        buildBtn.textContent = original;
+        msg.textContent = userMessageFor(err);
+        msg.classList.add('danger');
+      }
+    },
+  }, hasPlan ? 'Rebuild plan' : 'Build plan');
+  return h('div', { class: 'coach-builder-footer' },
+    h('p', { class: 'coach-note muted', text: 'Nothing here is required. Your answers stay on this device and are sent to Anthropic only as part of the coach’s requests.' }),
+    msg,
+    h('div', { class: 'coach-builder-actions' }, saveBtn, buildBtn),
+  );
 }
 
 // ============================================================================
-// The "About you" sheet
+// 7. Chat (#/coach/chat)
 // ============================================================================
-/**
- * @param {{profile: Object|null, onDone?: (profile: Object|null) => void}} opts
- *   onDone runs after the profile is saved — and, when there is no plan yet,
- *   after createPlan has come back.
- */
-export function openCoachSetupSheet({ profile = null, onDone } = {}) {
-  const values = {
-    goal: (profile && profile.goal) || 'return-from-injury',
-    daysPerWeek: (profile && profile.daysPerWeek) || 3,
-    sessionMinutes: (profile && profile.sessionMinutes) || 60,
-    injuryNotes: (profile && profile.injuryNotes) || null,
-    equipmentNotes: (profile && profile.equipmentNotes) || null,
-    returnDate: (profile && profile.returnDate) || null,
-  };
-  // Whether Save has to build a plan as well. Prefetched so the button can say
-  // so the moment it is pressed; a failed read simply means "build one".
-  let hasPlan = false;
-  getCoachState().then((s) => { hasPlan = !!(s && s.plan); }).catch(() => { hasPlan = false; });
-
-  let saving = false;
-  const group = h('div', { class: 'sheet-group' });
-  const message = h('p', { class: 'sheet-message danger coach-sheet-error' });
-  const saveBtn = h('button', {
-    class: 'sheet-btn coach-sheet-save', type: 'button', 'data-action': 'coach-setup-save',
-    onclick: () => save(),
-  }, 'Save');
-
-  const goalLabel = () => {
-    const found = GOAL_OPTIONS.find((o) => o.value === values.goal);
-    return found ? found.label : 'Choose';
-  };
-
-  /** A stepper row in the Settings `restRow` idiom. */
-  function stepperRow(label, key, { min, max, step, format }) {
-    const val = h('span', { class: 'timer-val small', text: format(values[key]) });
-    const adjust = (delta) => {
-      const next = Math.min(max, Math.max(min, (Number(values[key]) || min) + delta));
-      values[key] = next;
-      val.textContent = format(next);
-    };
-    return h('div', { class: 'settings-row coach-sheet-stepper' },
-      h('span', { class: 'settings-label', text: label }),
-      h('div', { class: 'rest-stepper' },
-        h('button', {
-          class: 'round-btn', type: 'button', 'aria-label': `Decrease ${label.toLowerCase()}`,
-          onclick: () => adjust(-step),
-        }, Icon('minus')),
-        val,
-        h('button', {
-          class: 'round-btn', type: 'button', 'aria-label': `Increase ${label.toLowerCase()}`,
-          onclick: () => adjust(step),
-        }, Icon('plus')),
-      ),
-    );
-  }
-
-  function dateRow() {
-    const input = h('input', { class: 'sheet-input coach-date-input', type: 'date', 'aria-label': 'Return date' });
-    input.value = values.returnDate || '';
-    input.addEventListener('change', () => {
-      values.returnDate = /^\d{4}-\d{2}-\d{2}$/.test(input.value) ? input.value : null;
-    });
-    return h('div', { class: 'settings-row coach-sheet-date' },
-      h('span', { class: 'settings-label', text: 'Return date' }),
-      input,
-    );
-  }
-
-  function paint() {
-    group.replaceChildren(
-      sheetRow({
-        label: 'Goal', value: goalLabel(), chevron: true, action: 'coach-goal',
-        onClick: () => optionSheet({
-          title: 'Goal', options: GOAL_OPTIONS, current: values.goal,
-          onPick: (v) => { values.goal = v; paint(); },
-        }),
-      }),
-      stepperRow('Days per week', 'daysPerWeek', {
-        min: 1, max: 7, step: 1, format: (n) => String(n),
-      }),
-      stepperRow('Session length', 'sessionMinutes', {
-        min: 20, max: 120, step: 5, format: (n) => `${n} min`,
-      }),
-      sheetRow({
-        label: 'Injury or limits', sub: values.injuryNotes || 'None given',
-        chevron: true, action: 'coach-injury',
-        onClick: () => textareaSheet({
-          title: 'Injury or limits', value: values.injuryNotes,
-          placeholder: 'e.g. left shoulder — no overhead pressing for now',
-          onSave: (v) => { values.injuryNotes = v; paint(); },
-        }),
-      }),
-      sheetRow({
-        label: 'Equipment', sub: values.equipmentNotes || 'None given',
-        chevron: true, action: 'coach-equipment',
-        onClick: () => textareaSheet({
-          title: 'Equipment', value: values.equipmentNotes,
-          placeholder: 'e.g. home gym, dumbbells to 30 kg, no barbell',
-          onSave: (v) => { values.equipmentNotes = v; paint(); },
-        }),
-      }),
-      dateRow(),
-    );
-  }
-
-  async function save() {
-    if (saving) return;
-    saving = true;
-    const needsPlan = !profile || !hasPlan;
-    saveBtn.disabled = true;
-    saveBtn.textContent = needsPlan ? 'Building your plan…' : 'Saving…';
-    message.textContent = '';
-    try {
-      let saved;
-      if (needsPlan) {
-        await createPlan({ ...values });
-        saved = await getProfile().catch(() => null);
-      } else {
-        saved = await saveProfile({ ...values });
-      }
-      closeSheet();
-      if (onDone) onDone(saved);
-    } catch (err) {
-      saving = false;
-      saveBtn.disabled = false;
-      saveBtn.textContent = 'Save';
-      message.textContent = userMessageFor(err);
-    }
-  }
-
-  paint();
-
-  openSheet(h('div', { class: 'coach-setup-sheet' },
-    sheetHeader('About you', { onSave: () => save(), onClose: () => closeSheet() }),
-    group,
-    h('p', { class: 'sheet-note muted', text: 'Your answers stay on this device and are sent to Anthropic only as part of the coach’s summary.' }),
-    message,
-    h('div', { class: 'sheet-actions' }, saveBtn),
+async function renderChatScreen(screen, token) {
+  const container = h('div', { class: 'coach-chat-container' });
+  screen.replaceChildren(h('div', { class: 'coach-sub-screen coach-chat-screen' },
+    backHeader('Change the plan'),
+    h('div', { class: 'coach-body-wrap coach-chat-wrap' },
+      h('p', { class: 'coach-note muted coach-chat-note', text: 'Tell the coach what to change. It will update the plan and list every change.' }),
+      container,
+    ),
   ));
+  if (token !== renderToken) return;
+
+  if (activeChatPanel) { try { activeChatPanel.destroy(); } catch (e) { /* ignore */ } activeChatPanel = null; }
+  activeChatPanel = chatPanel({ thread: 'plan', container, compact: false });
+  setScreenCleanup(() => {
+    stopCoachSubscription();
+    if (activeChatPanel) { try { activeChatPanel.destroy(); } catch (e) { /* ignore */ } activeChatPanel = null; }
+  });
 }

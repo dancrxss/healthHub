@@ -16,7 +16,8 @@ import {
   openSheet, closeSheet, sheetHeader, sheetGroup, sheetRow,
 } from '../ui.js';
 import { swipeRow } from '../swipe.js';
-import { coachEnabled, getCoachState } from '../coach.js';
+import { coachEnabled, currentPlanSessions, getCoachState } from '../coach.js';
+import { targetText } from './coach-shared.js';
 
 const MONTH_FORMAT = { month: 'long', year: 'numeric' };
 const WEEKDAY_FORMAT = { weekday: 'short' };
@@ -66,14 +67,21 @@ async function startChoice() {
   let state = null;
   try { state = await getCoachState(); } catch (e) { console.error('log: coach state', e); }
   const plan = state && state.plan;
-  const session = state && state.nextSession;
-  if (!plan || !session) { startWorkout(); return; }
-  const lines = (session.exercises || []).map((e) => `${e.targetSets} × ${e.targetRepsLow}–${e.targetRepsHigh}`);
+  const nextRef = state && state.nextSession;
+  if (!plan || !nextRef) { startWorkout(); return; }
+  // The plan record holds week-1 (or last-revised-week) targets; project them
+  // to the CURRENT week so the sheet — and the ghost sets it starts — show
+  // what's actually due today (PLAN.md C2.5: every plan.sessions read goes
+  // through projectedSessions).
+  let projected = [];
+  try { projected = await currentPlanSessions(); } catch (e) { console.error('log: projected sessions', e); }
+  const session = projected.find((s) => s.id === nextRef.id) || nextRef;
+  const lines = (session.exercises || []).map((e) => targetText(e));
   openSheet(h('div', {},
     sheetHeader('Start workout', { onClose: () => closeSheet() }),
     sheetGroup(
       sheetRow({
-        label: `Planned session · ${session.name}`,
+        label: `Planned session · ${nextRef.name}`,
         sub: `${(session.exercises || []).length} exercises · ${lines.length ? lines.join(', ') : '—'}`,
         icon: Icon('star'), action: 'start-planned', chevron: true,
         onClick: () => { closeSheet(); startPlannedWorkout(plan, session); },
@@ -125,7 +133,7 @@ function buildMonthGroups(sessions, exMap) {
 }
 
 // ---- workout row -----------------------------------------------------------
-function workoutRow({ workout, sets }, exMap) {
+export function workoutRow({ workout, sets }, exMap) {
   const d = new Date(workout.date + 'T00:00:00');
   const weekday = d.toLocaleDateString('en-GB', WEEKDAY_FORMAT);
   const day = d.getDate();
@@ -155,7 +163,7 @@ function durationLabel(workout) {
 }
 
 /** "Nx Exercise Name" lines in entry order; finished workouts skip zero-set entries. */
-function exerciseLines(workout, sets, exMap) {
+export function exerciseLines(workout, sets, exMap) {
   const entries = getEntries(workout, sets);
   const countByExercise = new Map();
   for (const s of sets) countByExercise.set(s.exerciseId, (countByExercise.get(s.exerciseId) || 0) + 1);

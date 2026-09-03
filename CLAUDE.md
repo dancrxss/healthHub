@@ -284,7 +284,8 @@ App Store pivot (see "Direction change" below).*
   excluded from PR/volume calcs, alongside warmups).
   **Navigation since:** the tab bar went from 4 tabs to **Log + Statistics**
   with a settings gear on every header (29 Jul 2026), then lost Routines
-  (30 Jul 2026) — routines are created from a workout's ⋯ menu (“Save as
+  (30 Jul 2026), gained **Coach** (3 Sep 2026, hidden without an API key) and
+  **Home** as the default tab (Phase C2, same day) — routines are created from a workout's ⋯ menu (“Save as
   Routine”) and re-used via **Copy Routine** on the workout screen, which also
   copies the skeleton of any previous session. Nothing is seeded: the routine
   library starts empty and is Dan's to fill.
@@ -339,7 +340,11 @@ App Store pivot (see "Direction change" below).*
     (31 Jul 2026)** — raw Apple Health samples keyed by their HealthKit UUID —
     **plus CoachPlan and CoachInsight (3 Sep 2026, DB v3)**: the coach's plans
     (new record per revision) and its stored daily/session outputs, keyed
-    deterministically so re-runs upsert. Everything else is **derived, never
+    deterministically so re-runs upsert — **plus CoachChatMessage (DB v4,
+    Phase C2)** and the **coach memory** (meta `coach.memory`: ≤20 short facts
+    the coach has learned, sent with every request, user-editable in the plan
+    builder). Plans store week-1/base targets plus progression rules; later
+    weeks are **projected, never stored**. Everything else is **derived, never
     stored**.
   - **Gym data leaves the device only through the user's own Claude API key.**
     The Coach (`js/coach.js`, `js/coach-api.js`) posts a derived digest of
@@ -393,6 +398,10 @@ App Store pivot (see "Direction change" below).*
   - **Out of scope** (31 Jul 2026): MCP server code, Azure provisioning, cloud
     sync of any kind, auth/accounts, Android (Capacitor makes it possible
     later; not now), social features, templates CRUD UI beyond routines.
-    **Coach out of scope (3 Sep 2026):** streaming, chatting with the coach,
-    a model picker, inventing exercises not in the library, web search,
-    native background refresh / notifications, any server component.
+    **Coach out of scope (3 Sep 2026, amended same day by Phase C2):**
+    streaming, a model picker, inventing exercises not in the library, web
+    search, native background refresh / notifications, any server component.
+    Chatting with the coach was out of scope in v1 and is **in scope from
+    Phase C2** (two threads — Home feedback, Coach plan changes — sharing the
+    on-device memory). The plan digest may include library exercises the user
+    has never logged when they ask for a muscle group, cardio or core.

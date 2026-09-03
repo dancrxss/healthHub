@@ -107,6 +107,26 @@
 //   PlanExercise: {exerciseId, targetSets, targetRepsLow, targetRepsHigh,
 //                  targetWeightKg:number|null, targetRpe:number|null, note:string|null}
 //
+//   Phase C2 (3 Sep 2026, additive): planVersion:2, lineageStart 'YYYY-MM-DD'
+//   (programme day 1, copied on revision), baseWeek (programme week the stored
+//   targets describe), weeks 6–8, overview {points[], muscleFocus[{group,why}],
+//   progression[], deloadWeek|null}, weekNotes [{week, focus, points[]}];
+//   sessions gain brief[]; exercises gain targetDurationSec|null, purpose, goal,
+//   progression {weightStepKg|null, repStep|null, durationStepSec|null, everyWeeks}.
+//   Later weeks are PROJECTED by coach-engine.js, never stored.
+//
+// @typedef {Object} CoachChatMessage   store 'coachChat' (DB v4, Phase C2)
+//   {string} id
+//   {'home'|'plan'} thread
+//   {'user'|'coach'} role
+//   {string} createdAt      ISO datetime
+//   {string|null} text      the user's message
+//   {string[]|null} points  the coach's reply bullets
+//   {string|null} planId    plan in force after this message
+//   {{plan:boolean, profile:boolean, memory:boolean}|null} changed
+//   {string|null} error     user-facing message when the call failed
+//   {boolean} pending       true while the user's message awaits a reply
+//
 // @typedef {Object} CoachInsightRecord   store 'coachInsights'
 //   {string} id             'daily-YYYY-MM-DD' | 'session-<workoutId>' — deterministic,
 //                           so re-running is an idempotent upsert
@@ -140,7 +160,7 @@ export const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight
 export const HEALTH_TYPES = ['workout', 'heartRate', 'restingHeartRate', 'hrv', 'vo2max', 'bodyMass', 'bodyFatPct', 'sleepAnalysis', 'activeEnergy'];
 
 export const DB_NAME = 'healthhub';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 // Object stores (all keyPath 'id' except meta, keyPath 'key'):
 //   exercises
@@ -152,6 +172,7 @@ export const DB_VERSION = 3;
 //   coachPlans    — index 'by-created' on `createdAt`                (DB v3, additive)
 //   coachInsights — index 'by-kind-created' on ['kind', 'createdAt'],
 //                   index 'by-workout' on `workoutId`                 (DB v3, additive)
+//   coachChat     — index 'by-thread-created' on ['thread', 'createdAt'] (DB v4, additive)
 
 let _dbName = DB_NAME;
 let _dbPromise = null;
@@ -220,6 +241,10 @@ export async function openDb() {
         const s = db.createObjectStore('coachInsights', { keyPath: 'id' });
         s.createIndex('by-kind-created', ['kind', 'createdAt'], { unique: false });
         s.createIndex('by-workout', 'workoutId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('coachChat')) {
+        const s = db.createObjectStore('coachChat', { keyPath: 'id' });
+        s.createIndex('by-thread-created', ['thread', 'createdAt'], { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -537,16 +562,54 @@ export async function getCoachInsightForWorkout(workoutId) {
   return rows[0];
 }
 
+// ---- Coach chat (Phase C2) ----
+/** @param {CoachChatMessage} msg */
+export async function putChatMessage(msg) {
+  const db = await openDb();
+  const t = db.transaction('coachChat', 'readwrite');
+  t.objectStore('coachChat').put(msg);
+  await txDone(t);
+  return msg;
+}
 /**
- * Remove ALL coach plans and insights, plus the coach.* meta keys. USER-INITIATED
+ * Messages of one thread, NEWEST first, bounded.
+ * @param {{thread: 'home'|'plan', limit?: number}} opts
+ * @returns {Promise<CoachChatMessage[]>}
+ */
+export function listChatMessages({ thread, limit = 60 }) {
+  const range = IDBKeyRange.bound([thread, '0000'], [thread, '\uffff']);
+  return listByIndexDesc('coachChat', 'by-thread-created', range, limit);
+}
+/** Clear one thread, or every thread when `thread` is null. USER-INITIATED ONLY. */
+export async function clearChat(thread = null) {
+  const db = await openDb();
+  const t = db.transaction('coachChat', 'readwrite');
+  const store = t.objectStore('coachChat');
+  if (thread == null) {
+    store.clear();
+  } else {
+    const req = store.index('by-thread-created').openCursor(IDBKeyRange.bound([thread, '0000'], [thread, '\uffff']));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      cursor.delete();
+      cursor.continue();
+    };
+  }
+  return txDone(t);
+}
+
+/**
+ * Remove ALL coach plans, insights and chat, plus the coach.* meta keys. USER-INITIATED
  * ONLY (Settings → Coach → Clear coach data) — the same sanctioned exception as
  * clearHealthSamples. Never touches workouts, sets, exercises or templates.
  */
 export async function clearCoachData() {
   const db = await openDb();
-  const t = db.transaction(['coachPlans', 'coachInsights', 'meta'], 'readwrite');
+  const t = db.transaction(['coachPlans', 'coachInsights', 'coachChat', 'meta'], 'readwrite');
   t.objectStore('coachPlans').clear();
   t.objectStore('coachInsights').clear();
+  t.objectStore('coachChat').clear();
   const meta = t.objectStore('meta');
   const req = meta.openCursor();
   req.onsuccess = () => {

@@ -180,20 +180,23 @@ let w1id = null;
 
 try {
   // --- 1. Fresh app: seed ran, #/log renders, 2 tabs, empty log ---
-  await poll('app boots to #/log', `location.hash === '#/log' && !document.getElementById('s-log').hidden`, 12000);
+  await poll('app boots to #/home', `location.hash === '#/home' && !document.getElementById('s-home').hidden`, 12000);
+  check('home: default tab renders', (await count('#s-home .tab-screen')) === 1, `got ${await count('#s-home .tab-screen')}`);
+  await clickSel('tab log (first visit)', '#tabbar button[data-tab="log"]');
+  await poll('log screen visible', `location.hash === '#/log' && !document.getElementById('s-log').hidden`);
   const seedCount = await poll('seed exercises loaded', `import('./js/db.js').then(m => m.listExercises()).then(l => l.length)`);
   check('seed: 61 exercises seeded on fresh install (55 strength + 6 cardio)', seedCount === 61, `got ${seedCount}`);
-  check('shell: tab bar has 3 tab buttons (Log, Statistics, Coach)', (await count('#tabbar button')) === 3, `got ${await count('#tabbar button')}`);
+  check('shell: tab bar has 4 tab buttons (Home, Log, Statistics, Coach)', (await count('#tabbar button')) === 4, `got ${await count('#tabbar button')}`);
   check('shell: Coach tab is hidden until an API key exists', await evalJS(`document.querySelector('#tabbar button[data-tab="coach"]').hidden === true`));
   check('log: empty state has no month groups yet', (await count('#s-log .month-group')) === 0, `got ${await count('#s-log .month-group')}`);
 
   // --- 2. Tab switching: each tab shows its screen, hides the rest ---
-  const TABS = ['log', 'stats'];
+  const TABS = ['home', 'log', 'stats'];
   let tabsOk = true; let tabDetail = '';
   for (const tab of TABS) {
     await clickSel(`tab ${tab}`, `#tabbar button[data-tab="${tab}"]`);
     await poll(`${tab} screen visible`, `!document.getElementById('s-${tab}').hidden`);
-    const othersHidden = await evalJS(`['log','stats','coach','settings'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
+    const othersHidden = await evalJS(`['home','log','stats','coach','settings'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
     if (!othersHidden) { tabsOk = false; tabDetail = `others not hidden on ${tab}`; }
   }
   check('tabs: switching shows one screen and hides the others', tabsOk, tabDetail);
@@ -917,13 +920,20 @@ try {
     const db = await import('./js/db.js');
     const ui = await import('./js/ui.js');
     await db.setMeta('coach.profile', { version: 1, updatedAt: new Date().toISOString(), injuryNotes: 'e2e', goal: 'return-from-injury', daysPerWeek: 3, sessionMinutes: 60, equipmentNotes: null, returnDate: null, avoidExerciseIds: [] });
-    await db.putCoachPlan({ id: 'plan-e2e', version: 1, createdAt: new Date().toISOString(), source: 'manual', basedOnWorkoutId: null, rationale: 'e2e fixture', weeks: 4,
+    // A v2 plan that started 15 days ago (⇒ programme week 3): bench 60 kg base + 2.5 kg/week.
+    const lineageStart = new Date(Date.now() - 15 * 86400000); const pad = (n) => String(n).padStart(2, '0');
+    const lineageISO = lineageStart.getFullYear() + '-' + pad(lineageStart.getMonth() + 1) + '-' + pad(lineageStart.getDate());
+    const prog = (w) => ({ weightStepKg: w, repStep: null, durationStepSec: null, everyWeeks: 1 });
+    await db.putCoachPlan({ id: 'plan-e2e', version: 1, createdAt: new Date().toISOString(), source: 'manual', basedOnWorkoutId: null, rationale: null,
+      planVersion: 2, lineageStart: lineageISO, baseWeek: 1, weeks: 8,
+      overview: { points: ['Rebuild pressing strength over eight weeks.', 'Add legs back gently.'], muscleFocus: [{ group: 'chest', why: 'Main pressing pattern.' }, { group: 'legs', why: 'Requested despite no history.' }], progression: ['Bench climbs 2.5 kg a week.'], deloadWeek: 6 },
+      weekNotes: [{ week: 6, focus: 'Deload', points: ['Drop loads 10 percent.'] }],
       sessions: [
-        { id: 'ps-1', order: 1, name: 'Upper A', focus: 'push', exercises: [
-          { exerciseId: ${J(BBP)}, targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 60, targetRpe: 7, note: null },
-          { exerciseId: ${J(TRI_PUSHDOWN)}, targetSets: 2, targetRepsLow: 10, targetRepsHigh: 12, targetWeightKg: 25, targetRpe: 8, note: 'slow eccentric' } ] },
-        { id: 'ps-2', order: 2, name: 'Lower A', focus: null, exercises: [
-          { exerciseId: ${J(CABLE_FLY)}, targetSets: 3, targetRepsLow: 10, targetRepsHigh: 12, targetWeightKg: 15, targetRpe: null, note: null } ] },
+        { id: 'ps-1', order: 1, name: 'Upper A', focus: 'push', brief: ['Pressing volume first.'], exercises: [
+          { exerciseId: ${J(BBP)}, targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 60, targetDurationSec: null, targetRpe: 7, purpose: 'Main press', goal: '3 × 8 at 77.5 kg by week 8', note: null, progression: prog(2.5) },
+          { exerciseId: ${J(TRI_PUSHDOWN)}, targetSets: 2, targetRepsLow: 10, targetRepsHigh: 12, targetWeightKg: 25, targetDurationSec: null, targetRpe: 8, purpose: 'Triceps volume', goal: 'Clean 12s', note: 'slow eccentric', progression: prog(0) } ] },
+        { id: 'ps-2', order: 2, name: 'Lower A', focus: null, brief: ['Easy leg re-introduction.'], exercises: [
+          { exerciseId: ${J(CABLE_FLY)}, targetSets: 3, targetRepsLow: 10, targetRepsHigh: 12, targetWeightKg: 15, targetDurationSec: null, targetRpe: null, purpose: 'Chest isolation', goal: 'Steady 12s', note: null, progression: prog(0) } ] },
       ] });
     await db.setMeta('coach.currentPlanId', 'plan-e2e');
     ui.refreshCoachTab();
@@ -935,6 +945,7 @@ try {
   check('coach: next-session card renders the seeded plan with a Start button',
     await poll('coach start button', `document.querySelector('#s-coach [data-action="coach-start-session"]') != null`));
   check('coach: next session names Upper A', await evalJS(`document.getElementById('s-coach').textContent.includes('Upper A')`));
+  check('coach: next-session card shows the programme week (Week 3)', await evalJS(`/Week 3/.test(document.getElementById('s-coach').textContent)`));
   await clickSel('start planned session', '#s-coach [data-action="coach-start-session"]');
   await poll('planned workout up', `location.hash === '#/workout' && document.querySelector('.ex-card[data-exercise-id=${J(BBP)}]') != null`);
   check('coach: planned session pre-creates targetSets blank rows (3 for bench)',
@@ -946,8 +957,8 @@ try {
     return { w: row.querySelector('input[data-field="weight"]').placeholder, r: row.querySelector('input[data-field="reps"]').placeholder,
              v: row.querySelector('input[data-field="weight"]').value };
   })()`);
-  check('coach: ghost placeholders are the PLAN targets (60 kg × 8), inputs still empty',
-    ghost && ghost.w === '60' && ghost.r === '8' && ghost.v === '', JSON.stringify(ghost));
+  check('coach: ghost placeholders are this WEEK\'s projected targets (65 kg × 8), inputs still empty',
+    ghost && ghost.w === '65' && ghost.r === '8' && ghost.v === '', JSON.stringify(ghost));
   check('coach: workout record is tagged with the plan session', await evalJS(`(async () => {
     const db = await import('./js/db.js');
     const w = await db.getWorkout(localStorage.getItem('currentWorkoutId'));
@@ -957,9 +968,9 @@ try {
   const planFilled = await poll('plan weight autofilled', `(async () => {
     const db = await import('./js/db.js');
     const s = (await db.listSetsForWorkout(localStorage.getItem('currentWorkoutId'))).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
-    return s[0] && s[0].reps === 8 && s[0].weightKg === 60;
+    return s[0] && s[0].reps === 8 && s[0].weightKg === 65;
   })()`);
-  check('coach: typing reps autofills the plan weight (60 kg) with no extra tap', planFilled);
+  check('coach: typing reps autofills the projected plan weight (65 kg) with no extra tap', planFilled);
   // Copy Routine now offers the plan too.
   await clickSel('copy routine (plan check)', '#s-workout [data-action="copy-routine"]');
   await poll('copy picker', `location.hash === '#/copy'`);
@@ -986,6 +997,44 @@ try {
     const w = await db.getWorkout(localStorage.getItem('currentWorkoutId'));
     return !w.planSessionId && document.querySelectorAll('#s-workout .ex-card').length === 0;
   })()`));
+  // --- Coach v2: plan weeks, builder, chat + memory -------------------------
+  await evalJS(`(() => { location.hash = '#/coach/plan'; return true; })()`);
+  check('coach v2: plan screen shows overview bullets', await poll('overview bullets', `document.querySelector('#s-coach .coach-bullets') != null && document.getElementById('s-coach').textContent.includes('Rebuild pressing strength')`));
+  check('coach v2: week selector has 8 chips with W3 current', (await count('#s-coach [data-action="coach-week"]')) === 8 && await exists('#s-coach [data-action="coach-week"][data-week="3"].is-current'));
+  await clickSel('pick week 5', '#s-coach [data-action="coach-week"][data-week="5"]');
+  check('coach v2: week 5 projects bench to 70 kg', await poll('week 5 targets', `/70\\s?kg/.test(document.getElementById('s-coach').textContent)`));
+  await clickSel('pick week 6 (deload)', '#s-coach [data-action="coach-week"][data-week="6"]');
+  check('coach v2: deload week is labelled and drops the load', await poll('deload week', `/[Dd]eload/.test(document.getElementById('s-coach').textContent) && /65\\s?kg/.test(document.getElementById('s-coach').textContent)`));
+  await clickSel('expand an exercise row', '#s-coach [data-action="coach-ex-toggle"]');
+  check('coach v2: exercise row expands to purpose/goal', await poll('purpose shown', `document.getElementById('s-coach').textContent.includes('Main press')`));
+
+  await evalJS(`(() => { location.hash = '#/coach/builder'; return true; })()`);
+  check('coach v2: builder renders save + build actions', await poll('builder', `document.querySelector('#s-coach [data-action="coach-builder-save"]') != null && document.querySelector('#s-coach [data-action="coach-builder-build"]') != null`));
+  await clickSel('builder save', '#s-coach [data-action="coach-builder-save"]');
+  check('coach v2: builder save writes a v2 profile', await poll('profile v2', `(async () => { const p = await (await import('./js/db.js')).getMeta('coach.profile'); return !!p && p.version === 2 && typeof p.cardio === 'object'; })()`));
+
+  // Chat: stub fetch with a canned successful chat reply.
+  await evalJS(`(() => {
+    window.fetch = async (url, init) => {
+      const body = JSON.stringify({ reply: ['Noted.', 'I will keep spinal loading light.'], memoryUpdates: { add: ['Sciatica — no heavy spinal loading yet'], removeIds: [] }, profilePatch: null, planChanges: [], plan: null });
+      return new Response(JSON.stringify({ id: 'msg_e2e', model: 'claude-sonnet-5', stop_reason: 'end_turn', content: [{ type: 'text', text: body }], usage: { input_tokens: 100, output_tokens: 40 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    location.hash = '#/home';
+    return true;
+  })()`);
+  await poll('home chat input', `document.querySelector('#s-home .coach-chat-input') != null && document.querySelector('#s-home [data-action="coach-chat-send"]') != null`);
+  await evalJS(`(() => { const ta = document.querySelector('#s-home .coach-chat-input'); ta.value = 'I have sciatica, go easy on my back'; ta.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  await clickSel('send chat', '#s-home [data-action="coach-chat-send"]');
+  check('coach v2: chat shows the coach reply as bullets', await poll('coach reply', `[...document.querySelectorAll('#s-home .coach-chat-coach')].some((el) => el.textContent.includes('Noted.'))`, 10000));
+  check('coach v2: chat reply added a memory item', await poll('memory item', `(async () => { const m = await (await import('./js/db.js')).getMeta('coach.memory'); return Array.isArray(m) && m.length === 1 && m[0].text.includes('Sciatica'); })()`));
+  check('coach v2: chat stored both turns', await evalJS(`(async () => (await (await import('./js/db.js')).listChatMessages({ thread: 'home' })).length === 2)()`));
+  await evalJS(`(() => { location.hash = '#/coach/builder'; return true; })()`);
+  check('coach v2: builder lists the memory item', await poll('memory listed', `document.querySelector('#s-coach [data-action="coach-memory-remove"]') != null`));
+  await clickSel('remove memory item', '#s-coach [data-action="coach-memory-remove"]');
+  check('coach v2: removing a memory item empties the list', await poll('memory empty', `(async () => { const m = await (await import('./js/db.js')).getMeta('coach.memory'); return Array.isArray(m) && m.length === 0; })()`));
+  await evalJS(`(() => { location.hash = '#/log'; return true; })()`);
+  await poll('back on log', `location.hash === '#/log'`);
+
   // Cleanup: remove the empty workout, clear coach data + key, restore fetch.
   await evalJS(`(async () => {
     const db = await import('./js/db.js');
