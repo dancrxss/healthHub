@@ -629,7 +629,125 @@ with `planId`/`planSessionId`; `workout.js` swaps `lastByEx` for `planRefSets`
 on planned workouts (no change to `buildSetRow`/`autofillWeight`); a `plan` chip
 on each `.ex-card` header makes the swap visible. Log `+` unchanged when no plan.
 
-### C6 — Out of scope (v1)
+### C6 — Out of scope (v1) — amended 3 Sep 2026 by Phase C2
 
-Streaming, chatting with the coach, model picker, inventing exercises not in the
-library, web search, native background refresh / notifications, any server.
+Streaming, model picker, inventing exercises not in the library, web search,
+native background refresh / notifications, any server. **Chatting with the
+coach was out of scope in v1 and is IN scope from Phase C2** (Dan's request
+after using v1); see C2 below.
+
+## Phase C2 — Coach v2: Home tab, plan builder, projection, explanations, chat (3 September 2026)
+
+Dan's feedback on v1: add muscle groups/cardio/core his history lacks, move plan
+configuration into the Coach tab, present all AI output as bullets, plan 6–8
+weeks ahead with the current week shown and the rest browsable, explain the
+programme and each session, add a chat, and make a Home tab the default. Plan of
+record: `~/.claude/plans/so-i-am-getting-peaceful-riddle.md` (v2 section).
+Decisions: two chat threads (`home`, `plan`) sharing one on-device **coach
+memory**; week 1 + progression rules with the app projecting later weeks; Home
+key stats mirror the Statistics modules; cardio/core live inside sessions with a
+duration target. Everything pinned in C1–C5 stays unless amended here.
+
+### C2.1 — Data contract deltas (DB v4, additive)
+
+Profile v2 (meta `coach.profile`, all optional with defaults):
+```
+version: 2 · split: 'auto'|'full-body'|'upper-lower'|'ppl' (auto)
+groupPrefs: {[muscleGroup]: 'auto'|'include'|'emphasise'|'avoid'} ({})
+cardio: {include:false, minutesPerSession: 5–30 (10), standaloneDay:false, exerciseIds:[]}
+core: {include:false} · favouriteExerciseIds: [] · notes: string|null (≤600)
+```
+Coach memory (meta `coach.memory`): `[{id:'m-<uid>', text ≤160, addedAt,
+source:'chat-home'|'chat-plan'|'user'}]`, max 20; sent to every request as
+`digest.memory: [{id, text}]`; user-editable in the plan builder.
+
+PLAN v2 (`CoachPlanRecord`, additive):
+```
+planVersion: 2 · lineageStart: 'YYYY-MM-DD' (programme day 1; copied on revision)
+baseWeek: int (programme week the stored targets describe: 1 created, currentWeek revised)
+weeks: 6–8 · overview: {points[], muscleFocus:[{group, why}], progression[], deloadWeek|null}
+weekNotes: [{week, focus, points[]}]
+sessions: [{id 'ps-N', order, name, focus|null, brief[],
+  exercises: [{exerciseId, targetSets, targetRepsLow|null, targetRepsHigh|null, targetWeightKg|null,
+    targetDurationSec|null, targetRpe|null, purpose, goal, note|null,
+    progression: {weightStepKg|null, repStep|null, durationStepSec|null, everyWeeks: 1–4}}]}]
+```
+`rationale` (v1) is no longer written; renderers show it as one bullet.
+
+Store `coachChat` keyPath `id`, index `by-thread-created` on `['thread','createdAt']`:
+`{id, thread:'home'|'plan', role:'user'|'coach', createdAt, text|null (user), points[]|null (coach),
+planId|null, changed:{plan,profile,memory}|null, error|null, pending:boolean}`.
+Repo: `putChatMessage`, `listChatMessages({thread, limit=60})`, `clearChat(thread|null)`;
+`clearCoachData` clears it too.
+
+Insight narrative v2: daily `{headline, points[], balanceNotes[], recoveryNote|null,
+advice[], tone}`; session `{overallTone, points[], better[], worse[], flags[],
+planChanges[], plan|null}`. Renderers accept v1 strings as one bullet.
+
+### C2.2 — Engine deltas (`js/coach-engine.js`)
+
+```
+currentPlanWeek(plan, today)  clamp(floor(days(lineageStart→today)/7)+1, 1, weeks); old plans use createdAt
+projectPlanWeek(plan, week)   → {week, isCurrent?, isPast, isDeload, sessions[]}
+   steps = max(0, floor((week−baseWeek)/everyWeeks)); weight = base + steps·weightStepKg (0.5 rounding; bodyweight stays 0)
+   reps ± steps·repStep (cap 30); duration + steps·durationStepSec
+   week === overview.deloadWeek → weight ×0.9 rounded down to 2.5, sets−1 (min 1), isDeload
+   week < baseWeek → base targets, isPast:true · no progression → flat
+projectedSessions(plan, today) → projectPlanWeek(plan, currentPlanWeek(plan, today)).sessions
+planRefSets(pe)               ALWAYS an array (length targetSets, min 1); duration exercises →
+                              {weightKg:0, reps:0, durationSeconds:targetDurationSec, distanceM:null, kcal:null}
+recentPRs(dataset, {today, days=7}) → [{exerciseId, name, kind:'e1rm', value, date}]
+isDurationType(type)          cardio | time | weight_time
+```
+`buildDigest` kind 'plan': `profile` carries v2 fields; `exercises` = trained
+ranked (≤20) + up to 4 library exercises per `include`/`emphasise` group (and
+`abs` when core, `cardio` when cardio) not already present — favourites first,
+seed before custom, then name; favourites always present; `avoid` groups
+dropped; duration types allowed (entries `{…, type, lastDurationSec, proposal:{durationSec}}`).
+`rankedExercises`/`libraryTopUp`/`trainedEntry` gain the duration-type path.
+Budget: `DIGEST_MAX_BYTES` per kind — 4000 daily/session, 6000 plan/chat; shrink
+levers add `chat.recent → 3`, then `memory → 10`. `plan` echo (daily/session/chat)
+= `{version, weeks, baseWeek, currentWeek, deloadWeek, sessions: projected current week (slim)}`.
+kind 'chat' adds `chat: {thread, recent:[{role,text}] ≤6 × ≤400 chars, message ≤1200}`.
+Every kind carries `memory`.
+
+### C2.3 — API deltas (`js/coach-api.js`)
+
+`MAX_TOKENS` daily 4000 · session 10000 · plan 16000 · chat 6000.
+`TIMEOUT_MS` daily 60s · session 90s · plan 180s · chat 60s (default when caller passes none).
+`MAX_ATTEMPTS` plan 2, others 3. Effort: daily/chat `low`, session/plan `medium`.
+Schemas v2: PLAN_V2 as C2.1; daily/session as C2.1; chat →
+`{reply[], memoryUpdates:{add[], removeIds[]}, profilePatch:{daysPerWeek|null, sessionMinutes|null,
+injuryNotes|null, equipmentNotes|null, notes|null, split|null, cardioInclude|null, coreInclude|null}|null,
+planChanges[], plan: PLAN_V2|null}`.
+Clamps: bullet lists ≤8 × 200 chars (`brief`/`advice` ≤5, `reply` ≤10 × 300); `purpose`/`goal` ≤160;
+`weeks` 6–8 (default 6); `deloadWeek` null or 2..weeks; `weekNotes` ≤ weeks, unique weeks;
+`muscleFocus` ≤8; progression weightStepKg 0–10, repStep 0–3, durationStepSec 0–600, everyWeeks 1–4;
+`targetDurationSec` null or 30–3600; **id→type map from the digest**: duration types require
+duration + null reps, rep types require reps + null duration; chat `add` ≤5 × 160, `removeIds` ⊆ digest
+memory ids, `profilePatch` range-checked. Single user message for every kind (chat transcript rides
+inside the digest — no multi-turn messages).
+
+### C2.4 — Orchestrator deltas (`js/coach.js`)
+
+`sanitiseProfile` v2 (deep-merge `cardio`/`core`/`groupPrefs`); memory API
+`getMemory/addMemory/removeMemory/applyMemoryUpdates` (cap 20, dedupe);
+`storePlan` sets `lineageStart`/`baseWeek`/`planVersion`; `sendChat(thread, text)`
+(queued kind 'chat'; user message stored immediately with `pending:true`; home
+thread applies a returned `plan` only when `planChanges.length > 0`, plan thread
+always; single in-flight guard); `getCoachState` adds `currentWeek`, `projected`,
+projected `nextSession`, `memoryCount`, `recentPRs`.
+
+### C2.5 — Routes, tabs, hooks
+
+Tabs `home · log · stats · coach(hidden without key)`; default route `#/home`
+(both `ui.js` fallbacks); `#/coach/setup` → redirects to `#/coach/builder`.
+New routes: `#/home`, `#/coach/builder`, `#/coach/chat`. New files:
+`js/screens/home.js`, `js/screens/coach-shared.js`, `css/home.css`; SW v16.
+data-action: `home-last-session`, `home-stat`, `home-analyse`, `coach-chat-send`,
+`coach-chat-retry`, `coach-builder-save`, `coach-builder-build`, `coach-week` (chips,
+`data-week="N"`), `coach-ex-toggle` (expand purpose/goal), `coach-memory-remove`,
+`coach-memory-add`, `coach-open-chat`, `coach-open-builder`. Retired: `coach-regenerate`,
+`coach-edit-profile`, `coach-setup-save` (`coach-setup` now navigates to the builder).
+Every `plan.sessions` read (Coach root, plan screen, Log start choice, `#/copy/plan`,
+workout ghost override) goes through `projectedSessions`.
