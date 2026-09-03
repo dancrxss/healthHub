@@ -68,8 +68,15 @@ if (ok) {
   await evalJS(`window.confirm = () => true; document.querySelector('#s-log [data-action="start-workout"]').click()`);
   flow = await poll(`location.hash === '#/workout' && !document.getElementById('s-workout').hidden`);
 }
-console.log(ok && flow
-  ? 'PASS — server killed: app loads from SW cache AND a workout can be started offline'
-  : `FAIL — server killed: rendered=${ok} startFlow=${flow}`);
+// Coach (Phase C) is in the shell cache too: its route renders offline
+// (the no-key state) without any network.
+let coach = false;
+if (ok && flow) {
+  await evalJS(`location.hash = '#/coach'`);
+  coach = await poll(`location.hash === '#/coach' && !document.getElementById('s-coach').hidden && document.getElementById('s-coach').childElementCount > 0`);
+}
+console.log(ok && flow && coach
+  ? 'PASS — server killed: app loads from SW cache, a workout can be started offline, and #/coach renders'
+  : `FAIL — server killed: rendered=${ok} startFlow=${flow} coach=${coach}`);
 ws.close();
-process.exit(ok && flow ? 0 : 1);
+process.exit(ok && flow && coach ? 0 : 1);

@@ -397,21 +397,27 @@ async function flushPending() {
 }
 
 let initialised = false;
-/** Called once from ui.js init(); fire-and-forget. */
+/** One "is there anything to do?" pass: flush the retry slot, then the date-gated daily. */
+async function tick() {
+  if (!hasApiKey()) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  try {
+    await flushPending();
+    await runDaily();
+  } catch (e) { console.error('coach: tick failed', e); }
+}
+/**
+ * Called from ui.js init() (fire-and-forget) and again from Settings after a
+ * key is saved. Listeners are registered once; every call runs a tick, which
+ * the idempotency gates make cheap.
+ */
 export async function initCoach() {
-  if (initialised) return;
-  initialised = true;
-  const tick = async () => {
-    if (!hasApiKey()) return;
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-    try {
-      await flushPending();
-      await runDaily();
-    } catch (e) { console.error('coach: tick failed', e); }
-  };
-  if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => { tick(); });
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(); });
+  if (!initialised) {
+    initialised = true;
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => { tick(); });
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(); });
+    }
   }
   await tick();
 }

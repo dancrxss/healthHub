@@ -2,11 +2,11 @@
   "name": "healthhub",
   "version": "1.0.0",
   "private": true,
-  "description": "Gym Tracker — offline-first PWA + Capacitor iOS shell. The web code is no-build vanilla JS; npm exists only to package the native shell.",
+  "description": "Gym Tracker \u2014 offline-first PWA + Capacitor iOS shell. The web code is no-build vanilla JS; npm exists only to package the native shell.",
   "scripts": {
     "build:www": "node scripts/build-www.mjs",
     "sync:ios": "node scripts/build-www.mjs && npx cap sync ios",
-    "test": "node tests/calc.test.mjs"
+    "test": "node tests/calc.test.mjs && node tests/health.test.mjs && node tests/coach-engine.test.mjs && node tests/coach-api.test.mjs"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.0.0",

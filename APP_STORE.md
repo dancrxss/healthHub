@@ -57,10 +57,19 @@ it can be scripted from here.
 6. **App Store Connect** (https://appstoreconnect.apple.com):
    - Create the app record: bundle ID `com.dancross.gymtracker`, name "Gym
      Tracker".
-   - **App Privacy** questionnaire: answer that **no data is collected** —
-     everything lives on-device, Apple Health data is read/written locally
-     only and never leaves the phone (see `privacy.html` for the exact
-     wording to lean on).
+   - **App Privacy** questionnaire (revised 3 Sep 2026 for the Coach): the
+     developer collects **nothing** — there is no server. But the optional
+     AI Coach, once the user enters their own Anthropic API key, sends a
+     derived summary of the user's gym data (and, only behind a second
+     explicit opt-in, four derived Apple Health values) straight from the
+     device to Anthropic under the user's own account. Apple's form has no
+     clean box for "user-supplied third-party key", so the honest mapping
+     is: declare **Fitness** (and **Health & Fitness → Health** if the
+     recovery toggle ships) as *Data Not Linked to You*, *Not Used for
+     Tracking*, purpose *App Functionality*; keep everything else as "not
+     collected"; and explain the architecture in the review notes. Re-confirm
+     these answers with the Coach enabled before each submission.
+     (`privacy.html` §"AI Coach (optional)" is the wording to lean on.)
    - **Privacy Policy URL**: `https://dancrxss.github.io/healthHub/privacy.html`.
    - Add screenshots (required sizes per device class Apple lists in the
      listing form).
@@ -70,10 +79,17 @@ it can be scripted from here.
      submitting for review.
    - **Submit for review** with a reviewer note along the lines of: "HealthKit
      is used read/write, entirely on-device — no server, no account, no data
-     collection. Read data (workouts, heart rate, HRV, weight, sleep,
-     VO₂max, active energy) populates the in-app Statistics screen; write
-     access saves the user's own finished gym sessions back to Health when
-     they opt in via a Settings toggle."
+     collection by the developer. Read data (workouts, heart rate, HRV,
+     weight, sleep, VO₂max, active energy) populates the in-app Statistics
+     screen; write access saves the user's own finished gym sessions back to
+     Health when they opt in via a Settings toggle. The optional AI Coach is
+     off until the user enters their own Anthropic API key; it then sends a
+     derived summary of the user's gym data directly to Anthropic's API under
+     the user's own account. Health data is never included unless the user
+     separately enables 'Share recovery data with coach' (default off), and
+     even then only four derived values (sleep hours, HRV, resting HR,
+     weight trend) — never raw samples. The developer operates no server and
+     receives nothing (guideline 5.1.3 / 5.1.1(iii))."
 
 ## Notes
 

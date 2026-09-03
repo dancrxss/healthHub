@@ -21,9 +21,12 @@
   <link rel="stylesheet" href="css/app.css" />
   <link rel="stylesheet" href="css/screens.css" />
   <link rel="stylesheet" href="css/stats.css" />
+  <link rel="stylesheet" href="css/coach.css" />
 </head>
 <body>
   <!-- Screens: all present in the DOM, toggled by the hash router in ui.js.
+       #s-coach (Phase C) is a tab screen whose tab button stays hidden until
+       a Claude API key has been entered in Settings.
        Each is filled by its render function; JS never uses innerHTML with data.
        Tab screens (#s-log, #s-stats) show the bottom tab bar; the fullscreen
        screens (#s-workout, #s-pick, #s-settings, #s-copy, #s-routine) hide it
@@ -33,6 +36,7 @@
     <section id="s-copy" class="screen" hidden></section>
     <section id="s-routine" class="screen" hidden></section>
     <section id="s-stats" class="screen" hidden></section>
+    <section id="s-coach" class="screen" hidden></section>
     <section id="s-settings" class="screen" hidden></section>
     <section id="s-workout" class="screen" hidden></section>
     <section id="s-pick" class="screen" hidden></section>
@@ -53,6 +57,13 @@
         <path d="M6 20V10M12 20V4M18 20v-7" />
       </svg>
       <span>Statistics</span>
+    </button>
+    <button type="button" data-tab="coach" aria-label="Coach" hidden>
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4z" />
+        <path d="M5 19l.9 2 2.1.6-2.1.6L5 24l-.9-1.8L2 21.6l2.1-.6z" transform="translate(0 -4)" />
+      </svg>
+      <span>Coach</span>
     </button>
   </nav>
 

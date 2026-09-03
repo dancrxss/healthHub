@@ -76,13 +76,16 @@
 <body>
 <main>
   <h1>Privacy Policy</h1>
-  <p class="subtitle">Gym Tracker · effective 31 July 2026</p>
+  <p class="subtitle">Gym Tracker · effective 3 September 2026</p>
 
   <div class="card">
     <p><strong>In short:</strong> Gym Tracker stores your workout data only on
-    your own device. There is no account, no server, no analytics and no
-    advertising. If you connect Apple Health, that data is read with your
-    permission, stays on your device, and is never uploaded anywhere.</p>
+    your own device. There is no account, no server of ours, no analytics and
+    no advertising. If you connect Apple Health, that data is read with your
+    permission and stays on your device. The optional AI Coach, which you
+    switch on by entering your own Anthropic API key, sends a summary of your
+    gym data to Anthropic under your own account — and never your Apple Health
+    data unless you separately turn that on.</p>
   </div>
 
   <h2>Who this is from</h2>
@@ -126,8 +129,40 @@
     <li>No account or sign-in of any kind.</li>
     <li>No analytics, tracking or crash-reporting services.</li>
     <li>No advertising, and no data is sold or shared with advertisers.</li>
-    <li>No cloud sync or backend server at all — everything described above
-    is on-device only.</li>
+    <li>No cloud sync and no backend server of our own — we operate no
+    servers and receive none of your data. The only network use is the
+    optional AI Coach described below, which talks directly to Anthropic
+    using a key you supply.</li>
+  </ul>
+
+  <h2>AI Coach (optional)</h2>
+  <p>The Coach is off until you enter your own Anthropic API key in Settings.
+  It writes a short daily summary of your training, reviews each session you
+  finish, and keeps a return-to-training plan up to date. To do that, the app
+  sends a request from your device directly to Anthropic's Claude API
+  (api.anthropic.com), authenticated with your key and billed to your own
+  Anthropic account.</p>
+  <ul>
+    <li><strong>What is sent:</strong> a derived summary of your gym data —
+    weekly set counts per muscle group, per-exercise progress figures
+    (weights, reps, estimated one-rep max), the sets from the session just
+    finished, and the short profile you type in (goal, training days, any
+    injury or equipment notes). Not your full history, and nothing about who
+    you are.</li>
+    <li><strong>Apple Health is excluded by default.</strong> Only if you also
+    switch on "Share recovery data with coach" in Settings will four derived
+    values be added: last night's sleep duration, heart-rate variability,
+    resting heart rate and your body-weight trend. Raw Health samples are
+    never sent under any setting.</li>
+    <li><strong>Your key</strong> is stored only on your device and is sent
+    only to Anthropic, as the authentication header of those requests. We
+    never see it.</li>
+    <li>Anthropic processes these requests under its own terms and privacy
+    policy (<a href="https://www.anthropic.com/legal/privacy">anthropic.com/legal/privacy</a>).
+    We receive nothing — the reply comes straight back to your device and is
+    stored there.</li>
+    <li>Removing the key in Settings turns the Coach off entirely; "Clear
+    coach data" deletes every summary and plan it produced.</li>
   </ul>
 
   <h2>Data you import</h2>
@@ -138,8 +173,8 @@
 
   <h2>Children</h2>
   <p>Gym Tracker is a general-purpose fitness tracker, not directed at
-  children, and collects no personal data from anyone since nothing leaves
-  the device in the first place.</p>
+  children, and collects no personal data from anyone — the developer
+  operates no service that could receive any.</p>
 
   <h2>Changes to this policy</h2>
   <p>If this policy changes, the effective date above will be updated. Since

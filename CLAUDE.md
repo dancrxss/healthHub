@@ -297,6 +297,9 @@ App Store pivot (see "Direction change" below).*
   stays no-build vanilla JS and must keep working as a plain PWA. HealthKit
   access is a custom Swift `CAPPlugin` in the shell, reached from JS via
   `window.Capacitor.Plugins.HealthKit` (feature-detected; absent in the PWA).
+  **Coach (3 Sep 2026):** the Claude API is called with raw `fetch` from
+  `js/coach-api.js` — the Anthropic SDK is explicitly excluded by the
+  no-dependencies rule. Model pinned to `claude-sonnet-5`; no model picker.
   A standalone Node script (`import-repcount.js`) for the one-off RepCount CSV
   import may use Node built-ins plus a CSV parser. **No Azure / no sync
   backend** — cancelled 31 Jul 2026 (`js/sync.js` stub is dormant, leave it).
@@ -333,13 +336,31 @@ App Store pivot (see "Direction change" below).*
     (cardio sets likewise).
   - 1RM estimate uses Epley: `w × (1 + reps/30)`.
   - Stored entities are Exercise / Workout / Set / Template **plus HealthSample
-    (31 Jul 2026)** — raw Apple Health samples keyed by their HealthKit UUID.
-    Everything else is **derived, never stored**.
-  - **Health data never leaves the device.** No upload, no analytics, no
-    third-party sharing, no iCloud storage of health data — both an App Review
-    guideline (5.1.3) and a product promise. Any future feature that would
-    move health data off-device needs an explicit, separate, default-off
-    consent AND Dan's sign-off first.
+    (31 Jul 2026)** — raw Apple Health samples keyed by their HealthKit UUID —
+    **plus CoachPlan and CoachInsight (3 Sep 2026, DB v3)**: the coach's plans
+    (new record per revision) and its stored daily/session outputs, keyed
+    deterministically so re-runs upsert. Everything else is **derived, never
+    stored**.
+  - **Gym data leaves the device only through the user's own Claude API key.**
+    The Coach (`js/coach.js`, `js/coach-api.js`) posts a derived digest of
+    workouts/sets/exercises to `api.anthropic.com` using a key the user enters
+    in Settings. No key ⇒ no network call and the Coach tab is hidden. The key
+    is stored on-device only (localStorage `coach.apiKey`), sent nowhere except
+    as the `x-api-key` header, and never logged. Changing the model, the digest
+    contents, or the endpoint is a flagged change.
+  - **Health data never leaves the device — with one consented exception.**
+    No upload, no analytics, no third-party sharing, no iCloud storage of
+    health data — both an App Review guideline (5.1.3) and a product promise.
+    Any feature that would move health data off-device needs an explicit,
+    separate, default-off consent AND Dan's sign-off first. **That consent now
+    exists (signed off by Dan, 3 Sep 2026):** meta `coach.shareRecovery`,
+    default off by absence, Settings → Coach → "Share recovery data with
+    coach". When off — including when never set — no health-derived value
+    appears in any request. When on, exactly four derived values leave the
+    device inside the coach digest: last night's sleep hours, HRV (+ 30-day
+    baseline), resting heart rate (+ baseline), body weight (+ 30-day trend).
+    Raw HealthKit samples never leave under any setting. Adding a fifth value
+    is a flagged change.
   - **HealthKit scope stays minimal.** Read: workouts, heart rate, resting HR,
     HRV (SDNN), VO₂max, body mass, body fat %, sleep analysis, active energy.
     Write: workouts (+ active energy) only. Adding a type to either list is a
@@ -372,3 +393,6 @@ App Store pivot (see "Direction change" below).*
   - **Out of scope** (31 Jul 2026): MCP server code, Azure provisioning, cloud
     sync of any kind, auth/accounts, Android (Capacitor makes it possible
     later; not now), social features, templates CRUD UI beyond routines.
+    **Coach out of scope (3 Sep 2026):** streaming, chatting with the coach,
+    a model picker, inventing exercises not in the library, web search,
+    native background refresh / notifications, any server component.

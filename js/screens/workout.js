@@ -14,8 +14,10 @@
 import {
   getWorkout, putWorkout, deleteWorkout,
   listSetsForWorkout, putSet, getSet, deleteSet,
-  listExercises, listSetsForExercise,
+  listExercises, listSetsForExercise, getCoachPlan,
 } from '../db.js';
+import { planRefSets } from '../coach-engine.js';
+import { onWorkoutFinished } from '../coach.js';
 import { getPRs, getLastSession } from '../queries.js';
 import * as timer from '../timer.js';
 import { nowISO } from '../util.js';
@@ -205,6 +207,18 @@ export async function renderWorkoutScreen(workoutId) {
     const last = await getLastSession(id);
     lastByEx.set(id, last && last.workout.id !== workout.id ? last.sets : null);
   }));
+  // Planned session (Phase C): the plan's targets replace last session's sets
+  // as the placeholders, so typing reps autofills the PLAN weight. Marked
+  // fromPlan so the card can show a chip — a silent swap would read as a bug.
+  if (workout.planSessionId && workout.planId) {
+    const plan = await getCoachPlan(workout.planId);
+    const ps = plan && (plan.sessions || []).find((x) => x.id === workout.planSessionId);
+    for (const pe of (ps ? ps.exercises : [])) {
+      const refs = planRefSets(pe);
+      refs.fromPlan = true;
+      lastByEx.set(pe.exerciseId, refs);
+    }
+  }
 
   const children = [
     buildHeader(workout, isActive),
@@ -306,6 +320,9 @@ function finishFlow(workout) {
           .then((sets) => saveWorkoutToHealth({ ...workout, finishedAt }, sets))
           .catch((err) => console.error('workout: saveWorkoutToHealth failed', err));
       }
+      // Coach (Phase C): session feedback + plan revision. Same rules — a
+      // no-op without an API key, never awaited, never throws.
+      onWorkoutFinished(workout.id);
       setCurrent(null);
       go('#/log');
     },
@@ -478,6 +495,7 @@ function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, lastByE
 
   card.append(h('div', { class: 'ex-card-head' },
     h('div', { class: 'ex-name', text: name }),
+    refSets && refSets.fromPlan ? h('span', { class: 'ex-plan-chip', text: 'Plan', title: 'Placeholders are your plan targets' }) : null,
     selectBar,
     h('button', {
       class: 'ex-menu', 'aria-label': 'Exercise menu', type: 'button',

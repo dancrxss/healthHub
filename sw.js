@@ -1,7 +1,7 @@
 // Service worker: precache the app shell, cache-first. Bump CACHE_VERSION in
 // the same commit as any change to cached asset patterns or request/response
 // shapes (CLAUDE.md §3).
-const CACHE_VERSION = 'v14';
+const CACHE_VERSION = 'v15';
 const CACHE_NAME = `healthhub-${CACHE_VERSION}`;
 
 const SHELL = [
@@ -12,6 +12,7 @@ const SHELL = [
   './css/app.css',
   './css/screens.css',
   './css/stats.css',
+  './css/coach.css',
   './js/util.js',
   './js/motion.js',
   './js/swipe.js',
@@ -25,6 +26,9 @@ const SHELL = [
   './js/health.js',
   './js/calc.js',
   './js/queries.js',
+  './js/coach-engine.js',
+  './js/coach-api.js',
+  './js/coach.js',
   './js/sync.js',
   './js/seed.js',
   './js/timer.js',
@@ -35,6 +39,7 @@ const SHELL = [
   './js/screens/routines.js',
   './js/screens/stats.js',
   './js/screens/settings.js',
+  './js/screens/coach.js',
   './icons/icon.svg',
 ];
 
@@ -55,6 +60,10 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  // The Coach talks to the Claude API directly (POST today); never let a
+  // cross-origin API response — of any method — be served from or written to
+  // the shell cache.
+  if (new URL(event.request.url).hostname === 'api.anthropic.com') return;
   event.respondWith(
     caches.match(event.request, { ignoreSearch: true }).then(
       (cached) =>

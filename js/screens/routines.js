@@ -6,6 +6,7 @@
 //   #/copy                  categories: Routines · Previous Sessions
 //   #/copy/routines         saved routines (user-created only — nothing seeded)
 //   #/copy/sessions         finished workouts, newest first
+//   #/copy/plan             sessions of the current Coach plan (Phase C)
 //   #/routine/new           blank editor
 //   #/routine/from/:id      editor prefilled from a workout's skeleton
 //   #/routine/:id           edit an existing routine
@@ -19,8 +20,9 @@
 
 import {
   listTemplates, getTemplate, putTemplate, deleteTemplate,
-  listExercises, listWorkouts, listSetsForWorkout, getWorkout, putSet,
+  listExercises, listWorkouts, listSetsForWorkout, getWorkout, putSet, putWorkout,
 } from '../db.js';
+import { coachEnabled, getCurrentPlan } from '../coach.js';
 import { uid } from '../util.js';
 import {
   h, Icon, go,
@@ -46,6 +48,17 @@ export function skeletonFromTemplate(template) {
   return (template.entries || []).map((e) => ({
     exerciseId: e.exerciseId,
     sets: Math.max(1, Number(e.targetSets) || 1),
+  }));
+}
+
+/**
+ * The skeleton of a Coach plan session — a mirror of skeletonFromTemplate.
+ * @returns {Array<{exerciseId: string, sets: number}>}
+ */
+export function skeletonFromPlanSession(planSession) {
+  return ((planSession && planSession.exercises) || []).map((e) => ({
+    exerciseId: e.exerciseId,
+    sets: Math.max(1, Math.min(8, Number(e.targetSets) || 1)),
   }));
 }
 
@@ -108,13 +121,17 @@ export async function renderCopyPicker(parts) {
 
   if (group === 'routines') { await renderRoutineList(screen, workout); return; }
   if (group === 'sessions') { await renderSessionList(screen, workout); return; }
+  if (group === 'plan') { await renderPlanList(screen, workout); return; }
 
-  const [templates, sessions] = await Promise.all([listTemplates(), listWorkouts('0000')]);
+  const [templates, sessions, plan] = await Promise.all([
+    listTemplates(), listWorkouts('0000'), coachEnabled() ? getCurrentPlan() : null,
+  ]);
   const finished = sessions.filter((w) => w.finishedAt && w.id !== workout.id);
 
   screen.replaceChildren(
     copyHeader('Copy Routine', '#/workout'),
     h('div', { class: 'pick-list' },
+      plan ? catRow('From Plan', `${(plan.sessions || []).length} sessions`, () => go('#/copy/plan')) : null,
       catRow('Routines', `${templates.length} saved`, () => go('#/copy/routines')),
       catRow('Previous Sessions', `${finished.length} logged`, () => go('#/copy/sessions')),
     ),
@@ -215,6 +232,50 @@ async function renderSessionList(screen, workout) {
   }
 
   screen.replaceChildren(copyHeader('Previous Sessions', '#/copy'), list);
+  stagger(list.children, 'anim-card-settle');
+}
+
+// ---- plan sessions list (Phase C) -----------------------------------------
+async function renderPlanList(screen, workout) {
+  const [plan, exercises] = await Promise.all([coachEnabled() ? getCurrentPlan() : null, listExercises()]);
+  const exMap = new Map(exercises.map((e) => [e.id, e]));
+  const list = h('div', { class: 'pick-list' });
+  const sessions = plan ? (plan.sessions || []) : [];
+
+  if (!sessions.length) {
+    list.append(h('p', { class: 'pick-empty muted', text: 'No plan yet. Set one up from the Coach tab.' }));
+  } else {
+    for (const ps of sessions) {
+      const names = (ps.exercises || []).map((e) => (exMap.get(e.exerciseId) || {}).name).filter(Boolean);
+      const row = h('div', { class: 'pick-row copy-row', 'data-plan-session-id': ps.id, role: 'button', tabindex: '0' },
+        h('span', { class: 'pick-row-main' },
+          h('span', { class: 'pick-row-name', text: ps.name }),
+          h('span', { class: 'pick-row-sub', text: summarise(names, (ps.exercises || []).length) }),
+        ),
+        h('span', { class: 'pick-row-chev' }, Icon('chevron')),
+      );
+      const use = async () => {
+        const added = await applySkeleton(workout, skeletonFromPlanSession(ps));
+        if (added) {
+          // Tag the workout so its placeholders become the plan's targets —
+          // the same behaviour as starting the session from the Log tab.
+          const fresh = await getWorkout(workout.id);
+          await putWorkout({ ...fresh, planId: plan.id, planSessionId: ps.id });
+          go('#/workout');
+        } else {
+          openSheet(h('div', {},
+            sheetHeader('Nothing to add', { onClose: () => closeSheet() }),
+            h('p', { class: 'sheet-message muted', text: `Every exercise in "${ps.name}" is already in this workout.` }),
+          ));
+        }
+      };
+      row.addEventListener('click', use);
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); use(); } });
+      list.append(row);
+    }
+  }
+
+  screen.replaceChildren(copyHeader('From Plan', '#/copy'), list);
   stagger(list.children, 'anim-card-settle');
 }
 

@@ -9,7 +9,7 @@
 // ============================================================================
 
 import {
-  putWorkout, getWorkout, listWorkouts, putSet, getExercise,
+  putWorkout, getWorkout, listWorkouts, putSet, getExercise, getMeta,
 } from './db.js';
 import { seedIfEmpty } from './seed.js';
 import * as timer from './timer.js';
@@ -18,6 +18,7 @@ import { EXERCISE_TYPE_GROUPS, blankSet } from './exercise-types.js';
 import { playOnce, motionOK } from './motion.js';
 import { closeOpenSwipe } from './swipe.js';
 import { initHealth } from './health.js';
+import { initCoach, coachEnabled, onCoachUpdate } from './coach.js';
 
 import { renderWorkoutScreen } from './screens/workout.js';
 import { renderPick } from './screens/picker.js';
@@ -25,6 +26,7 @@ import { renderLogTab } from './screens/log.js';
 import { renderCopyPicker, renderRoutineEditor } from './screens/routines.js';
 import { renderStats } from './screens/stats.js';
 import { renderSettings } from './screens/settings.js';
+import { renderCoach } from './screens/coach.js';
 
 // ----------------------------------------------------------------------------
 // Constants
@@ -40,13 +42,14 @@ let screenCleanup = null; // per-screen teardown (e.g. the elapsed ticker)
 const screens = {
   log: document.getElementById('s-log'),
   stats: document.getElementById('s-stats'),
+  coach: document.getElementById('s-coach'),
   settings: document.getElementById('s-settings'),
   workout: document.getElementById('s-workout'),
   pick: document.getElementById('s-pick'),
   copy: document.getElementById('s-copy'),
   routine: document.getElementById('s-routine'),
 };
-const TABS = ['log', 'stats'];
+const TABS = ['log', 'stats', 'coach']; // coach is hidden until an API key exists (refreshCoachTab)
 
 // ----------------------------------------------------------------------------
 // Tiny DOM builder (hyperscript). No innerHTML anywhere.
@@ -280,6 +283,37 @@ export async function startWorkout(template = null) {
   go('#/workout');
 }
 
+/**
+ * Start a workout from a Coach plan session (Phase C). The workout is tagged
+ * with planId/planSessionId so the workout screen shows the plan's targets as
+ * the grey placeholders; each exercise gets targetSets blank sets up front.
+ * Values still commit through the normal typing/autofill flow — nothing is
+ * logged that wasn't done.
+ */
+export async function startPlannedWorkout(plan, planSession) {
+  const exercises = (planSession && planSession.exercises) || [];
+  const entries = exercises.map((e) => ({ exerciseId: e.exerciseId, supersetGroup: null, note: e.note || null }));
+  const w = await putWorkout({
+    id: uid(),
+    date: todayISO(),
+    startedAt: nowISO(),
+    finishedAt: null,
+    templateId: null,
+    name: planSession ? planSession.name : null,
+    bodyweightKg: null,
+    notes: null,
+    entries,
+    planId: plan ? plan.id : null,
+    planSessionId: planSession ? planSession.id : null,
+  });
+  for (const e of exercises) {
+    const n = Math.max(1, Math.min(8, Number(e.targetSets) || 1));
+    for (let i = 1; i <= n; i += 1) await createInitialSet(w.id, e.exerciseId, i);
+  }
+  setCurrent(w.id);
+  go('#/workout');
+}
+
 // ----------------------------------------------------------------------------
 // Bottom-sheet infrastructure. Sheets stack: closeSheet() pops the topmost, so a
 // menu can open a confirm/sub-sheet on top of itself. Tapping the backdrop or
@@ -444,6 +478,18 @@ function setActiveTab(tab) {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   }
 }
+/**
+ * Show the Coach tab only when an API key exists (Phase C). Synchronous on
+ * purpose — the key lives in localStorage so the router never awaits this.
+ * Also paints the unread dot the orchestrator sets after a coach call.
+ */
+export function refreshCoachTab(unread = null) {
+  const btn = document.querySelector('#tabbar button[data-tab="coach"]');
+  if (!btn) return;
+  btn.hidden = !coachEnabled();
+  if (unread !== null) btn.classList.toggle('has-unread', !!unread);
+}
+
 /** Registered by a screen to tear down timers when the route changes. */
 export function setScreenCleanup(fn) {
   screenCleanup = fn;
@@ -476,6 +522,9 @@ async function route() {
     if (tab) {
       showScreen(tab);
       if (tab === 'log') await renderLogTab();
+      // Coach owns its sub-routes too (#/coach/balance, #/coach/session/:id,
+      // #/coach/plan …); reachable by URL even with the tab button hidden.
+      else if (tab === 'coach') await renderCoach(parts.slice(1));
       // Stats owns its sub-routes (#/stats/exercises, #/stats/exercise/:id,
       // #/stats/category/:g, #/stats/overall/:metric …) — tab bar stays up.
       else await renderStats(parts.slice(1));
@@ -638,6 +687,12 @@ async function init() {
   // Apple Health (native shell only — a guarded no-op in the PWA). Not awaited:
   // startup must never block on HealthKit.
   initHealth().catch((e) => console.error('health init failed', e));
+  // Coach (Phase C): hidden without an API key; the daily summary runs in the
+  // background on the first open of a day. Never awaited.
+  const paintCoachTab = () => getMeta('coach.unreadAt').then((u) => refreshCoachTab(!!u)).catch(() => refreshCoachTab());
+  paintCoachTab();
+  onCoachUpdate(paintCoachTab); // unread dot after a coach call; hide/show after a key change
+  initCoach().catch((e) => console.error('coach init failed', e));
   timer.bind({ tick: onTimerTick, done: onTimerDone });
 
   for (const btn of document.querySelectorAll('#tabbar button')) {

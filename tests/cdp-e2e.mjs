@@ -183,7 +183,8 @@ try {
   await poll('app boots to #/log', `location.hash === '#/log' && !document.getElementById('s-log').hidden`, 12000);
   const seedCount = await poll('seed exercises loaded', `import('./js/db.js').then(m => m.listExercises()).then(l => l.length)`);
   check('seed: 61 exercises seeded on fresh install (55 strength + 6 cardio)', seedCount === 61, `got ${seedCount}`);
-  check('shell: tab bar has 2 tabs (Routines folded into Copy Routine)', (await count('#tabbar button')) === 2, `got ${await count('#tabbar button')}`);
+  check('shell: tab bar has 3 tab buttons (Log, Statistics, Coach)', (await count('#tabbar button')) === 3, `got ${await count('#tabbar button')}`);
+  check('shell: Coach tab is hidden until an API key exists', await evalJS(`document.querySelector('#tabbar button[data-tab="coach"]').hidden === true`));
   check('log: empty state has no month groups yet', (await count('#s-log .month-group')) === 0, `got ${await count('#s-log .month-group')}`);
 
   // --- 2. Tab switching: each tab shows its screen, hides the rest ---
@@ -192,7 +193,7 @@ try {
   for (const tab of TABS) {
     await clickSel(`tab ${tab}`, `#tabbar button[data-tab="${tab}"]`);
     await poll(`${tab} screen visible`, `!document.getElementById('s-${tab}').hidden`);
-    const othersHidden = await evalJS(`['log','stats','settings'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
+    const othersHidden = await evalJS(`['log','stats','coach','settings'].filter(t => t !== ${J(tab)}).every(t => document.getElementById('s-'+t).hidden)`);
     if (!othersHidden) { tabsOk = false; tabDetail = `others not hidden on ${tab}`; }
   }
   check('tabs: switching shows one screen and hides the others', tabsOk, tabDetail);
@@ -905,6 +906,101 @@ try {
   check('swipe: tapping Delete removes the set',
     await poll('back to one set row', `document.querySelectorAll('.ex-card[data-exercise-id="${before[1]}"] .set-row').length === 1`));
   await finishActiveWorkout();
+
+  // --- 15f. Coach (Phase C): plan-driven ghost sets, start choice, finish hook
+  // No network: fetch is stubbed to fail like a dead connection, so the only
+  // observable side effect of the finish hook is the queued retry slot.
+  await evalJS(`(async () => {
+    window.__realFetch = window.fetch;
+    window.fetch = async () => { throw new TypeError('offline (e2e stub)'); };
+    localStorage.setItem('coach.apiKey', 'sk-ant-e2e-not-a-real-key');
+    const db = await import('./js/db.js');
+    const ui = await import('./js/ui.js');
+    await db.setMeta('coach.profile', { version: 1, updatedAt: new Date().toISOString(), injuryNotes: 'e2e', goal: 'return-from-injury', daysPerWeek: 3, sessionMinutes: 60, equipmentNotes: null, returnDate: null, avoidExerciseIds: [] });
+    await db.putCoachPlan({ id: 'plan-e2e', version: 1, createdAt: new Date().toISOString(), source: 'manual', basedOnWorkoutId: null, rationale: 'e2e fixture', weeks: 4,
+      sessions: [
+        { id: 'ps-1', order: 1, name: 'Upper A', focus: 'push', exercises: [
+          { exerciseId: ${J(BBP)}, targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 60, targetRpe: 7, note: null },
+          { exerciseId: ${J(TRI_PUSHDOWN)}, targetSets: 2, targetRepsLow: 10, targetRepsHigh: 12, targetWeightKg: 25, targetRpe: 8, note: 'slow eccentric' } ] },
+        { id: 'ps-2', order: 2, name: 'Lower A', focus: null, exercises: [
+          { exerciseId: ${J(CABLE_FLY)}, targetSets: 3, targetRepsLow: 10, targetRepsHigh: 12, targetWeightKg: 15, targetRpe: null, note: null } ] },
+      ] });
+    await db.setMeta('coach.currentPlanId', 'plan-e2e');
+    ui.refreshCoachTab();
+    return true;
+  })()`);
+  check('coach: tab button appears once a key exists', await poll('coach tab visible', `document.querySelector('#tabbar button[data-tab="coach"]').hidden === false`));
+  await clickSel('open coach tab', '#tabbar button[data-tab="coach"]');
+  await poll('coach route', `location.hash === '#/coach' && !document.getElementById('s-coach').hidden`);
+  check('coach: next-session card renders the seeded plan with a Start button',
+    await poll('coach start button', `document.querySelector('#s-coach [data-action="coach-start-session"]') != null`));
+  check('coach: next session names Upper A', await evalJS(`document.getElementById('s-coach').textContent.includes('Upper A')`));
+  await clickSel('start planned session', '#s-coach [data-action="coach-start-session"]');
+  await poll('planned workout up', `location.hash === '#/workout' && document.querySelector('.ex-card[data-exercise-id=${J(BBP)}]') != null`);
+  check('coach: planned session pre-creates targetSets blank rows (3 for bench)',
+    await poll('three bench rows', `document.querySelectorAll(${J(bbpCard + ' .set-row')}).length === 3`));
+  check('coach: 2 rows for the second exercise', (await count(`.ex-card[data-exercise-id="${TRI_PUSHDOWN}"] .set-row`)) === 2);
+  check('coach: plan chip marks the swapped placeholders', await exists(`${bbpCard} .ex-plan-chip`));
+  const ghost = await evalJS(`(() => {
+    const row = document.querySelectorAll(${J(bbpCard + ' .set-row')})[0];
+    return { w: row.querySelector('input[data-field="weight"]').placeholder, r: row.querySelector('input[data-field="reps"]').placeholder,
+             v: row.querySelector('input[data-field="weight"]').value };
+  })()`);
+  check('coach: ghost placeholders are the PLAN targets (60 kg × 8), inputs still empty',
+    ghost && ghost.w === '60' && ghost.r === '8' && ghost.v === '', JSON.stringify(ghost));
+  check('coach: workout record is tagged with the plan session', await evalJS(`(async () => {
+    const db = await import('./js/db.js');
+    const w = await db.getWorkout(localStorage.getItem('currentWorkoutId'));
+    return w.planId === 'plan-e2e' && w.planSessionId === 'ps-1' && w.name === 'Upper A';
+  })()`));
+  await setField('reps only (plan autofill)', bbpCard, 0, 'reps', 8);
+  const planFilled = await poll('plan weight autofilled', `(async () => {
+    const db = await import('./js/db.js');
+    const s = (await db.listSetsForWorkout(localStorage.getItem('currentWorkoutId'))).filter((x) => x.exerciseId === ${J(BBP)}).sort((a, b) => a.setNumber - b.setNumber);
+    return s[0] && s[0].reps === 8 && s[0].weightKg === 60;
+  })()`);
+  check('coach: typing reps autofills the plan weight (60 kg) with no extra tap', planFilled);
+  // Copy Routine now offers the plan too.
+  await clickSel('copy routine (plan check)', '#s-workout [data-action="copy-routine"]');
+  await poll('copy picker', `location.hash === '#/copy'`);
+  check('coach: Copy Routine lists From Plan when a plan exists', await poll('from-plan row', `document.querySelector('#s-copy [data-copy-cat="from"]') != null`));
+  await evalJS(`(() => { location.hash = '#/workout'; return true; })()`);
+  await poll('back on workout', `location.hash === '#/workout'`);
+  const plannedId = await evalJS(`localStorage.getItem('currentWorkoutId')`);
+  await finishActiveWorkout();
+  check('coach: finishing a planned workout queues session feedback while offline',
+    await poll('pending session slot', `(async () => {
+      const db = await import('./js/db.js');
+      const p = await db.getMeta('coach.pending');
+      return !!p && p.kind === 'session' && p.workoutId === ${J(plannedId)};
+    })()`, 10000));
+  check('coach: no insight was stored from the failed call', await evalJS(`(async () => (await (await import('./js/db.js')).getCoachInsight('session-' + ${J(plannedId)})) === undefined)()`));
+  // The Log + now asks: planned session or empty workout. Next planned session should be Lower A.
+  await clickSel('log +, with a plan', '#s-log [data-action="start-workout"]');
+  check('coach: start choice sheet offers planned + empty', await poll('start choice sheet', `document.querySelector('#sheet-root [data-action="start-planned"]') != null && document.querySelector('#sheet-root [data-action="start-empty"]') != null`));
+  check('coach: next planned session rotates to Lower A', await evalJS(`document.querySelector('#sheet-root [data-action="start-planned"]').textContent.includes('Lower A')`));
+  await clickSel('choose empty workout', '#sheet-root [data-action="start-empty"]');
+  await poll('empty workout up', `location.hash === '#/workout' && !document.getElementById('s-workout').hidden`);
+  check('coach: empty choice starts an untagged workout with no cards', await evalJS(`(async () => {
+    const db = await import('./js/db.js');
+    const w = await db.getWorkout(localStorage.getItem('currentWorkoutId'));
+    return !w.planSessionId && document.querySelectorAll('#s-workout .ex-card').length === 0;
+  })()`));
+  // Cleanup: remove the empty workout, clear coach data + key, restore fetch.
+  await evalJS(`(async () => {
+    const db = await import('./js/db.js');
+    const ui = await import('./js/ui.js');
+    await db.deleteWorkout(localStorage.getItem('currentWorkoutId'));
+    ui.setCurrent(null);
+    await db.clearCoachData();
+    localStorage.removeItem('coach.apiKey');
+    ui.refreshCoachTab();
+    window.fetch = window.__realFetch;
+    location.hash = '#/log';
+    return true;
+  })()`);
+  await poll('back on log after coach walk', `location.hash === '#/log'`);
+  check('coach: tab hides again once the key is removed', await poll('coach tab hidden', `document.querySelector('#tabbar button[data-tab="coach"]').hidden === true`));
 
   // --- 16. No uncaught exceptions / console errors across the whole walk ---
   check('pwa: no uncaught exceptions or console errors during the walk', jsErrors.length === 0, jsErrors.join(' | '));

@@ -12,9 +12,11 @@ import { listExercises, deleteWorkout } from '../db.js';
 import { getRecentWorkouts } from '../queries.js';
 import {
   h, Icon, go, gearButton, confirmSheet,
-  currentWorkout, getEntries, displayName, startWorkout,
+  currentWorkout, getEntries, displayName, startWorkout, startPlannedWorkout,
+  openSheet, closeSheet, sheetHeader, sheetGroup, sheetRow,
 } from '../ui.js';
 import { swipeRow } from '../swipe.js';
+import { coachEnabled, getCoachState } from '../coach.js';
 
 const MONTH_FORMAT = { month: 'long', year: 'numeric' };
 const WEEKDAY_FORMAT = { weekday: 'short' };
@@ -39,7 +41,7 @@ export async function renderLogTab() {
         h('button', {
           class: 'round-btn tab-head-btn', 'data-action': 'start-workout', type: 'button',
           'aria-label': active ? 'Resume workout' : 'Start workout',
-          onclick: () => (active ? go('#/workout') : startWorkout()),
+          onclick: () => (active ? go('#/workout') : startChoice()),
         }, Icon('plus')),
         gearButton(),
       ),
@@ -53,6 +55,36 @@ export async function renderLogTab() {
   }
 
   screen.replaceChildren(h('div', { class: 'tab-screen' }, ...children));
+}
+
+// ---- start: planned session or empty workout ------------------------------
+// Without a Coach plan the + button starts an empty workout exactly as before
+// (synchronously — the e2e suite and the ≤2-tap promise both rely on it).
+// With a plan it offers the next planned session first.
+async function startChoice() {
+  if (!coachEnabled()) { startWorkout(); return; }
+  let state = null;
+  try { state = await getCoachState(); } catch (e) { console.error('log: coach state', e); }
+  const plan = state && state.plan;
+  const session = state && state.nextSession;
+  if (!plan || !session) { startWorkout(); return; }
+  const lines = (session.exercises || []).map((e) => `${e.targetSets} × ${e.targetRepsLow}–${e.targetRepsHigh}`);
+  openSheet(h('div', {},
+    sheetHeader('Start workout', { onClose: () => closeSheet() }),
+    sheetGroup(
+      sheetRow({
+        label: `Planned session · ${session.name}`,
+        sub: `${(session.exercises || []).length} exercises · ${lines.length ? lines.join(', ') : '—'}`,
+        icon: Icon('star'), action: 'start-planned', chevron: true,
+        onClick: () => { closeSheet(); startPlannedWorkout(plan, session); },
+      }),
+      sheetRow({
+        label: 'Empty workout', sub: 'Add exercises as you go',
+        icon: Icon('plus'), action: 'start-empty', chevron: true,
+        onClick: () => { closeSheet(); startWorkout(); },
+      }),
+    ),
+  ));
 }
 
 // ---- month grouping ------------------------------------------------------

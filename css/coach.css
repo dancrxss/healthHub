@@ -1,0 +1,306 @@
+/* ============================================================================
+   css/coach.css — the Coach tab (#s-coach) and its sub-screens.
+
+   Everything here is either a `coach-` prefixed class or a rule scoped under
+   #s-coach, so nothing leaks into the Log/Statistics screens. The shared
+   chrome is reused rather than re-cut: .tab-screen / .tab-head / .tab-card for
+   the summary screen, .pick-head for the sub-screen back headers, .vol-row-*
+   for the balance bars, .bar-* for the weekly mini chart, .settings-row for
+   label/value pairs and .sheet-* for the "About you" sheet.
+   ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+   Screens
+   ---------------------------------------------------------------------------- */
+.coach-screen .tab-head { margin-bottom: 8px; }
+
+/* Sub-screens (balance / session / plan / history). The sticky .pick-head
+   already carries the safe-area inset, so only the bottom pads here. */
+.coach-sub-screen { padding: 0 0 24px; }
+.coach-body-wrap { padding: 0 14px; }
+.coach-body-wrap > .tab-card:last-of-type { margin-bottom: 12px; }
+
+/* ----------------------------------------------------------------------------
+   Cards and type
+   ---------------------------------------------------------------------------- */
+.coach-card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+button.coach-card { cursor: pointer; }
+
+.coach-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.coach-label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.coach-card-head .coach-label { margin-bottom: 0; }
+
+.coach-card-title {
+  font-size: 17px; font-weight: 700; color: var(--text);
+  line-height: 1.3;
+}
+.coach-sub { font-size: 13px; margin-top: 2px; }
+.coach-stale { font-size: 12.5px; margin: 2px 0 6px; }
+
+.coach-headline {
+  font-size: 16px; font-weight: 700; color: var(--text);
+  line-height: 1.35;
+  margin: 4px 0 6px;
+}
+.coach-body {
+  font-size: 15px; line-height: 1.45; color: var(--text);
+  margin: 0 0 8px;
+}
+.coach-card > .coach-body:last-child { margin-bottom: 0; }
+
+.coach-note { font-size: 12.5px; line-height: 1.4; margin: 10px 0 0; }
+.coach-empty { font-size: 15px; margin: 4px 0 0; }
+
+/* The one line of advice for today — tinted so it reads as the takeaway. */
+.coach-advice {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(78, 205, 214, 0.1);
+  color: var(--text);
+  font-size: 14.5px; line-height: 1.4;
+}
+
+/* ----------------------------------------------------------------------------
+   Buttons
+   ---------------------------------------------------------------------------- */
+.coach-btn-primary {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 14px;
+  padding: 13px 16px;
+  border: 0; border-radius: 14px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 16px; font-weight: 700;
+  cursor: pointer;
+  transition: opacity var(--dur-press, 0.1s) ease-out, transform var(--dur-press, 0.1s) ease-out;
+}
+.coach-btn-primary:active { opacity: 0.7; transform: scale(0.98); }
+.coach-btn-primary:disabled { opacity: 0.55; transform: none; }
+
+/* A quiet text link — "View whole plan", "Regenerate…", "Dismiss". */
+.coach-text-btn {
+  border: 0; background: none; color: var(--accent);
+  font-size: 14px; font-weight: 600;
+  padding: 8px 2px; min-height: 40px;
+  cursor: pointer;
+}
+.coach-text-btn:active { opacity: 0.6; }
+
+.coach-link-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  width: 100%; min-height: 44px;
+  margin-top: 4px;
+  padding: 10px 0 0;
+  border: 0; background: none; color: var(--accent);
+  font-size: 14.5px; font-weight: 600; text-align: left;
+  cursor: pointer;
+}
+.coach-link-row:active { opacity: 0.6; }
+.coach-link-chev { display: inline-flex; color: var(--faint); }
+.coach-link-chev svg { width: 18px; height: 18px; }
+
+.coach-inline-msg { font-size: 13px; margin: 6px 0 0; line-height: 1.4; }
+.coach-inline-msg.danger { color: var(--danger); }
+
+/* ----------------------------------------------------------------------------
+   Tone / verdict pills and chips
+   ---------------------------------------------------------------------------- */
+.coach-pill {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.coach-pill-good { background: rgba(78, 205, 214, 0.16); color: var(--accent); }
+.coach-pill-neutral { background: var(--card-2); color: var(--muted); }
+.coach-pill-warn { background: rgba(255, 90, 82, 0.16); color: var(--danger); }
+
+.coach-chip {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--card-2); color: var(--muted);
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.coach-chip-better { background: rgba(78, 205, 214, 0.16); color: var(--accent); }
+.coach-chip-worse { background: rgba(255, 90, 82, 0.16); color: var(--danger); }
+.coach-chip-new { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+
+/* ----------------------------------------------------------------------------
+   Status strip (running / pending / error)
+   ---------------------------------------------------------------------------- */
+.coach-status {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-bottom: 16px;
+}
+.coach-status-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--card);
+}
+.coach-status-text { flex: 1 1 auto; font-size: 14px; line-height: 1.35; }
+.coach-status-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.coach-status-error { background: rgba(255, 90, 82, 0.12); }
+.coach-status-error .coach-status-text { color: var(--danger); }
+
+.coach-status-dot {
+  flex: 0 0 auto;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: coach-pulse 1.6s ease-in-out infinite;
+}
+@keyframes coach-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .coach-status-dot { animation: none; opacity: 1; }
+}
+
+/* ----------------------------------------------------------------------------
+   Planned exercise lines (next session card + the plan screen)
+   ---------------------------------------------------------------------------- */
+.coach-ex-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.coach-ex-main { font-size: 14.5px; line-height: 1.35; color: var(--text); }
+.coach-ex-note { font-size: 12.5px; line-height: 1.35; margin-top: 2px; }
+
+.coach-plan-session.is-next { box-shadow: inset 0 0 0 1px rgba(78, 205, 214, 0.35); }
+
+/* ----------------------------------------------------------------------------
+   Muscle balance bars
+   ---------------------------------------------------------------------------- */
+.coach-bal-list { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.coach-bal-row { display: flex; flex-direction: column; gap: 6px; }
+.coach-bal-head { display: flex; align-items: baseline; gap: 6px; }
+.coach-bal-name { flex: 1 1 auto; font-size: 14px; color: var(--text); }
+.coach-bal-trend { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+.coach-trend-up { color: var(--accent); }
+.coach-trend-down { color: var(--muted); }
+
+#s-coach .vol-row-track { display: block; height: 6px; }
+#s-coach .vol-row-fill { display: block; }
+.coach-fill-on { background: var(--accent); }
+.coach-fill-under { background: var(--muted); }
+.coach-fill-over { background: var(--danger); }
+.coach-fill-untrained { background: var(--faint); }
+
+.coach-bal-card { padding-bottom: 10px; }
+.coach-bal-note { margin: 10px 0 0; font-size: 14px; }
+
+/* The four-week mini chart — the shared .bar-* chrome, shrunk. */
+.coach-weekly { height: 64px; gap: 8px; margin-top: 12px; }
+.coach-weekly .bar-track { max-width: 34px; border-radius: 4px; }
+.coach-weekly .bar-fill { border-radius: 4px 4px 0 0; }
+
+/* ----------------------------------------------------------------------------
+   Better / worse lines and flags
+   ---------------------------------------------------------------------------- */
+.coach-verdict-list { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+.coach-verdict { display: flex; align-items: flex-start; gap: 8px; }
+.coach-verdict-glyph { flex: 0 0 auto; font-size: 13px; line-height: 1.4; }
+.coach-verdict-better .coach-verdict-glyph { color: var(--accent); }
+.coach-verdict-worse .coach-verdict-glyph { color: var(--danger); }
+.coach-verdict-text { flex: 1 1 auto; font-size: 14px; line-height: 1.4; color: var(--text); }
+
+.coach-flag-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.coach-flag {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--card-2);
+}
+.coach-flag-label {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.coach-flag-msg { font-size: 14px; line-height: 1.4; color: var(--text); }
+
+/* ----------------------------------------------------------------------------
+   Session diff
+   ---------------------------------------------------------------------------- */
+.coach-stat-lines { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.coach-stat-line {
+  font-size: 14px; line-height: 1.35; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.coach-session-totals .settings-row:last-of-type { padding-bottom: 0; }
+.coach-pair { min-height: 38px; }
+.coach-pair .settings-value { font-variant-numeric: tabular-nums; }
+
+/* ----------------------------------------------------------------------------
+   Plan changes
+   ---------------------------------------------------------------------------- */
+.coach-change { display: flex; flex-direction: column; gap: 2px; padding: 7px 0; }
+.coach-change + .coach-change { border-top: 1px solid var(--line); }
+.coach-change-main { font-size: 14.5px; line-height: 1.35; color: var(--text); }
+.coach-change-reason { font-size: 12.5px; line-height: 1.35; }
+
+/* ----------------------------------------------------------------------------
+   Plan footer
+   ---------------------------------------------------------------------------- */
+.coach-plan-footer { padding: 0 4px 8px; }
+.coach-plan-footer-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+}
+.coach-footer-text { font-size: 12.5px; }
+
+/* ----------------------------------------------------------------------------
+   Recovery card
+   ---------------------------------------------------------------------------- */
+.coach-recovery .settings-row + .settings-row { border-top: 1px solid var(--line); }
+.coach-recovery-note { margin: 10px 0 0; font-size: 14px; }
+
+/* ----------------------------------------------------------------------------
+   "About you" sheet
+   ---------------------------------------------------------------------------- */
+.coach-setup-sheet .coach-sheet-stepper,
+.coach-setup-sheet .coach-sheet-date { padding: 8px 16px; }
+.coach-setup-sheet .coach-sheet-stepper + .coach-sheet-date,
+.coach-setup-sheet .sheet-row + .coach-sheet-stepper { border-top: 1px solid var(--line); }
+.coach-date-input {
+  flex: 0 0 auto;
+  width: auto; min-height: 40px;
+  text-align: right;
+  color: var(--text);
+}
+.coach-sheet-error:empty { display: none; }
+.coach-sheet-save { width: 100%; }
+
+/* ----------------------------------------------------------------------------
+   Tab-bar unread dot (ui.js toggles `has-unread` after a coach call)
+   ---------------------------------------------------------------------------- */
+#tabbar button[data-tab="coach"] { position: relative; }
+#tabbar button[data-tab="coach"].has-unread::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: calc(50% + 7px);
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}

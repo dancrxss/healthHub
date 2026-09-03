@@ -18,11 +18,17 @@ import {
 } from '../db.js';
 import {
   h, Icon, go, getUnits, mmss, openSheet, closeSheet, sheetHeader, sheetGroup,
-  setScreenCleanup,
+  confirmSheet, setScreenCleanup, refreshCoachTab,
 } from '../ui.js';
 import {
   healthAvailable, getHealthState, connectHealth, disconnectHealth, syncNow, onHealthUpdate,
 } from '../health.js';
+import {
+  hasApiKey, apiKeyMasked, setApiKey, checkApiKey, getShareRecovery, setShareRecovery,
+  getProfile, getCoachState, createPlan, clearCoachData, initCoach,
+} from '../coach.js';
+import { userMessageFor } from '../coach-api.js';
+import { openCoachSetupSheet } from './coach.js';
 
 const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const num = (n) => Number(n || 0).toLocaleString('en-GB');
@@ -69,6 +75,10 @@ export async function renderSettings() {
     ? (await getMeta('healthWriteWorkouts')) !== false
     : true;
 
+  const coachKeyPresent = hasApiKey();
+  const coachState = coachKeyPresent ? await getCoachState() : null;
+  const coachShareOn = health && health.connected ? await getShareRecovery() : false;
+
   screen.replaceChildren(
     h('header', { class: 'pick-head' },
       h('button', { class: 'round-btn', type: 'button', 'aria-label': 'Back', onclick: () => history.length > 1 ? history.back() : go('#/log') }, Icon('back')),
@@ -82,6 +92,7 @@ export async function renderSettings() {
       dataCard(),
       syncCard(status),
       health ? healthCard(health, healthWriteOn) : null,
+      coachCard(healthOn, health, coachKeyPresent, coachState, coachShareOn),
       aboutCard(),
     ),
   );
@@ -542,6 +553,276 @@ function disconnectSheet() {
         class: 'sheet-btn danger', type: 'button', 'data-action': 'health-disconnect-purge',
         onclick: async () => { closeSheet(); await disconnectHealth({ purge: true }); renderSettings(); },
       }, 'Disconnect and remove imported data'),
+      h('button', { class: 'sheet-btn cancel', type: 'button', 'data-action': 'cancel', onclick: () => closeSheet() }, 'Cancel'),
+    ),
+  ));
+}
+
+// ---- Coach card (Phase C) ------------------------------------------------
+// An AI coach powered by the user's own Anthropic API key. Absent a key the
+// app makes zero network calls; every field here lives in settings.js only —
+// the heavy lifting (queueing, idempotency, digest building) is coach.js's
+// job. Mirrors the Apple Health card's shape: intro note, then rows, all
+// inside one settings-toggle-card.
+function coachCard(healthOn, health, hasKey, coachState, shareOn) {
+  return h('div', { class: 'settings-group' },
+    sectionLabel('Coach'),
+    h('div', { class: 'tab-card settings-card settings-toggle-card' },
+      h('p', {
+        class: 'settings-note muted',
+        text: 'An AI coach that summarises your training, reviews each session and keeps a plan up to date. Needs your own Anthropic API key — usage costs a few pence per session and is billed to your key.',
+      }),
+      ...coachApiKeySection(hasKey),
+      coachModelRow(),
+      ...coachRecoveryRows(healthOn, health, shareOn),
+      hasKey ? coachProfileRow() : null,
+      hasKey && coachState && coachState.usageTotals ? coachUsageRow(coachState.usageTotals) : null,
+      ...coachRegenerateRows(),
+      coachClearRow(),
+    ),
+  );
+}
+
+/** The API key row(s). Self-managing (no re-render) except after a successful
+ * save, which does re-render so the masked view + profile/usage rows appear. */
+function coachApiKeySection(hasKey) {
+  const wrap = h('div', { class: 'coach-key-wrap' });
+  wrap.append(...(hasKey ? coachMaskedKeyView(wrap) : coachKeyInputView(wrap)));
+  return [
+    wrap,
+    h('p', {
+      class: 'settings-note muted',
+      text: "Stored only on this device. If you clear website data you'll need to enter it again.",
+    }),
+  ];
+}
+
+function coachMaskedKeyView(wrap) {
+  const statusNote = h('p', { class: 'settings-note muted', hidden: true });
+
+  const testBtn = h('button', {
+    class: 'settings-btn-row coach-key-btn', type: 'button', 'data-action': 'coach-test-key',
+  }, 'Test key');
+  testBtn.addEventListener('click', async () => {
+    testBtn.disabled = true;
+    testBtn.textContent = 'Testing…';
+    statusNote.hidden = false;
+    statusNote.classList.remove('danger');
+    statusNote.textContent = '';
+    try {
+      await checkApiKey();
+      statusNote.textContent = 'Key is working.';
+    } catch (err) {
+      statusNote.classList.add('danger');
+      statusNote.textContent = userMessageFor(err);
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = 'Test key';
+    }
+  });
+
+  const replaceBtn = h('button', {
+    class: 'settings-btn-row coach-key-btn', type: 'button', 'data-action': 'coach-key-replace',
+    onclick: () => wrap.replaceChildren(...coachKeyInputView(wrap)),
+  }, 'Replace key…');
+
+  return [
+    h('div', { class: 'settings-row' },
+      h('span', { class: 'settings-label', text: 'API key' }),
+      h('span', { class: 'settings-value', text: apiKeyMasked() }),
+    ),
+    h('div', { class: 'coach-key-actions' }, testBtn, replaceBtn),
+    statusNote,
+  ];
+}
+
+function coachKeyInputView(wrap) {
+  const keyInput = h('input', {
+    class: 'sheet-input coach-key-input', type: 'password', inputmode: 'text',
+    autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+    placeholder: 'sk-ant-…', 'data-action': 'coach-key-input', 'aria-label': 'Anthropic API key',
+  });
+  const eyeBtn = h('button', {
+    class: 'coach-key-eye', type: 'button', 'data-action': 'coach-key-show',
+    'aria-pressed': 'false', 'aria-label': 'Show API key',
+  }, 'Show');
+  eyeBtn.addEventListener('click', () => {
+    const showing = keyInput.type === 'text';
+    keyInput.type = showing ? 'password' : 'text';
+    eyeBtn.setAttribute('aria-pressed', showing ? 'false' : 'true');
+    eyeBtn.setAttribute('aria-label', showing ? 'Show API key' : 'Hide API key');
+    eyeBtn.textContent = showing ? 'Show' : 'Hide';
+  });
+
+  const statusNote = h('p', { class: 'settings-note muted', hidden: true });
+  const saveBtn = h('button', {
+    class: 'sheet-btn coach-key-save', type: 'button', 'data-action': 'coach-key-save',
+  }, 'Save');
+  saveBtn.addEventListener('click', async () => {
+    const value = keyInput.value.trim();
+    if (!value) return;
+    saveBtn.disabled = true;
+    setApiKey(value);
+    try {
+      await checkApiKey(value);
+      statusNote.hidden = false;
+      statusNote.classList.remove('danger');
+      statusNote.textContent = 'Key saved and working.';
+      refreshCoachTab();
+      initCoach();
+      renderSettings();
+      return; // renderSettings rebuilds the whole screen
+    } catch (err) {
+      statusNote.hidden = false;
+      statusNote.classList.add('danger');
+      statusNote.textContent = userMessageFor(err);
+      refreshCoachTab();
+    }
+    saveBtn.disabled = false;
+  });
+
+  return [
+    h('div', { class: 'coach-key-row' }, keyInput, eyeBtn, saveBtn),
+    statusNote,
+  ];
+}
+
+function coachModelRow() {
+  return h('div', { class: 'settings-row' },
+    h('span', { class: 'settings-label', text: 'Model' }),
+    h('span', { class: 'settings-value', text: 'Claude Sonnet 5' }),
+  );
+}
+
+/** Gated on Apple Health, not on having a key — see PLAN.md §"Phase C" C1. */
+function coachRecoveryRows(healthOn, health, shareOn) {
+  if (!healthOn) return []; // PWA — no Apple Health at all, render nothing
+  if (!(health && health.connected)) {
+    return [h('p', {
+      class: 'settings-note muted',
+      text: 'Connect Apple Health to let the coach use your recovery data (optional).',
+    })];
+  }
+  return [
+    coachShareRecoveryToggleRow(shareOn),
+    h('p', {
+      class: 'settings-note muted',
+      text: "Sends last night's sleep, HRV, resting heart rate and body-weight trend to Anthropic along with your gym data when the coach runs. Off by default. Your gym data is always sent when the coach runs.",
+    }),
+  ];
+}
+
+/** Mirrors healthWriteToggleRow's pattern: async meta-backed, repaints only
+ * itself. Default OFF per CLAUDE.md §10 (consent must not default on). */
+function coachShareRecoveryToggleRow(on) {
+  const btn = h('button', {
+    class: 'toggle' + (on ? ' on' : ''),
+    type: 'button', role: 'switch',
+    'aria-checked': on ? 'true' : 'false',
+    'aria-label': 'Share recovery data with coach',
+    'data-setting': 'coach.shareRecovery',
+  });
+  btn.addEventListener('click', () => {
+    const next = btn.getAttribute('aria-checked') !== 'true';
+    setShareRecovery(next);
+    btn.setAttribute('aria-checked', next ? 'true' : 'false');
+    btn.classList.toggle('on', next);
+  });
+  return h('div', { class: 'settings-row' },
+    h('span', { class: 'settings-label', text: 'Share recovery data with coach' }),
+    btn,
+  );
+}
+
+function coachProfileRow() {
+  return h('button', {
+    class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'coach-edit-profile',
+    onclick: async () => {
+      const profile = await getProfile();
+      openCoachSetupSheet({ profile, onDone: () => renderSettings() });
+    },
+  },
+    h('span', { class: 'settings-label', text: 'Edit coach profile…' }),
+    h('span', { class: 'settings-chev' }, Icon('chevron')),
+  );
+}
+
+function coachUsageRow(usageTotals) {
+  if (!usageTotals || !usageTotals.calls) return null;
+  const cost = (Math.round((usageTotals.estimatedCostUsd || 0) * 100) / 100).toFixed(2);
+  return h('div', { class: 'settings-row' },
+    h('span', { class: 'settings-label', text: 'Usage' }),
+    h('span', {
+      class: 'settings-value',
+      text: `${num(usageTotals.calls)} call${usageTotals.calls === 1 ? '' : 's'} · about $${cost}`,
+    }),
+  );
+}
+
+function coachRegenerateRows() {
+  const errNote = h('p', { class: 'settings-note danger', hidden: true });
+  const label = h('span', { class: 'settings-label', text: 'Regenerate plan…' });
+  const row = h('button', {
+    class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'coach-regenerate',
+    onclick: () => confirmSheet({
+      title: 'Regenerate plan?',
+      message: 'Builds a fresh plan from your history and profile. Your previous plans are kept.',
+      confirmLabel: 'Regenerate',
+      onConfirm: async () => {
+        errNote.hidden = true;
+        row.disabled = true;
+        label.textContent = 'Building plan…';
+        try {
+          await createPlan();
+          renderSettings();
+          return; // renderSettings rebuilds the whole screen
+        } catch (err) {
+          errNote.hidden = false;
+          errNote.textContent = userMessageFor(err);
+        }
+        label.textContent = 'Regenerate plan…';
+        row.disabled = false;
+      },
+    }),
+  },
+    label,
+    h('span', { class: 'settings-chev' }, Icon('chevron')),
+  );
+  return [row, errNote];
+}
+
+function coachClearRow() {
+  return h('button', {
+    class: 'settings-row settings-btn-row', type: 'button', 'data-action': 'coach-clear',
+    onclick: () => coachClearSheet(),
+  },
+    h('span', { class: 'settings-label danger', text: 'Clear coach data…' }),
+    h('span', { class: 'settings-chev' }, Icon('chevron')),
+  );
+}
+
+/** Two distinct destructive choices, matching disconnectSheet's shape. */
+function coachClearSheet() {
+  openSheet(h('div', {},
+    sheetHeader('Clear coach data', { onClose: () => closeSheet() }),
+    h('p', {
+      class: 'sheet-message muted',
+      text: 'Your workouts are never touched. Clearing the key hides the Coach tab.',
+    }),
+    h('div', { class: 'sheet-actions' },
+      h('button', {
+        class: 'sheet-btn danger', type: 'button', 'data-action': 'coach-clear-data',
+        onclick: async () => { closeSheet(); await clearCoachData({ keepKey: true }); renderSettings(); },
+      }, 'Clear plans and summaries'),
+      h('button', {
+        class: 'sheet-btn danger', type: 'button', 'data-action': 'coach-clear-all',
+        onclick: async () => {
+          closeSheet();
+          await clearCoachData({ keepKey: false });
+          refreshCoachTab();
+          renderSettings();
+        },
+      }, 'Clear everything including the API key'),
       h('button', { class: 'sheet-btn cancel', type: 'button', 'data-action': 'cancel', onclick: () => closeSheet() }, 'Cancel'),
     ),
   ));

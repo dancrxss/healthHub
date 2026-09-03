@@ -341,3 +341,23 @@ button.tab-card {
    the card's own corners or paint over the divider between rows. */
 .month-card .swipe-host { background: var(--card); }
 .month-card .swipe-surface { background: var(--card); }
+
+/* Coach (Phase C) */
+.settings-note.danger { color: var(--danger); }
+.coach-key-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.coach-key-row .coach-key-input {
+  flex: 1; min-width: 0; background: var(--card-2); border-radius: 10px; padding: 10px 12px;
+}
+.coach-key-eye {
+  flex-shrink: 0; min-height: 44px; padding: 0 12px;
+  border: 0; border-radius: 10px; background: var(--card-2); color: var(--muted);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.coach-key-eye[aria-pressed="true"] { color: var(--accent); }
+.coach-key-save { flex-shrink: 0; width: auto; min-height: 44px; padding: 0 18px; }
+.coach-key-actions { display: flex; gap: 10px; padding: 4px 0 2px; }
+.coach-key-actions .coach-key-btn {
+  flex: 1; width: auto; min-height: 44px; text-align: center;
+  background: var(--card-2); border-radius: 10px; font-weight: 600; font-size: 14px;
+}
+.coach-key-actions .coach-key-btn:disabled { opacity: 0.6; }
