@@ -16,12 +16,21 @@ import { listChatMessages } from '../db.js';
 import {
   getCoachState, sendChat, chatBusy, onCoachUpdate,
 } from '../coach.js';
+import { playOnce, motionOK } from '../motion.js';
 
 // ----------------------------------------------------------------------------
 // Small formatting helpers
 // ----------------------------------------------------------------------------
 const numOrNull = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 const trimNum = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100));
+
+/** "16:39" today, "3 Aug, 16:39" otherwise — the chat time-divider label. */
+function chatTimeLabel(iso) {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, ${time}`;
+}
 
 /**
  * A model-written bullet list. `points` is normally a string[] (already
@@ -108,8 +117,12 @@ export function chatPanel({ thread, container, compact = false }) {
 
   let destroyed = false;
   let sending = false;
+  let firstPaint = true;
+  // Message ids already rendered once — anim-bubble-in only plays for a
+  // message that just arrived, never replayed on every paint() re-render.
+  const seenIds = new Set();
 
-  const MAX_TEXTAREA_PX = 96;
+  const MAX_TEXTAREA_PX = 132; // ~5 lines at 16px/1.35 line-height + padding
   const autoGrow = () => {
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.min(MAX_TEXTAREA_PX, textarea.scrollHeight)}px`;
@@ -118,6 +131,22 @@ export function chatPanel({ thread, container, compact = false }) {
   textarea.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(); }
   });
+
+  // ---- keyboard handling ---------------------------------------------------
+  // While the panel is mounted, keep the composer visible as the on-screen
+  // keyboard opens/closes/resizes the visual viewport (iOS never scrolls a
+  // sticky/fixed element into view on its own). Listeners are on `window`,
+  // so they must be torn down explicitly in destroy() — the element being
+  // removed does not do that for us.
+  const scrollInputIntoView = () => {
+    try { inputRow.scrollIntoView({ block: 'end' }); } catch (e) { /* older engines */ }
+  };
+  textarea.addEventListener('focus', scrollInputIntoView);
+  const vv = window.visualViewport || null;
+  if (vv) {
+    vv.addEventListener('resize', scrollInputIntoView);
+    vv.addEventListener('scroll', scrollInputIntoView);
+  }
 
   const nearBottom = () => (list.scrollHeight - list.scrollTop - list.clientHeight) < 60;
 
@@ -145,25 +174,41 @@ export function chatPanel({ thread, container, compact = false }) {
 
     const ordered = rows.slice().reverse(); // newest-first -> oldest-first
     const nodes = [];
+    const newBubbles = []; // bubbles for messages not previously rendered by this panel
     if (!ordered.length) {
       nodes.push(h('p', { class: 'coach-chat-empty muted', text: EMPTY_TEXT[thread] || EMPTY_TEXT.home }));
     }
+    let prevMsg = null;
     ordered.forEach((m, i) => {
+      // A time divider when the gap since the previous message is > 10 min,
+      // and a wider row gap whenever the speaker changes (both PLAN.md's
+      // "iMessage-like" chat rhythm).
+      if (prevMsg && (new Date(m.createdAt) - new Date(prevMsg.createdAt)) > 10 * 60 * 1000) {
+        nodes.push(h('div', { class: 'coach-chat-ts muted', text: chatTimeLabel(m.createdAt) }));
+      }
+      const newSpeaker = !prevMsg || prevMsg.role !== m.role;
+      const rowClass = (base) => `${base}${newSpeaker ? ' coach-chat-row-new-speaker' : ''}`;
+      const isNew = !!m.id && !seenIds.has(m.id);
+      if (m.id) seenIds.add(m.id);
+      prevMsg = m;
+
       if (m.role === 'user') {
-        nodes.push(h('div', { class: 'coach-chat-row coach-chat-row-user' },
-          h('div', { class: 'coach-chat-user', text: m.text || '' }),
+        const bubble = h('div', { class: 'coach-chat-user', text: m.text || '' });
+        if (isNew) newBubbles.push(bubble);
+        nodes.push(h('div', { class: rowClass('coach-chat-row coach-chat-row-user') },
+          bubble,
           m.pending ? h('div', { class: 'coach-chat-wait muted', text: 'Waiting for the coach…' }) : null,
         ));
         return;
       }
       if (m.error) {
         const prevUser = i > 0 && ordered[i - 1].role === 'user' ? ordered[i - 1] : null;
-        nodes.push(h('div', { class: 'coach-chat-row coach-chat-row-coach' },
-          h('div', { class: 'coach-chat-error' },
-            h('span', { class: 'coach-chat-error-text', text: m.error }),
-            prevUser && prevUser.text ? retryLine(prevUser.text) : null,
-          ),
-        ));
+        const bubble = h('div', { class: 'coach-chat-error' },
+          h('span', { class: 'coach-chat-error-text', text: m.error }),
+          prevUser && prevUser.text ? retryLine(prevUser.text) : null,
+        );
+        if (isNew) newBubbles.push(bubble);
+        nodes.push(h('div', { class: rowClass('coach-chat-row coach-chat-row-coach') }, bubble));
         return;
       }
       const chips = [];
@@ -172,9 +217,11 @@ export function chatPanel({ thread, container, compact = false }) {
         if (m.changed.profile) chips.push('Profile updated');
         if (m.changed.memory) chips.push('Noted');
       }
-      nodes.push(h('div', { class: 'coach-chat-row coach-chat-row-coach' },
-        h('div', { class: 'coach-chat-coach' },
-          bullets(m.points) || h('p', { class: 'coach-chat-coach-empty muted', text: '—' })),
+      const bubble = h('div', { class: 'coach-chat-coach' },
+        bullets(m.points) || h('p', { class: 'coach-chat-coach-empty muted', text: '—' }));
+      if (isNew) newBubbles.push(bubble);
+      nodes.push(h('div', { class: rowClass('coach-chat-row coach-chat-row-coach') },
+        bubble,
         chips.length ? h('div', { class: 'coach-chat-chips' },
           ...chips.map((c) => h('span', { class: 'coach-chat-chip', text: c }))) : null,
       ));
@@ -182,6 +229,9 @@ export function chatPanel({ thread, container, compact = false }) {
 
     const running = !!(state && state.running === 'chat');
     if (running) {
+      // Always the last node, so it reads as pinned to the bottom of the
+      // thread — the same auto-scroll-when-near-bottom logic below keeps it
+      // in view as it appears and disappears.
       nodes.push(h('div', { class: 'coach-chat-row coach-chat-row-coach' },
         h('div', { class: 'coach-chat-thinking' },
           h('span', { class: 'coach-status-dot' }),
@@ -189,17 +239,37 @@ export function chatPanel({ thread, container, compact = false }) {
     }
 
     list.replaceChildren(...nodes);
+    if (motionOK()) { for (const el of newBubbles) playOnce(el, 'anim-bubble-in'); }
     if (wasNearBottom) list.scrollTop = list.scrollHeight;
 
     const busy = running || chatBusy();
     textarea.disabled = busy;
     sendBtn.disabled = busy;
+
+    if (firstPaint) {
+      firstPaint = false;
+      // Open at the newest message. The compact Home list scrolls itself
+      // (above); the full-screen route additionally asks ui.js's router to
+      // land the page at the bottom (see requestBottomScroll in the coach
+      // route), but the panel's own first paint happens after that scroll
+      // has already run, so it re-asserts it once the messages are in.
+      if (!compact) {
+        requestAnimationFrame(() => {
+          if (destroyed) return;
+          list.scrollTop = list.scrollHeight;
+          try { window.scrollTo(0, document.documentElement.scrollHeight); } catch (e) { /* ignore */ }
+        });
+      }
+    }
   }
 
   async function send(overrideText) {
     if (destroyed || sending) return;
     const text = (overrideText != null ? overrideText : textarea.value).trim();
     if (!text) return;
+    // Drop the keyboard immediately on a touch device — waiting for the
+    // reply to land first reads as unresponsive.
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) textarea.blur();
     sending = true;
     sendError.textContent = '';
     // Clear the box as soon as the message is on its way (the reply can take
@@ -225,6 +295,11 @@ export function chatPanel({ thread, container, compact = false }) {
       if (destroyed) return;
       destroyed = true;
       unsub();
+      textarea.removeEventListener('focus', scrollInputIntoView);
+      if (vv) {
+        vv.removeEventListener('resize', scrollInputIntoView);
+        vv.removeEventListener('scroll', scrollInputIntoView);
+      }
       wrap.remove();
     },
   };

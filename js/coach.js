@@ -16,6 +16,7 @@
 
 import {
   listWorkouts, listAllSets, listExercises, getWorkout,
+  putExercise,
   getMeta, setMeta,
   putCoachPlan, getCoachPlan, listCoachPlans,
   putCoachInsight, getCoachInsight, listCoachInsights,
@@ -377,15 +378,17 @@ export function runSessionFeedback(workoutId, { force = false } = {}) {
     const digest = buildDigest({ dataset, profile, today, health, workoutId, plan, kind: 'session', memory: memoryForDigest(memory) });
     try {
       const { narrative, usage } = await callCoach({ kind: 'session', digest, apiKey: apiKeyOrThrow() });
+      const idMap = await materialiseNewExercises(narrative);
+      const rewritten = rewriteNewExerciseIds(narrative, idMap);
       let planId = plan ? plan.id : null;
-      if (narrative.plan) {
-        const revised = await storePlan(narrative.plan, { source: 'revised', basedOnWorkoutId: workoutId, today });
+      if (rewritten.plan) {
+        const revised = await storePlan(rewritten.plan, { source: 'revised', basedOnWorkoutId: workoutId, today });
         planId = revised.id;
       }
       const insight = {
         id: `session-${workoutId}`, kind: 'session', createdAt: nowISO(), date: workout.date, workoutId,
         model: COACH_MODEL, engineVersion: COACH_ENGINE_VERSION,
-        metrics: stripDigest(digest), narrative, planId, usage,
+        metrics: stripDigest(digest), narrative: rewritten, planId, usage,
       };
       await putCoachInsight(insight);
       await setMeta('coach.pending', null);
@@ -417,7 +420,9 @@ export function createPlan(profileInput = null) {
     const digest = buildDigest({ dataset, profile, today, health, plan: null, kind: 'plan', memory: memoryForDigest(memory) });
     try {
       const { narrative, usage } = await callCoach({ kind: 'plan', digest, apiKey: apiKeyOrThrow() });
-      const plan = await storePlan(narrative, { source: 'created', basedOnWorkoutId: null, today });
+      const idMap = await materialiseNewExercises(narrative);
+      const rewritten = rewriteNewExerciseIds(narrative, idMap);
+      const plan = await storePlan(rewritten, { source: 'created', basedOnWorkoutId: null, today });
       await setMeta('coach.lastError', null);
       await setMeta('coach.unreadAt', nowISO());
       await recordUsage(usage);
@@ -470,6 +475,89 @@ async function storePlan(planObj, { source, basedOnWorkoutId, today = todayISO()
   await putCoachPlan(record);
   await setMeta('coach.currentPlanId', record.id);
   return record;
+}
+
+// ----------------------------------------------------------------------------
+// Coach-created exercises (C2.4) — the coach can create exercises the library
+// lacks (`narrative.newExercises`, coach-api.js) rather than being limited to
+// what already exists. Every kind that can carry a plan/planChanges/better/
+// worse goes through this pair before the narrative is stored.
+// ----------------------------------------------------------------------------
+
+/**
+ * Reuse an existing exercise with the same name (case-insensitive) or create
+ * one (`createdBy: 'coach'`) for each `narrative.newExercises` entry.
+ * `parseResponse` has already validated/clamped every field, so this trusts
+ * them as-is. Newly created records are added to the in-memory `existing`
+ * list too, so two new exercises in the same reply that share a name (the
+ * model should already have deduped, but belt-and-braces) still collapse to
+ * one record.
+ * @returns {Promise<Map<string,string>>} `new:<key>` → real exercise id; the
+ *   returned Map also carries a non-standard `.createdCount` (exercises
+ *   actually created, as opposed to matched to an existing one) for callers
+ *   that report it (`sendChat`'s `changed.exercises`).
+ */
+async function materialiseNewExercises(narrative) {
+  const idMap = new Map();
+  idMap.createdCount = 0;
+  const entries = Array.isArray(narrative && narrative.newExercises) ? narrative.newExercises : [];
+  if (entries.length === 0) return idMap;
+  const existing = await listExercises();
+  for (const ne of entries) {
+    if (!ne || typeof ne.key !== 'string' || !ne.key || !ne.name) continue;
+    const nameLower = ne.name.toLowerCase();
+    const match = existing.find((e) => e.name.toLowerCase() === nameLower);
+    if (match) {
+      idMap.set(`new:${ne.key}`, match.id);
+      continue;
+    }
+    const record = {
+      id: uid(),
+      name: ne.name,
+      muscleGroup: ne.muscleGroup,
+      equipment: ne.equipment,
+      exerciseType: ne.exerciseType,
+      isCustom: true,
+      isUnilateral: false,
+      targets: ne.targets || null,
+      createdBy: 'coach',
+      createdAt: nowISO(),
+    };
+    await putExercise(record);
+    existing.push(record); // so a later duplicate in the same batch matches it, not creates a second
+    idMap.set(`new:${ne.key}`, record.id);
+    idMap.createdCount += 1;
+  }
+  return idMap;
+}
+
+/** Rewrite a `new:<key>` exerciseId to its real id; anything else passes through. */
+function rewritePlanSessions(sessions, rewriteId) {
+  return sessions.map((s) => ({
+    ...s,
+    exercises: s.exercises.map((e) => ({ ...e, exerciseId: rewriteId(e.exerciseId) })),
+  }));
+}
+
+/**
+ * Resolve every `new:<key>` exerciseId in a narrative to the real id
+ * `materialiseNewExercises` created/matched, before the narrative reaches
+ * `storePlan`/`putCoachInsight`/`putChatMessage`. Handles both shapes: a bare
+ * plan object (kind 'plan', where the narrative IS the plan) and a session/
+ * chat narrative (`.plan`, `.planChanges`, `.better`, `.worse`).
+ */
+function rewriteNewExerciseIds(narrative, idMap) {
+  if (!narrative || !idMap || idMap.size === 0) return narrative;
+  const rewriteId = (id) => (idMap.has(id) ? idMap.get(id) : id);
+  const out = { ...narrative };
+  if (Array.isArray(out.sessions)) out.sessions = rewritePlanSessions(out.sessions, rewriteId);
+  if (out.plan && Array.isArray(out.plan.sessions)) {
+    out.plan = { ...out.plan, sessions: rewritePlanSessions(out.plan.sessions, rewriteId) };
+  }
+  if (Array.isArray(out.planChanges)) out.planChanges = out.planChanges.map((c) => ({ ...c, exerciseId: rewriteId(c.exerciseId) }));
+  if (Array.isArray(out.better)) out.better = out.better.map((b) => ({ ...b, exerciseId: rewriteId(b.exerciseId) }));
+  if (Array.isArray(out.worse)) out.worse = out.worse.map((w) => ({ ...w, exerciseId: rewriteId(w.exerciseId) }));
+  return out;
 }
 
 // ----------------------------------------------------------------------------
@@ -527,20 +615,22 @@ export async function sendChat(thread, text) {
       const base = { id: uid(), thread, role: 'coach', createdAt: nowISO(), text: null, pending: false };
       try {
         const { narrative, usage } = await callCoach({ kind: 'chat', digest, apiKey: apiKeyOrThrow() });
-        const changed = { plan: false, profile: false, memory: false };
+        const idMap = await materialiseNewExercises(narrative);
+        const rewritten = rewriteNewExerciseIds(narrative, idMap);
+        const changed = { plan: false, profile: false, memory: false, exercises: idMap.createdCount };
         let planId = plan ? plan.id : null;
-        const mem = await applyMemoryUpdates(narrative.memoryUpdates, `chat-${thread}`);
+        const mem = await applyMemoryUpdates(rewritten.memoryUpdates, `chat-${thread}`);
         changed.memory = mem.added + mem.removed > 0;
-        const patch = profileFromPatch(narrative.profilePatch);
+        const patch = profileFromPatch(rewritten.profilePatch);
         if (patch) { await saveProfile(patch); changed.profile = true; }
-        const changes = Array.isArray(narrative.planChanges) ? narrative.planChanges : [];
-        if (narrative.plan && (thread === 'plan' || changes.length > 0)) {
-          const rec = await storePlan(narrative.plan, { source: 'revised', basedOnWorkoutId: null, today });
+        const changes = Array.isArray(rewritten.planChanges) ? rewritten.planChanges : [];
+        if (rewritten.plan && (thread === 'plan' || changes.length > 0)) {
+          const rec = await storePlan(rewritten.plan, { source: 'revised', basedOnWorkoutId: null, today });
           planId = rec.id;
           changed.plan = true;
         }
         await putChatMessage({ ...userMsg, pending: false });
-        const coachMsg = { ...base, points: narrative.reply, planId, changed, error: null, planChanges: changes };
+        const coachMsg = { ...base, points: rewritten.reply, planId, changed, error: null, planChanges: changes };
         await putChatMessage(coachMsg);
         await recordUsage(usage);
         await setMeta('coach.lastError', null);

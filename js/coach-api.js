@@ -44,6 +44,16 @@ export const PRICING = Object.freeze({ inputPerMTok: 2.0, outputPerMTok: 10.0 })
 /** Muscle groups — mirrors MUSCLE_GROUPS in js/db.js (this module must not import the data layer). */
 const MUSCLE_GROUPS = ['chest', 'back', 'legs', 'shoulders', 'biceps', 'triceps', 'abs', 'cardio', 'accessory', 'rehab', 'other'];
 
+/** Equipment options — mirrors EQUIPMENT in js/db.js (C2.4, coach-created exercises). */
+const EQUIPMENT = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'other'];
+
+/** Exercise-type ids a coach-created exercise may declare — mirrors the ids in
+ * js/exercise-types.js (minus 'notes', which the coach never creates). */
+const NEW_EXERCISE_TYPES = [
+  'weight_reps', 'weight_time', 'weight_distance', 'weight_distance_time',
+  'bw_weight_reps', 'bw_assisted_reps', 'reps', 'time', 'cardio',
+];
+
 /** Balance statuses produced by the engine (C2). */
 const BALANCE_STATUSES = ['untrained', 'under', 'on', 'over', 'unscored'];
 
@@ -99,6 +109,9 @@ const LIMITS = Object.freeze({
   purpose: 160,
   note: 300,
   name: 40,
+  newExercisesMax: 8,
+  exerciseNameChars: 60,
+  targetsChars: 120,
 });
 
 /** Defaults used when the model leaves a required target out. */
@@ -123,7 +136,7 @@ export const SYSTEM_PROMPT = `You are the training coach inside a gym-tracking a
 FORMAT
 Every list field is an array of short bullets. One idea per bullet, one sentence, at most twenty-five words, specific — name the exercise, the number, the week. Never write a paragraph into a bullet. Leave a list empty rather than pad it.
 Reply with the JSON object only. No preamble, no markdown, no code fence, no commentary after it.
-Every numeric target or step field is required: write zero when it does not apply. Every optional text field is required too: write an empty string for none. profilePatch is a list of field/value pairs, value always a string ('true'/'false' for the two boolean fields); send an empty list when nothing durable changed. Allowed fields: daysPerWeek, sessionMinutes, injuryNotes, equipmentNotes, notes, split, cardioInclude, coreInclude.
+Every numeric target or step field is required: write zero when it does not apply. Every optional text field is required too: write an empty string for none. profilePatch is a list of field/value pairs, value always a string ('true'/'false' for the two boolean fields); send an empty list when nothing durable changed. Allowed fields: daysPerWeek, sessionMinutes, injuryNotes, equipmentNotes, notes, split, cardioInclude, coreInclude. newExercises is required on every plan, session and chat reply: send an empty list when you create nothing.
 
 DATA CONVENTIONS
 The user message is a JSON digest of this person's own training history. Read it as fact; it is computed locally from their logged sets.
@@ -137,7 +150,7 @@ The user message is a JSON digest of this person's own training history. Read it
 - library, on plan/chat digests, lists every exercise the app knows, grouped, as id|Name|type; plan entries may use any library id — if asked for one not listed, point to the exercise picker.
 - gap describes the layoff: daysSinceLastSession, weeksOff, detrainingPct; a long layoff starts lighter.
 - recovery, when present, is Apple Health data with baselines: sleep, HRV, resting HR, weight and its 30-day trend; say nothing when absent.
-- Use exerciseId values from library (or exercises[] when absent) in plan entries; never invent an id. In prose, name and recommend any exercise, even one not in the library.
+- Use exerciseId values from library (or exercises[] when absent) in plan entries, or create the exercise yourself via newExercises and reference it as "new:" followed by its key; never invent any other id. In prose, name and recommend any exercise, even one not in the library.
 
 MEMORY
 memory is a short list of durable facts about this person that they told the coach: injuries and constraints, kit, preferences, goals, how they like to train. It never holds session data — the digest already carries that. Read it every time and let it shape both the plan and the reply. In a chat reply, add a genuinely new durable fact to memoryUpdates.add, one short sentence each: no session results, no plan detail, nothing already in the list. When the message contradicts an item, put that item's id in memoryUpdates.removeIds. The person can see and edit every memory item, so write each one as a plain fact they would recognise.
@@ -153,8 +166,17 @@ PREFERENCES
 RETURNING FROM INJURY
 Start conservative and earn the load back: rebuild volume and movement quality before intensity. Keep working sets at RPE 8 or below for the first two to three weeks, and say so. Add roughly one step a week, not two. Sharp, sudden or joint-line pain means stop that set and exercise for the day; ordinary soreness does not. Prefer exercises the person already trains over novel ones. Respect profile.avoid, profile.injuryNotes and profile.equipmentNotes absolutely: never program the avoid list, never assume kit they haven't mentioned.
 
+EXERCISE KNOWLEDGE
+You know the anatomy behind each movement: which region it biases — upper chest, mid chest or lower chest; lats versus upper back; the long or short head of the biceps; quads, hamstrings, glutes and calves; side delts versus rear delts — and you pick exercises by the region the person is after. Rep ranges follow the goal: strength sits around three to six reps, heavy, with long rests; hypertrophy runs about six to fifteen reps close to failure with two to three minutes rest; endurance work is fifteen plus; isolation work runs higher again. Overload levers, roughly in this order: load, reps, sets, density, range of motion, tempo. Cardio is mostly easy zone two, with one harder interval session a week when conditioning matters. Mobility and recovery work belong inside the plan, not bolted on as an afterthought.
+
+SKILL GOALS AND PROGRESSIONS
+When the person wants a skill — a first pull-up, a first push-up, a pistol squat, a handstand, any bodyweight target — build a specific progression and overload it aggressively but safely. A first pull-up, for example: scapular pulls, inverted rows, band-assisted pull-ups moving to thinner bands over time, slow negatives of three to five seconds, top holds, then partial then full reps. Name the exact exercises and a weekly target, adding a little each week.
+
+CREATING EXERCISES
+When the plan needs a movement library does not have, add it to newExercises: a short unique key, a clear name, its muscleGroup (chest, back, legs, shoulders, biceps, triceps, abs, cardio, accessory, rehab, other), its equipment (barbell, dumbbell, machine, cable, bodyweight, other), its exerciseType, and targets (the regions or qualities it hits). exerciseType is one of: weight_reps for an ordinary loaded lift, weight_time for a weighted hold, weight_distance or weight_distance_time for a loaded carry, bw_weight_reps for a bodyweight move you can add load to such as a pull-up or dip, bw_assisted_reps for an assisted version of one, reps for unweighted bodyweight reps, time for an unweighted hold, cardio for running or cycling style work. Reference it in plan entries as exerciseId "new:" followed by its key. Create only what the plan actually uses, say in prose that you added it, and leave newExercises empty when nothing new is needed.
+
 PLANNING RULES
-- Use only exerciseId values present in the digest.
+- Use only exerciseId values present in the digest, in library, or created in this reply via newExercises.
 - Never write more sessions than profile.daysPerWeek.
 - Budget three to four minutes per hard set, inside profile.sessionMinutes.
 - Spread muscle groups across the week: no group trained hard on consecutive sessions, none left out that balance says is under its band.
@@ -234,6 +256,28 @@ const STRING_ARRAY = { type: 'array', items: { type: 'string' } };
 const BODYWEIGHT_WEIGHT_TYPES = ['reps', 'bw_weight_reps', 'bw_assisted_reps', 'time'];
 
 /**
+ * `newExercises` (C2.4): exercises the coach creates because the library
+ * lacks them. A plain flat list — no enums, no nullable fields — every field
+ * a required string; `parseResponse`'s `cleanNewExercises` validates each one
+ * against MUSCLE_GROUPS/EQUIPMENT/NEW_EXERCISE_TYPES and drops/falls back as
+ * needed, the same pattern as the rest of the wire schema. Carried on the
+ * plan schema (so it flows into $defs/plan for session/chat too) AND as its
+ * own top-level property on the session/chat schemas directly, so a chat or
+ * session reply can create an exercise even when `plan` is null — e.g. to
+ * reference it from `better`/`worse`. `parseResponse` reads the top-level
+ * field for kind 'session'/'chat' and the plan object itself for kind 'plan';
+ * a redundant nested `plan.newExercises` on a session/chat reply is ignored.
+ */
+function newExercisesSchema() {
+  return {
+    type: 'array',
+    items: objectSchema({
+      key: STRING, name: STRING, muscleGroup: STRING, equipment: STRING, exerciseType: STRING, targets: STRING,
+    }),
+  };
+}
+
+/**
  * The PLAN v2 object (C2.1, wire shape simplified C2.3 amendment). Built fresh
  * on each call so the same shape can be emitted more than once — inside the
  * session and chat schemas' `$defs`, and as the whole plan schema — without
@@ -246,7 +290,12 @@ const BODYWEIGHT_WEIGHT_TYPES = ['reps', 'bw_weight_reps', 'bw_assisted_reps', '
  * `parseResponse` rebuilds the nested `{weightStepKg, repStep,
  * durationStepSec, everyWeeks}` shape the rest of the app expects.
  */
-function planObjectSchema() {
+/**
+ * @param {{withNewExercises?: boolean}} [opts] — the nested `$defs.plan` used by
+ *   the session/chat schemas omits `newExercises` (it is read only at the top
+ *   level of those replies) so the compiled grammar stays small.
+ */
+function planObjectSchema({ withNewExercises = true } = {}) {
   return objectSchema({
     weeks: INTEGER,
     overview: objectSchema({
@@ -289,6 +338,7 @@ function planObjectSchema() {
         },
       }),
     },
+    ...(withNewExercises ? { newExercises: newExercisesSchema() } : {}),
   });
 }
 
@@ -344,8 +394,9 @@ const SESSION_SCHEMA = {
     },
     planChanges: planChangesSchema(),
     plan: NULLABLE_PLAN_REF,
+    newExercises: newExercisesSchema(),
   }),
-  $defs: { plan: planObjectSchema() },
+  $defs: { plan: planObjectSchema({ withNewExercises: false }) },
 };
 
 /**
@@ -365,8 +416,9 @@ const CHAT_SCHEMA = {
     },
     planChanges: planChangesSchema(),
     plan: NULLABLE_PLAN_REF,
+    newExercises: newExercisesSchema(),
   }),
-  $defs: { plan: planObjectSchema() },
+  $defs: { plan: planObjectSchema({ withNewExercises: false }) },
 };
 
 /** Schemas by kind. `plan` is the PLAN object at the top level (a bare $ref is not allowed there). */
@@ -654,6 +706,44 @@ function bullets(value, max = LIMITS.bullets, chars = LIMITS.bulletChars) {
 
 function isDurationType(type) {
   return DURATION_TYPES.includes(type);
+}
+
+/**
+ * Clean the wire `newExercises` list (C2.4): ≤8 entries, `key`/`name`
+ * deduped (name case-insensitively), `name` 2–60 chars (a name that trims to
+ * under 2 chars drops the whole entry — nothing usable survives),
+ * `muscleGroup`/`equipment`/`exerciseType` validated against their allowed
+ * lists with an 'other'/'other'/weight_reps fallback, `targets` ≤120 chars
+ * (may be `''`). The caller merges the result into the id→type map so
+ * `new:<key>` references elsewhere in the payload validate exactly like any
+ * other known exerciseId.
+ */
+function cleanNewExercises(raw) {
+  const out = [];
+  const usedKeys = new Set();
+  const usedNames = new Set();
+  for (const item of asArray(raw)) {
+    if (out.length >= LIMITS.newExercisesMax) break;
+    if (!item || typeof item !== 'object') continue;
+    const key = typeof item.key === 'string' ? item.key.trim() : '';
+    if (!key || usedKeys.has(key)) continue;
+    const rawName = typeof item.name === 'string' ? item.name.trim() : '';
+    if (rawName.length < 2) continue;
+    const name = truncate(rawName, LIMITS.exerciseNameChars);
+    const nameLower = name.toLowerCase();
+    if (usedNames.has(nameLower)) continue;
+    usedKeys.add(key);
+    usedNames.add(nameLower);
+    out.push({
+      key,
+      name,
+      muscleGroup: oneOf(item.muscleGroup, MUSCLE_GROUPS, 'other'),
+      equipment: oneOf(item.equipment, EQUIPMENT, 'other'),
+      exerciseType: oneOf(item.exerciseType, NEW_EXERCISE_TYPES, DEFAULT_EXERCISE_TYPE),
+      targets: str(item.targets, LIMITS.targetsChars),
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,12 +1090,22 @@ export function parseResponse(kind, responseJson, { digest } = {}) {
   const maxSessions = maxSessionsFor(digest);
 
   if (kind === 'daily') return cleanDaily(raw);
-  if (kind === 'session') return cleanSession(raw, types, maxSessions);
-  if (kind === 'chat') return cleanChat(raw, types, maxSessions, memoryIds(digest));
+
+  // C2.4: newExercises lives on the plan schema (so it rides along inside
+  // $defs/plan too) and, separately, as its own top-level field on session/
+  // chat (see newExercisesSchema's doc comment). `raw.newExercises` reads the
+  // right one for each kind — for 'plan', raw IS the plan object. A redundant
+  // `raw.plan.newExercises` nested inside a session/chat reply is never read;
+  // cleanPlan only ever copies the fields it already knew about.
+  const newExercises = cleanNewExercises(raw.newExercises);
+  for (const ne of newExercises) types.set(`new:${ne.key}`, ne.exerciseType);
+
+  if (kind === 'session') return { ...cleanSession(raw, types, maxSessions), newExercises };
+  if (kind === 'chat') return { ...cleanChat(raw, types, maxSessions, memoryIds(digest)), newExercises };
   if (kind === 'plan') {
     const plan = cleanPlan(raw, types, maxSessions);
     if (!plan) throw new CoachApiError('parse', 'The coach returned an empty plan', { retryable: false });
-    return plan;
+    return { ...plan, newExercises };
   }
   throw new CoachApiError('request', `Unknown coach kind: ${kind}`);
 }

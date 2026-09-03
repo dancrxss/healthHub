@@ -53,6 +53,14 @@
   --dur-enter: 420ms;   /* a spring arriving */
   --dur-exit: 220ms;    /* the same thing leaving */
   --dur-screen: 340ms;  /* route/tab change */
+  --dur-sheet: 360ms;   /* a bottom sheet rising into place */
+  --dur-push: 320ms;    /* a fullscreen route pushing in from the right */
+  --dur-tab: 180ms;     /* a tab-to-tab cross-fade */
+
+  /* iOS nav-controller push/pop curve — used only for route()'s push/pop
+     transitions in js/ui.js, which deliberately mimic UIKit rather than the
+     springs above (a full-screen push reads as "the OS", not "this app"). */
+  --ease-ios-push: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 /* ============================================================================
@@ -125,6 +133,33 @@
   100% { opacity: 1; transform: none; }
 }
 
+/* ---- iOS-style route transitions (js/ui.js route()) --------------------- */
+/* A fullscreen route (workout, pick, settings, copy, routine) pushing in, as
+   if the OS nav controller placed it on top of the tab stack. */
+@keyframes push-in {
+  0%   { opacity: 0; transform: translate3d(100%, 0, 0); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+/* Popping back to a tab screen from a fullscreen route: a light fade/scale,
+   never the mirror-image slide — the tab screen was never "pushed", it was
+   sitting underneath the whole time. */
+@keyframes pop-in {
+  0%   { opacity: 0; transform: scale(0.97); }
+  100% { opacity: 1; transform: scale(1); }
+}
+/* Tab-to-tab: no travel, just a quick cross-fade. */
+@keyframes tab-in {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* A chat bubble landing — small and quick, never replayed on messages the
+   panel has already rendered once (see chatPanel() in coach-shared.js). */
+@keyframes bubble-in {
+  0%   { opacity: 0; transform: scale(0.96); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
 /* Cards in a list, staggered by --stagger-i. */
 @keyframes card-in {
   0%   { opacity: 0; transform: translateY(12px) scale(0.985); }
@@ -167,6 +202,13 @@
   will-change: transform, opacity;
 }
 .anim-float-in { animation: float-in var(--dur-screen) var(--ease-settle) both; }
+.anim-push-in {
+  animation: push-in var(--dur-push) var(--ease-ios-push) both;
+  will-change: transform, opacity;
+}
+.anim-pop-in { animation: pop-in var(--dur-base) var(--ease-settle) both; }
+.anim-tab-in { animation: tab-in var(--dur-tab) var(--ease-out-quint) both; }
+.anim-bubble-in { animation: bubble-in 160ms var(--ease-out-quint) both; }
 .anim-card-in {
   animation: card-in var(--dur-enter) var(--ease-settle) both;
   animation-delay: calc(var(--stagger-i, 0) * 45ms);

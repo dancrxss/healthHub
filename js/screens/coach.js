@@ -37,7 +37,7 @@ import {
   h, Icon, gearButton, go, openSheet, closeSheet, sheetHeader,
   sheetRow, optionSheet, confirmSheet, textareaSheet, formatWeight, kgToDisplay,
   unitLabel, trimNum, formatDate, currentWorkout, setScreenCleanup,
-  startPlannedWorkout,
+  startPlannedWorkout, requestBottomScroll,
 } from '../ui.js';
 import { todayISO } from '../util.js';
 import { stagger } from '../motion.js';
@@ -1412,6 +1412,9 @@ function builderFooter(draft, hasPlan) {
 // 7. Chat (#/coach/chat)
 // ============================================================================
 async function renderChatScreen(screen, token) {
+  // Chat opens at the newest message, not scrolled to the top like every
+  // other route — consumed once by the next route() pass (see js/ui.js).
+  requestBottomScroll();
   const container = h('div', { class: 'coach-chat-container' });
   screen.replaceChildren(h('div', { class: 'coach-sub-screen coach-chat-screen' },
     backHeader('Change the plan'),

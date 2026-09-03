@@ -365,11 +365,11 @@ check('SYSTEM_PROMPT: identical across every kind and digest', () => {
   for (const s of systems) assert.equal(s, SYSTEM_PROMPT);
 });
 
-check('SYSTEM_PROMPT: no interpolation, no 4-digit numbers, under 9000 chars', () => {
+check('SYSTEM_PROMPT: no interpolation, no 4-digit numbers, under 12000 chars', () => {
   assert.equal(typeof SYSTEM_PROMPT, 'string');
   assert.equal(SYSTEM_PROMPT.includes('${'), false, 'system prompt must not interpolate');
   assert.equal(/\b\d{4}\b/.test(SYSTEM_PROMPT), false, 'system prompt must not contain a 4-digit number');
-  assert.ok(SYSTEM_PROMPT.length < 9000, `system prompt is ${SYSTEM_PROMPT.length} chars`);
+  assert.ok(SYSTEM_PROMPT.length < 12000, `system prompt is ${SYSTEM_PROMPT.length} chars`);
   assert.ok(SYSTEM_PROMPT.length > 1500, 'system prompt looks truncated');
 });
 
@@ -392,6 +392,17 @@ check('SYSTEM_PROMPT: covers historyByGroup, library and the expert-trainer role
 check('SYSTEM_PROMPT: no longer tells the coach only exercises[] exists', () => {
   assert.equal(SYSTEM_PROMPT.includes('Only exercises listed'), false);
   assert.equal(SYSTEM_PROMPT.includes('never rename one'), false);
+});
+
+// ---------------------------------------------------------------------------
+// 3c. SYSTEM_PROMPT — C2.4: exercise knowledge, skill progressions, creating
+// exercises the library lacks.
+// ---------------------------------------------------------------------------
+
+check('SYSTEM_PROMPT: covers exercise knowledge, skill progressions and creating exercises', () => {
+  for (const word of ['newExercises', 'upper chest', 'negatives', 'zone two']) {
+    assert.ok(SYSTEM_PROMPT.includes(word), `system prompt should mention "${word}"`);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -493,12 +504,31 @@ check('schema session/chat: plan is nullable via anyOf against $defs/plan', () =
 });
 
 check('schema plan: top level is the plan object itself (PLAN v2 required list)', () => {
-  assert.deepEqual([...SCHEMAS.plan.required].sort(), ['overview', 'sessions', 'weekNotes', 'weeks']);
+  assert.deepEqual([...SCHEMAS.plan.required].sort(), ['newExercises', 'overview', 'sessions', 'weekNotes', 'weeks']);
+});
+
+check('schema plan/session/chat: newExercises is a required plain array, present on all three (C2.4)', () => {
+  const S = { type: 'string' };
+  const itemProps = { key: S, name: S, muscleGroup: S, equipment: S, exerciseType: S, targets: S };
+  for (const kind of ['plan', 'session', 'chat']) {
+    const node = SCHEMAS[kind].properties.newExercises;
+    assert.ok(node, `${kind} schema must carry newExercises`);
+    assert.equal(node.type, 'array');
+    assert.deepEqual(Object.keys(node.items.properties).sort(), Object.keys(itemProps).sort());
+    for (const [field, schema] of Object.entries(itemProps)) {
+      assert.deepEqual(node.items.properties[field], schema, `${kind}.newExercises[].${field} must be a plain required string`);
+    }
+    assert.deepEqual([...node.items.required].sort(), Object.keys(itemProps).sort());
+  }
 });
 
 check('schema: PLAN v2 is emitted identically in all three places, never sharing nodes', () => {
-  assert.deepEqual(SCHEMAS.plan, SCHEMAS.session.$defs.plan);
-  assert.deepEqual(SCHEMAS.plan, SCHEMAS.chat.$defs.plan);
+  // The nested plan omits newExercises (read only at the top level of a
+  // session/chat reply) to keep the compiled grammar small.
+  const { newExercises: _n, ...planSansNew } = SCHEMAS.plan.properties;
+  const topLevelSansNew = { ...SCHEMAS.plan, properties: planSansNew, required: SCHEMAS.plan.required.filter((k) => k !== 'newExercises') };
+  assert.deepEqual(topLevelSansNew, SCHEMAS.session.$defs.plan);
+  assert.deepEqual(topLevelSansNew, SCHEMAS.chat.$defs.plan);
   assert.notEqual(SCHEMAS.plan, SCHEMAS.session.$defs.plan, 'session emission must not share nodes with the top-level plan schema');
   assert.notEqual(SCHEMAS.plan, SCHEMAS.chat.$defs.plan, 'chat emission must not share nodes with the top-level plan schema');
   assert.notEqual(SCHEMAS.session.$defs.plan, SCHEMAS.chat.$defs.plan, 'session and chat emissions must not share nodes with each other');
@@ -550,13 +580,15 @@ check('schema session: flag code and plan-change fields are plain strings (valid
 // rejected the v2 schemas with "the compiled grammar is too large"; these
 // thresholds guard against the wire schema creeping back up. Pre-amendment
 // sizes (for reference, not re-derived here): daily 775 · plan 2349 ·
-// session 3929 · chat 4018 bytes.
+// session 3929 · chat 4018 bytes. MAX_BYTES was raised once more for C2.4's
+// newExercises array (present on plan/session/chat) — plan/session/chat still
+// sit comfortably below their pre-amendment sizes above.
 // ---------------------------------------------------------------------------
 
 check('schemaStats: bytes shrink well below the pre-amendment sizes, zero enums, ≤1 anyOf', () => {
   const stats = schemaStats();
   const PRE_AMENDMENT_BYTES = { daily: 775, plan: 2349, session: 3929, chat: 4018 };
-  const MAX_BYTES = { daily: 700, plan: 2000, session: 3300, chat: 3000 };
+  const MAX_BYTES = { daily: 700, plan: 2500, session: 4200, chat: 3900 };
   for (const kind of ['daily', 'session', 'plan', 'chat']) {
     assert.ok(stats[kind].bytes < MAX_BYTES[kind], `${kind} schema is ${stats[kind].bytes} bytes, expected < ${MAX_BYTES[kind]}`);
     assert.ok(
@@ -800,6 +832,130 @@ check('parseResponse plan: a lift (weight_reps) keeps reps and nulls duration', 
   assert.equal(ex.targetDurationSec, null);
   assert.equal(ex.targetRepsLow, 6);
   assert.equal(ex.targetRepsHigh, 10);
+});
+
+// ---------------------------------------------------------------------------
+// 6bb. parseResponse — newExercises (C2.4: coach-created exercises)
+// ---------------------------------------------------------------------------
+
+check('parseResponse plan: a new: reference with a matching newExercises entry is kept (bw_weight_reps takes the reps path)', () => {
+  const payload = planPayload({
+    newExercises: [
+      { key: 'pullup-neg', name: 'Weighted Pull-Up Negative', muscleGroup: 'back', equipment: 'bodyweight', exerciseType: 'bw_weight_reps', targets: 'lats, biceps' },
+    ],
+    sessions: [{
+      name: 'Pull', focus: null, brief: [],
+      exercises: [{
+        exerciseId: 'new:pullup-neg', targetSets: 3, targetRepsLow: 3, targetRepsHigh: 5,
+        targetWeightKg: 0, targetDurationSec: 0, targetRpe: 8,
+        purpose: 'Pull-up progression.', goal: 'Full rep by week eight.', note: '',
+        stepWeightKg: 0, stepReps: 1, stepDurationSec: 0, everyWeeks: 1,
+      }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.newExercises.length, 1);
+  assert.equal(out.newExercises[0].key, 'pullup-neg');
+  assert.equal(out.newExercises[0].exerciseType, 'bw_weight_reps');
+  assert.equal(out.sessions.length, 1, 'the new: exercise must not be dropped as unknown');
+  const ex = out.sessions[0].exercises[0];
+  assert.equal(ex.exerciseId, 'new:pullup-neg');
+  assert.equal(ex.targetRepsLow, 3);
+  assert.equal(ex.targetRepsHigh, 5);
+  assert.equal(ex.targetDurationSec, null, 'bw_weight_reps takes the reps path, not duration');
+  assert.equal(ex.targetWeightKg, 0, 'bw_weight_reps keeps a genuine zero weight (bodyweight-ish type)');
+});
+
+check('parseResponse plan: an unmatched new: id (no matching newExercises entry) is dropped as unknown', () => {
+  const payload = planPayload({
+    newExercises: [],
+    sessions: [
+      {
+        name: 'Ghost', focus: null, brief: [],
+        exercises: [{
+          exerciseId: 'new:ghost-move', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8,
+          targetWeightKg: 40, targetDurationSec: 0, targetRpe: 7,
+          purpose: 'x', goal: 'y', note: '',
+          stepWeightKg: 0, stepReps: 0, stepDurationSec: 0, everyWeeks: 1,
+        }],
+      },
+      planPayload().sessions[0],
+    ],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.newExercises.length, 0);
+  assert.equal(out.sessions.length, 1, 'the ghost-only session is dropped, the real one survives');
+  assert.equal(out.sessions[0].exercises[0].exerciseId, 'ex-bench');
+});
+
+check('parseResponse plan: newExercises — invalid muscleGroup/equipment/exerciseType fall back', () => {
+  const payload = planPayload({
+    newExercises: [
+      { key: 'made-up', name: 'Made Up Move', muscleGroup: 'quads', equipment: 'trampoline', exerciseType: 'nonsense', targets: 'quads' },
+    ],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.newExercises[0].muscleGroup, 'other');
+  assert.equal(out.newExercises[0].equipment, 'other');
+  assert.equal(out.newExercises[0].exerciseType, 'weight_reps');
+});
+
+check('parseResponse plan: newExercises — duplicate names (case-insensitive) are deduped', () => {
+  const payload = planPayload({
+    newExercises: [
+      { key: 'a', name: 'Cable Face Pull', muscleGroup: 'shoulders', equipment: 'cable', exerciseType: 'weight_reps', targets: 'rear delts' },
+      { key: 'b', name: 'cable face pull', muscleGroup: 'shoulders', equipment: 'cable', exerciseType: 'weight_reps', targets: 'rear delts' },
+      { key: 'c', name: 'Another Move', muscleGroup: 'back', equipment: 'cable', exerciseType: 'weight_reps', targets: '' },
+    ],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.newExercises.length, 2);
+  assert.deepEqual(out.newExercises.map((n) => n.key), ['a', 'c']);
+});
+
+check('parseResponse plan: newExercises — targets truncates to 120 chars, may be empty', () => {
+  const long = 'word '.repeat(40);
+  const payload = planPayload({
+    newExercises: [
+      { key: 'a', name: 'Long Targets Move', muscleGroup: 'back', equipment: 'cable', exerciseType: 'weight_reps', targets: long },
+      { key: 'b', name: 'Empty Targets Move', muscleGroup: 'back', equipment: 'cable', exerciseType: 'weight_reps', targets: '' },
+    ],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.ok(out.newExercises[0].targets.length <= 120, `targets is ${out.newExercises[0].targets.length} chars`);
+  assert.equal(out.newExercises[1].targets, '');
+});
+
+check('parseResponse plan: newExercises — capped at 8, a sub-2-char name drops the entry', () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    key: `k${i}`, name: `Move ${i}`, muscleGroup: 'back', equipment: 'cable', exerciseType: 'weight_reps', targets: '',
+  }));
+  const out = parseResponse('plan', messageResponse(planPayload({ newExercises: many })), { digest: planDigest });
+  assert.equal(out.newExercises.length, 8);
+
+  const tooShort = parseResponse('plan', messageResponse(planPayload({
+    newExercises: [{ key: 'x', name: ' a ', muscleGroup: 'back', equipment: 'cable', exerciseType: 'weight_reps', targets: '' }],
+  })), { digest: planDigest });
+  assert.equal(tooShort.newExercises.length, 0);
+});
+
+check('parseResponse session: better/worse and planChanges may reference a new: exercise created in the same reply', () => {
+  const payload = {
+    ...goodSession,
+    newExercises: [{ key: 'pullup-neg', name: 'Weighted Pull-Up Negative', muscleGroup: 'back', equipment: 'bodyweight', exerciseType: 'bw_weight_reps', targets: 'lats' }],
+    better: [{ exerciseId: 'new:pullup-neg', name: 'Weighted Pull-Up Negative', note: 'First clean negative.' }],
+    planChanges: [{ sessionId: 'ps-1', exerciseId: 'new:pullup-neg', change: 'add', from: '-', to: '3x5', reason: 'New progression exercise.' }],
+  };
+  const out = parseResponse('session', messageResponse(payload), { digest: sessionDigest });
+  assert.deepEqual(out.better.map((b) => b.exerciseId), ['new:pullup-neg']);
+  assert.equal(out.planChanges.length, 1);
+  assert.equal(out.newExercises.length, 1);
+});
+
+check('parseResponse: newExercises defaults to [] for plan/session/chat when the model creates nothing', () => {
+  assert.deepEqual(parseResponse('plan', messageResponse(goodPlan), { digest: planDigest }).newExercises, []);
+  assert.deepEqual(parseResponse('session', messageResponse(goodSession), { digest: sessionDigest }).newExercises, []);
+  assert.deepEqual(parseResponse('chat', messageResponse(goodChat), { digest: chatDigest }).newExercises, []);
 });
 
 // ---------------------------------------------------------------------------

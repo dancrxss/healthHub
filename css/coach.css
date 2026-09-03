@@ -405,22 +405,41 @@ button.coach-card { cursor: pointer; }
 /* ---- chatPanel() ----------------------------------------------------------- */
 .coach-chat { display: flex; flex-direction: column; min-height: 0; }
 .coach-chat-list {
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 2px 2px 6px;
 }
 .coach-chat-compact .coach-chat-list { max-height: 55vh; }
 .coach-chat:not(.coach-chat-compact) { flex: 1; min-height: 0; }
 .coach-chat:not(.coach-chat-compact) .coach-chat-list { flex: 1; min-height: 240px; }
 
-.coach-chat-row { display: flex; }
+/* Row rhythm: 6px between rows from the same speaker, 14px when the speaker
+   changes — set as margin-top per row (not a uniform list gap) so the two
+   can differ. .coach-chat-ts (a time divider) carries its own 14px-equivalent
+   spacing, so the row right after one collapses to a tight 4px instead of
+   double-spacing. */
+.coach-chat-row { display: flex; margin-top: 6px; }
+.coach-chat-list > .coach-chat-row:first-child { margin-top: 0; }
+.coach-chat-row-new-speaker { margin-top: 14px; }
+.coach-chat-list > .coach-chat-row-new-speaker:first-child { margin-top: 0; }
 .coach-chat-row-user { justify-content: flex-end; }
 .coach-chat-row-coach { justify-content: flex-start; }
 
+/* Time divider — shown above a group when the gap to the previous message is
+   more than 10 minutes (chatPanel() in coach-shared.js). */
+.coach-chat-ts {
+  margin-top: 14px; margin-bottom: 2px;
+  font-size: 11px; text-align: center;
+}
+.coach-chat-list > .coach-chat-ts:first-child { margin-top: 0; }
+.coach-chat-ts + .coach-chat-row { margin-top: 4px; }
+
+/* iMessage-like bubbles: 18px radius, the tail-side corner pulled in to 6px. */
 .coach-chat-user {
   max-width: 82%;
   padding: 10px 14px;
-  border-radius: 16px 16px 4px 16px;
+  border-radius: 18px 18px 6px 18px;
   background: var(--accent); color: var(--accent-ink);
   font-size: 14.5px; line-height: 1.4;
   white-space: pre-wrap; overflow-wrap: anywhere;
@@ -430,16 +449,17 @@ button.coach-card { cursor: pointer; }
 .coach-chat-coach {
   max-width: 88%;
   padding: 10px 14px;
-  border-radius: 16px 16px 16px 4px;
+  border-radius: 18px 18px 18px 6px;
   background: var(--card-2);
 }
 .coach-chat-coach-empty { margin: 0; font-size: 14px; }
+.coach-chat-coach .coach-bullets { gap: 4px; }
 
 .coach-chat-error {
   max-width: 88%;
   display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
   padding: 10px 14px;
-  border-radius: 16px 16px 16px 4px;
+  border-radius: 18px 18px 18px 6px;
   background: rgba(255, 90, 82, 0.12);
 }
 .coach-chat-error-text { font-size: 14px; line-height: 1.4; color: var(--danger); }
@@ -463,14 +483,26 @@ button.coach-card { cursor: pointer; }
 .coach-chat-empty { padding: 18px 4px; font-size: 14px; text-align: center; }
 
 .coach-chat-input-row { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; }
+/* Full-screen chat (#/coach/chat) only: keep the composer above the tab bar
+   and the keyboard rather than letting it scroll off with the message list.
+   The compact Home chat sits inline in the page, so it stays static. */
+.coach-chat:not(.coach-chat-compact) .coach-chat-input-row {
+  position: sticky;
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 8px);
+  z-index: 5;
+  background: var(--bg);
+  padding: 10px 0 2px;
+  margin-top: 0;
+  border-top: 1px solid var(--line);
+}
 .coach-chat-input {
   flex: 1 1 auto;
-  min-height: 40px; max-height: 96px;
+  min-height: 40px; max-height: 132px; /* ~5 lines at 16px/1.35 + padding */
   resize: none;
-  border: 0; border-radius: 14px;
+  border: 0; border-radius: 22px;
   background: var(--card-2); color: var(--text);
-  font: inherit; font-size: 15px; line-height: 1.35;
-  padding: 10px 14px;
+  font: inherit; font-size: 16px; line-height: 1.35; /* >=16px: no iOS zoom on focus */
+  padding: 11px 16px;
 }
 .coach-chat-input::placeholder { color: var(--faint); }
 .coach-chat-input:disabled { opacity: 0.6; }

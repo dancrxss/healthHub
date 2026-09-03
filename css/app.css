@@ -49,7 +49,10 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   font-size: 16px;
-  overscroll-behavior-y: none;
+  /* Both axes: overscroll-behavior-y alone still lets a wide element (or an
+     in-flight push transition) rubber-band horizontally in the WKWebView shell. */
+  overscroll-behavior: none;
+  overflow-x: hidden;
   -webkit-text-size-adjust: 100%;
 }
 body {
@@ -57,6 +60,23 @@ body {
      not reflow every time the keyboard or the URL bar changes height. */
   min-height: 100svh;
   touch-action: manipulation;
+}
+img, svg { -webkit-user-drag: none; }
+button { touch-action: manipulation; }
+
+/* Set by ui.js init() when window.Capacitor?.isNativePlatform?.() — the
+   native shell has no browser chrome to explain a scrollbar, so hide it. */
+body.native {
+  scrollbar-width: none;
+}
+body.native::-webkit-scrollbar,
+body.native *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+body.native * {
+  scrollbar-width: none;
 }
 /* Background scroll lock while a bottom sheet is open (see ui.js). */
 body.scroll-locked {
@@ -486,7 +506,17 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
 }
 .sheet-backdrop.open .sheet {
   transform: translateY(0) scale(1);
-  transition: transform var(--dur-enter) var(--ease-spring);
+  transition: transform var(--dur-sheet, var(--dur-enter)) var(--ease-spring);
+}
+/* Grabber bar — added to every sheet by openSheet() in ui.js, so no
+   per-call-site changes needed. Purely decorative (no drag-to-dismiss). */
+.sheet-grabber {
+  width: 36px; height: 5px;
+  margin: 6px auto 2px;
+  border-radius: 999px;
+  background: var(--faint);
+  opacity: 0.55;
+  flex: 0 0 auto;
 }
 
 .sheet-head {
@@ -611,11 +641,28 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
    ---------------------------------------------------------------------------- */
 .pick-head {
   position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; gap: 10px;
+  /* Grid, not flex: every .pick-head has exactly 3 children (a leading
+     control, the title, a trailing control), and the two outer columns are
+     genuinely equal-width — 1fr each — so the title lands dead centre even
+     when the leading control is a wide text button ("Cancel") and the
+     trailing one is a 40px round icon. flex + text-align:center only
+     centres the title within the leftover space, which reads as
+     off-centre the moment the two flanks aren't the same width (reported
+     from the shell). */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  column-gap: 10px;
   padding: calc(var(--safe-top) + 8px) 14px 10px;
   background: var(--bg);
 }
-.pick-title { flex: 1; text-align: center; font-weight: 700; font-size: 17px; }
+.pick-head > *:first-child { justify-self: start; }
+.pick-head > *:last-child { justify-self: end; }
+.pick-title {
+  min-width: 0;
+  text-align: center; font-weight: 700; font-size: 17px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pick-cancel {
   border: 0; background: none; color: var(--accent);
   font-size: 16px; padding: 8px 2px; cursor: pointer; min-height: 40px;

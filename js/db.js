@@ -22,6 +22,11 @@
 //   v2 additions:
 //   {'strength'|'cardio'} exerciseType   absent ⇒ 'strength'
 //   {boolean} isUnilateral               absent ⇒ false ("Single Leg / Single Arm")
+//   Coach additions (C2.4, 3 Sep 2026, additive):
+//   {string|null} targets      free text, the regions/qualities this exercise
+//                               hits (e.g. "upper chest, front delts"); absent/
+//                               null for exercises with none recorded
+//   {'user'|'coach'|null} createdBy   who created this exercise; absent ⇒ user
 //
 // @typedef {Object} WorkoutRecord
 //   {string} id

@@ -38,7 +38,16 @@ export const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
 
 const state = { currentWorkoutId: null };
 let currentRouteKey = null;
+let prevRouteHead = null; // the previous route's first hash segment — drives push/pop/tab-fade choice
 let screenCleanup = null; // per-screen teardown (e.g. the elapsed ticker)
+
+// A route can ask the NEXT route() pass to land at the bottom of the page
+// instead of the top — the chat screen wants to open on the newest message,
+// not scroll-to-top like every other route. Consumed and cleared once.
+let scrollBottomOnNextRoute = false;
+export function requestBottomScroll() {
+  scrollBottomOnNextRoute = true;
+}
 
 const screens = {
   home: document.getElementById('s-home'),
@@ -342,7 +351,10 @@ function unlockScroll() {
 
 export function openSheet(content) {
   const inner = typeof content === 'function' ? content() : content;
-  const sheet = h('div', { class: 'sheet' }, inner);
+  // Every sheet gets a grabber bar, added here rather than at each call site —
+  // it's purely decorative (no drag-to-dismiss), so one place is enough.
+  const grabber = h('div', { class: 'sheet-grabber', 'aria-hidden': 'true' });
+  const sheet = h('div', { class: 'sheet' }, grabber, inner);
   sheet.addEventListener('click', (e) => e.stopPropagation());
   const backdrop = h('div', { class: 'sheet-backdrop' }, sheet);
   backdrop.addEventListener('click', () => closeSheet());
@@ -555,12 +567,35 @@ async function route() {
   }
   updateResumeBar(a); // fire-and-forget; hides itself when nothing is in progress
   if (changed) {
-    window.scrollTo(0, 0);
+    if (scrollBottomOnNextRoute) {
+      scrollBottomOnNextRoute = false;
+      window.scrollTo(0, document.documentElement.scrollHeight);
+    } else {
+      window.scrollTo(0, 0);
+    }
     // A genuine route change drifts its screen into place. Deliberately NOT on
     // re-renders of the same screen: committing a set must never re-animate
     // the workout, and the screen is interactive throughout regardless.
+    //
+    // Which animation depends on the shape of the navigation, iOS nav-
+    // controller style: a fullscreen route (workout/pick/settings/copy/
+    // routine) pushes in from the right; returning to a tab from one pops
+    // back with a light fade/scale; switching between tabs cross-fades. The
+    // very first paint (prevRouteHead still null) gets the calm float-in it
+    // always had.
     const shown = screens[tab || a];
-    if (shown && shown.firstElementChild) playOnce(shown.firstElementChild, 'anim-float-in');
+    if (shown && shown.firstElementChild) {
+      const wasFullscreen = fullscreenRoutes.includes(prevRouteHead);
+      const isFullscreen = fullscreenRoutes.includes(a);
+      let cls;
+      if (prevRouteHead == null) cls = 'anim-float-in';
+      else if (isFullscreen && !wasFullscreen) cls = 'anim-push-in';
+      else if (isFullscreen && wasFullscreen) cls = 'anim-push-in'; // pushing deeper (e.g. workout -> pick)
+      else if (!isFullscreen && wasFullscreen) cls = 'anim-pop-in';
+      else cls = 'anim-tab-in'; // tab <-> tab
+      playOnce(shown.firstElementChild, cls);
+    }
+    prevRouteHead = a;
   }
 }
 
@@ -670,6 +705,7 @@ async function init() {
   // Inside the Capacitor shell the assets are bundled with the app, so the SW
   // adds nothing and its reload-on-update dance can fight the native lifecycle.
   const isNativeShell = !!window.Capacitor?.isNativePlatform?.();
+  document.body.classList.toggle('native', isNativeShell);
   if ('serviceWorker' in navigator && !isNativeShell) {
     // Self-updating PWA: the SW is cache-first, so a launch always shows the
     // OLD version while the new one installs in the background. When the new
