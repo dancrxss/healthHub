@@ -22,3 +22,4 @@ smoke check passes.
 2026-09-03 13:03 UTC · pwa · 88841df · "Coach: AI training coach (Sonnet 5 via user's own key), Coach tab, plan-driven ghost sets, DB v3, SW v15 — smoke check green, no console errors" · Claude (for Dan)
 2026-09-03 14:45 UTC · pwa · 6b8e621 · "Coach v2: Home tab (default), plan builder, 6–8 week projected plan with explanations, bulleted coach output, two-thread chat + shared memory — DB v4, SW v16; smoke check green, no console errors" · Claude (for Dan)
 2026-09-03 15:15 UTC · pwa · 2fbb92c · "Coach: surface API error detail in-app; local/coach-diag.mjs (SW v17) — smoke green" · Claude (for Dan)
+2026-09-03 15:37 UTC · pwa · 3f10317 · "Coach: simplified structured-output schemas (fix for 'compiled grammar is too large') — SW v18, smoke green" · Claude (for Dan)
