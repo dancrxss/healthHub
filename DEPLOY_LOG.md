@@ -24,3 +24,4 @@ smoke check passes.
 2026-09-03 15:15 UTC · pwa · 2fbb92c · "Coach: surface API error detail in-app; local/coach-diag.mjs (SW v17) — smoke green" · Claude (for Dan)
 2026-09-03 15:37 UTC · pwa · 3f10317 · "Coach: simplified structured-output schemas (fix for 'compiled grammar is too large') — SW v18, smoke green" · Claude (for Dan)
 2026-09-03 16:11 UTC · pwa · 6e6e213 · "Coach: full exercise library + all-time group history in the digest, year-wide chat window, expert-PT prompt — SW v19, smoke green" · Claude (for Dan)
+2026-09-03 18:01 UTC · pwa · b90e49f · "iOS-native polish, chat UX, coach exercise creation + anatomy knowledge — SW v20, smoke green; iOS shell rebuilt" · Claude (for Dan)
