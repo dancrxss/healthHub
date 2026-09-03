@@ -17,6 +17,7 @@ import {
   MAX_ATTEMPTS,
   SYSTEM_PROMPT,
   SCHEMAS,
+  schemaStats,
   PRICING,
   CoachApiError,
   buildHeaders,
@@ -193,9 +194,9 @@ function planPayload(overrides = {}) {
         exercises: [
           {
             exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8,
-            targetWeightKg: 50, targetDurationSec: null, targetRpe: 7,
+            targetWeightKg: 50, targetDurationSec: 0, targetRpe: 7,
             purpose: 'Main chest press.', goal: '3x8 at 70kg by week eight.', note: 'Stop two shy.',
-            progression: { weightStepKg: 2.5, repStep: 1, durationStepSec: null, everyWeeks: 1 },
+            stepWeightKg: 2.5, stepReps: 1, stepDurationSec: 0, everyWeeks: 1,
           },
         ],
       },
@@ -213,16 +214,16 @@ const goodPlan = planPayload({
       brief: ['Easy aerobic work.'],
       exercises: [
         {
-          exerciseId: 'ex-run', targetSets: 1, targetRepsLow: null, targetRepsHigh: null,
-          targetWeightKg: null, targetDurationSec: 900, targetRpe: null,
-          purpose: 'Aerobic base.', goal: '20 minutes by week eight.', note: null,
-          progression: { weightStepKg: null, repStep: null, durationStepSec: 60, everyWeeks: 2 },
+          exerciseId: 'ex-run', targetSets: 1, targetRepsLow: 0, targetRepsHigh: 0,
+          targetWeightKg: 0, targetDurationSec: 900, targetRpe: 0,
+          purpose: 'Aerobic base.', goal: '20 minutes by week eight.', note: '',
+          stepWeightKg: 0, stepReps: 0, stepDurationSec: 60, everyWeeks: 2,
         },
         {
-          exerciseId: 'ex-plank', targetSets: 3, targetRepsLow: null, targetRepsHigh: null,
-          targetWeightKg: null, targetDurationSec: 45, targetRpe: null,
-          purpose: 'Core stability.', goal: 'Hold 60 seconds by week eight.', note: null,
-          progression: { weightStepKg: null, repStep: null, durationStepSec: 10, everyWeeks: 2 },
+          exerciseId: 'ex-plank', targetSets: 3, targetRepsLow: 0, targetRepsHigh: 0,
+          targetWeightKg: 0, targetDurationSec: 45, targetRpe: 0,
+          purpose: 'Core stability.', goal: 'Hold 60 seconds by week eight.', note: '',
+          stepWeightKg: 0, stepReps: 0, stepDurationSec: 10, everyWeeks: 2,
         },
       ],
     },
@@ -239,12 +240,22 @@ const goodSession = {
   plan: goodPlan,
 };
 
+/** The wire shape (C2.3 amendment): a flat list of {field, value} string pairs. */
 const goodChat = {
   reply: ['Yes, we can add a Friday cardio day.', 'I have adjusted the plan below.'],
   memoryUpdates: { add: ['Wants a dedicated Friday cardio session.'], removeIds: ['m-1'] },
-  profilePatch: { daysPerWeek: 4, sessionMinutes: null, injuryNotes: null, equipmentNotes: null, notes: null, split: null, cardioInclude: true, coreInclude: null },
+  profilePatch: [
+    { field: 'daysPerWeek', value: '4' },
+    { field: 'cardioInclude', value: 'true' },
+  ],
   planChanges: [],
   plan: null,
+};
+
+/** The parsed shape `goodChat.profilePatch` above should clean up into (C2.1 patch object). */
+const goodChatProfilePatch = {
+  daysPerWeek: 4, sessionMinutes: null, injuryNotes: null, equipmentNotes: null,
+  notes: null, split: null, cardioInclude: true, coreInclude: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -423,6 +434,19 @@ for (const kind of ['daily', 'session', 'plan', 'chat']) {
     });
   });
 
+  // C2.3 amendment: the API rejected the v2 schemas as too large a compiled
+  // grammar. The wire schema now carries zero `enum` keywords (parseResponse
+  // validates against the allowed lists instead) and at most one `anyOf` per
+  // schema — the single nullable-plan $ref.
+  check(`schema ${kind}: zero enum keywords, at most one anyOf`, () => {
+    let anyOfCount = 0;
+    walkSchema(SCHEMAS[kind], kind, (node, path) => {
+      assert.equal('enum' in node, false, `${path}: enum keywords are forbidden — the wire schema must stay enum-free`);
+      if (Array.isArray(node.anyOf)) anyOfCount += 1;
+    });
+    assert.ok(anyOfCount <= 1, `${kind} schema carries ${anyOfCount} anyOf nodes, expected at most 1`);
+  });
+
   check(`schema ${kind}: every $ref resolves inside the same schema`, () => {
     const root = SCHEMAS[kind];
     let refs = 0;
@@ -456,41 +480,72 @@ check('schema: PLAN v2 is emitted identically in all three places, never sharing
   assert.notEqual(SCHEMAS.session.$defs.plan, SCHEMAS.chat.$defs.plan, 'session and chat emissions must not share nodes with each other');
 });
 
-check('schema plan: exercise progression and duration fields are present', () => {
+check('schema plan: exercise fields carry a flattened progression (no nested object)', () => {
   const exerciseProps = SCHEMAS.plan.properties.sessions.items.properties.exercises.items.properties;
   assert.deepEqual(
     Object.keys(exerciseProps).sort(),
-    ['exerciseId', 'goal', 'note', 'progression', 'purpose', 'targetDurationSec', 'targetRepsHigh', 'targetRepsLow', 'targetRpe', 'targetSets', 'targetWeightKg'],
+    [
+      'everyWeeks', 'exerciseId', 'goal', 'note', 'purpose',
+      'stepDurationSec', 'stepReps', 'stepWeightKg',
+      'targetDurationSec', 'targetRepsHigh', 'targetRepsLow', 'targetRpe', 'targetSets', 'targetWeightKg',
+    ],
   );
-  const progressionProps = exerciseProps.progression.properties;
-  assert.deepEqual(Object.keys(progressionProps).sort(), ['durationStepSec', 'everyWeeks', 'repStep', 'weightStepKg']);
-});
-
-check('schema chat: profilePatch fields incl. split enum and cardio/core booleans', () => {
-  const patchSchema = SCHEMAS.chat.properties.profilePatch.anyOf[0];
-  assert.deepEqual(
-    Object.keys(patchSchema.properties).sort(),
-    ['cardioInclude', 'coreInclude', 'daysPerWeek', 'equipmentNotes', 'injuryNotes', 'notes', 'sessionMinutes', 'split'],
-  );
-  assert.deepEqual(patchSchema.properties.split.anyOf[0].enum, ['auto', 'full-body', 'upper-lower', 'ppl']);
-  assert.deepEqual(patchSchema.properties.cardioInclude, { anyOf: [{ type: 'boolean' }, { type: 'null' }] });
-  assert.deepEqual(patchSchema.properties.coreInclude, { anyOf: [{ type: 'boolean' }, { type: 'null' }] });
-  assert.deepEqual(SCHEMAS.chat.properties.profilePatch.anyOf[1], { type: 'null' });
-});
-
-check('schema daily: enums and nullables', () => {
-  assert.deepEqual(SCHEMAS.daily.properties.tone.enum, ['encouraging', 'steady', 'caution']);
-  assert.deepEqual(SCHEMAS.daily.properties.recoveryNote, { anyOf: [{ type: 'string' }, { type: 'null' }] });
-  const groups = SCHEMAS.daily.properties.balanceNotes.items.properties.group.enum;
-  assert.deepEqual(groups, ['chest', 'back', 'legs', 'shoulders', 'biceps', 'triceps', 'abs', 'cardio', 'accessory', 'rehab', 'other']);
-});
-
-check('schema session: flag codes cover the engine list plus other', () => {
-  const codes = SCHEMAS.session.properties.flags.items.properties.code.enum;
-  for (const c of ['volume-spike', 'group-volume-spike', 'rpe-creep', 'e1rm-regression', 'no-rest-day', 'frequency-drop', 'return-ramp', 'low-hrv', 'elevated-rhr', 'short-sleep', 'weight-drop', 'other']) {
-    assert.ok(codes.includes(c), `missing flag code ${c}`);
+  for (const field of ['targetRepsLow', 'targetRepsHigh', 'targetDurationSec', 'stepReps', 'stepDurationSec', 'everyWeeks']) {
+    assert.deepEqual(exerciseProps[field], { type: 'integer' }, `${field} must be a plain required integer`);
   }
-  assert.equal(codes.length, 12);
+  for (const field of ['targetWeightKg', 'targetRpe', 'stepWeightKg']) {
+    assert.deepEqual(exerciseProps[field], { type: 'number' }, `${field} must be a plain required number`);
+  }
+  assert.deepEqual(exerciseProps.note, { type: 'string' });
+});
+
+check('schema chat: profilePatch is a flat field/value pair list, not a nullable object', () => {
+  const patchSchema = SCHEMAS.chat.properties.profilePatch;
+  assert.equal(patchSchema.type, 'array');
+  assert.equal('anyOf' in patchSchema, false, 'profilePatch must not be nullable on the wire — an empty list means no change');
+  assert.deepEqual(Object.keys(patchSchema.items.properties).sort(), ['field', 'value']);
+  assert.deepEqual(patchSchema.items.properties.field, { type: 'string' });
+  assert.deepEqual(patchSchema.items.properties.value, { type: 'string' });
+  assert.deepEqual(patchSchema.items.required.sort(), ['field', 'value']);
+});
+
+check('schema daily: plain required strings, no enum or nullable', () => {
+  assert.deepEqual(SCHEMAS.daily.properties.tone, { type: 'string' });
+  assert.deepEqual(SCHEMAS.daily.properties.recoveryNote, { type: 'string' });
+  assert.deepEqual(SCHEMAS.daily.properties.balanceNotes.items.properties.group, { type: 'string' });
+  assert.deepEqual(SCHEMAS.daily.properties.balanceNotes.items.properties.status, { type: 'string' });
+});
+
+check('schema session: flag code and plan-change fields are plain strings (validated in parseResponse, not the schema)', () => {
+  assert.deepEqual(SCHEMAS.session.properties.flags.items.properties.code, { type: 'string' });
+  assert.deepEqual(SCHEMAS.session.properties.planChanges.items.properties.change, { type: 'string' });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. schemaStats — compiled-grammar size proxy (C2.3 amendment). The API
+// rejected the v2 schemas with "the compiled grammar is too large"; these
+// thresholds guard against the wire schema creeping back up. Pre-amendment
+// sizes (for reference, not re-derived here): daily 775 · plan 2349 ·
+// session 3929 · chat 4018 bytes.
+// ---------------------------------------------------------------------------
+
+check('schemaStats: bytes shrink well below the pre-amendment sizes, zero enums, ≤1 anyOf', () => {
+  const stats = schemaStats();
+  const PRE_AMENDMENT_BYTES = { daily: 775, plan: 2349, session: 3929, chat: 4018 };
+  const MAX_BYTES = { daily: 700, plan: 2000, session: 3300, chat: 3000 };
+  for (const kind of ['daily', 'session', 'plan', 'chat']) {
+    assert.ok(stats[kind].bytes < MAX_BYTES[kind], `${kind} schema is ${stats[kind].bytes} bytes, expected < ${MAX_BYTES[kind]}`);
+    assert.ok(
+      stats[kind].bytes < PRE_AMENDMENT_BYTES[kind],
+      `${kind} schema must shrink below its pre-amendment size of ${PRE_AMENDMENT_BYTES[kind]} bytes`,
+    );
+    assert.equal(stats[kind].enums, 0, `${kind} schema must carry zero enum keywords`);
+    assert.ok(stats[kind].anyOf <= 1, `${kind} schema must carry at most one anyOf node`);
+  }
+  assert.equal(stats.daily.anyOf, 0, 'daily has no nullable-plan field to carry an anyOf');
+  assert.equal(stats.plan.anyOf, 0, 'the top-level plan schema has no anyOf either');
+  assert.equal(stats.session.anyOf, 1, 'session keeps exactly the one nullable-plan anyOf');
+  assert.equal(stats.chat.anyOf, 1, 'chat keeps exactly the one nullable-plan anyOf');
 });
 
 // ---------------------------------------------------------------------------
@@ -560,7 +615,8 @@ check('parseResponse chat: happy path', () => {
   const out = parseResponse('chat', messageResponse(goodChat), { digest: chatDigest });
   assert.deepEqual(out.reply, goodChat.reply);
   assert.deepEqual(out.memoryUpdates, { add: goodChat.memoryUpdates.add, removeIds: ['m-1'] });
-  assert.deepEqual(out.profilePatch, goodChat.profilePatch);
+  assert.deepEqual(out.profilePatch, goodChatProfilePatch);
+  assert.equal(out.profilePatch.daysPerWeek, 4);
   assert.equal(out.plan, null);
 });
 
@@ -584,8 +640,8 @@ check('parseResponse plan: a cardio exercise keeps duration and nulls reps', () 
       exercises: [{
         exerciseId: 'ex-run', targetSets: 1, targetRepsLow: 8, targetRepsHigh: 12,
         targetWeightKg: 50, targetDurationSec: 720, targetRpe: 6,
-        purpose: 'Aerobic base.', goal: '12 minutes.', note: null,
-        progression: { weightStepKg: 1, repStep: 1, durationStepSec: 30, everyWeeks: 1 },
+        purpose: 'Aerobic base.', goal: '12 minutes.', note: '',
+        stepWeightKg: 1, stepReps: 1, stepDurationSec: 30, everyWeeks: 1,
       }],
     }],
   });
@@ -594,6 +650,8 @@ check('parseResponse plan: a cardio exercise keeps duration and nulls reps', () 
   assert.equal(ex.targetDurationSec, 720);
   assert.equal(ex.targetRepsLow, null);
   assert.equal(ex.targetRepsHigh, null);
+  assert.equal(ex.note, null, 'the "" wire sentinel becomes null in the parsed shape');
+  assert.deepEqual(ex.progression, { weightStepKg: 1, repStep: 1, durationStepSec: 30, everyWeeks: 1 });
 });
 
 check('parseResponse plan: a time plank keeps duration (defaulted) and nulls reps', () => {
@@ -623,6 +681,22 @@ check('parseResponse plan: a missing cardio duration defaults to 600s', () => {
   });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
   assert.equal(out.sessions[0].exercises[0].targetDurationSec, 600);
+});
+
+check('parseResponse plan: an explicit 0 wire sentinel for cardio duration also defaults to 600s', () => {
+  const payload = planPayload({
+    sessions: [{
+      name: 'Cardio', focus: '', brief: [],
+      exercises: [{
+        exerciseId: 'ex-run', targetSets: 1, targetRepsLow: 0, targetRepsHigh: 0,
+        targetWeightKg: 0, targetDurationSec: 0, targetRpe: 0,
+        purpose: 'Base.', goal: 'Base.', note: '',
+        stepWeightKg: 0, stepReps: 0, stepDurationSec: 0, everyWeeks: 1,
+      }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.sessions[0].exercises[0].targetDurationSec, 600, 'the 0 sentinel means "not applicable", so the default fallback applies');
 });
 
 check('parseResponse plan: a weight_time carry keeps duration and nulls reps', () => {
@@ -715,26 +789,28 @@ check('parseResponse plan: a 300-char purpose truncates to 160', () => {
   assert.ok(out.sessions[0].exercises[0].purpose.length <= 160);
 });
 
-check('parseResponse plan: progression clamps — weightStepKg 20 → 10, everyWeeks 0 → 1', () => {
+check('parseResponse plan: progression clamps — stepWeightKg 20 → 10, everyWeeks 0 → 1, stepDurationSec 0 sentinel → null', () => {
   const payload = planPayload({
     sessions: [{
       ...planPayload().sessions[0],
       exercises: [{
         ...planPayload().sessions[0].exercises[0],
-        progression: { weightStepKg: 20, repStep: 1, durationStepSec: 0, everyWeeks: 0 },
+        stepWeightKg: 20, stepReps: 1, stepDurationSec: 0, everyWeeks: 0,
       }],
     }],
   });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
   const prog = out.sessions[0].exercises[0].progression;
   assert.equal(prog.weightStepKg, 10);
+  assert.equal(prog.repStep, 1);
+  assert.equal(prog.durationStepSec, null, 'the 0 wire sentinel means "no duration step"');
   assert.equal(prog.everyWeeks, 1);
 });
 
-check('parseResponse plan: a missing progression object becomes all nulls plus everyWeeks 1', () => {
+check('parseResponse plan: missing step fields become all nulls plus everyWeeks 1', () => {
   const base = planPayload().sessions[0].exercises[0];
-  const { progression, ...withoutProgression } = base;
-  const payload = planPayload({ sessions: [{ ...planPayload().sessions[0], exercises: [withoutProgression] }] });
+  const { stepWeightKg, stepReps, stepDurationSec, everyWeeks, ...withoutSteps } = base;
+  const payload = planPayload({ sessions: [{ ...planPayload().sessions[0], exercises: [withoutSteps] }] });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
   assert.deepEqual(out.sessions[0].exercises[0].progression, {
     weightStepKg: null, repStep: null, durationStepSec: null, everyWeeks: 1,
@@ -932,35 +1008,55 @@ check('parseResponse chat: removeIds is filtered to known digest memory ids', ()
   assert.deepEqual(out.memoryUpdates.removeIds, ['m-1', 'm-2'], 'unknown ids dropped, duplicates dropped, order kept');
 });
 
-check('parseResponse chat: profilePatch is range-checked', () => {
+check('parseResponse chat: profilePatch pairs are range-checked', () => {
   const payload = {
     ...goodChat,
-    profilePatch: {
-      daysPerWeek: 15, sessionMinutes: 5, injuryNotes: 'x'.repeat(700), equipmentNotes: null,
-      notes: null, split: 'nonsense', cardioInclude: true, coreInclude: null,
-    },
+    profilePatch: [
+      { field: 'daysPerWeek', value: '15' },
+      { field: 'sessionMinutes', value: '5' },
+      { field: 'injuryNotes', value: 'x'.repeat(700) },
+      { field: 'split', value: 'nonsense' },
+      { field: 'cardioInclude', value: 'true' },
+    ],
   };
   const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
   assert.equal(out.profilePatch.daysPerWeek, 7);
   assert.equal(out.profilePatch.sessionMinutes, 20);
   assert.equal(out.profilePatch.injuryNotes.length, 600, 'profile text fields clamp at 600 chars');
-  assert.equal(out.profilePatch.split, null, 'an invalid split enum value is dropped');
+  assert.equal(out.profilePatch.split, null, 'an invalid split value is dropped');
   assert.equal(out.profilePatch.cardioInclude, true);
+  assert.equal(out.profilePatch.equipmentNotes, null, 'a field with no pair stays null');
+  assert.equal(out.profilePatch.coreInclude, null);
 });
 
-check('parseResponse chat: an all-null profilePatch becomes null', () => {
-  const payload = {
-    ...goodChat,
-    profilePatch: { daysPerWeek: null, sessionMinutes: null, injuryNotes: null, equipmentNotes: null, notes: null, split: null, cardioInclude: null, coreInclude: null },
-  };
+check('parseResponse chat: coreInclude/cardioInclude read "false" as false, not as absent', () => {
+  const payload = { ...goodChat, profilePatch: [{ field: 'coreInclude', value: 'false' }] };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
+  assert.equal(out.profilePatch.coreInclude, false);
+  assert.equal(out.profilePatch.cardioInclude, null);
+});
+
+check('parseResponse chat: an empty profilePatch list becomes null', () => {
+  const out = parseResponse('chat', messageResponse({ ...goodChat, profilePatch: [] }), { digest: chatDigest });
+  assert.equal(out.profilePatch, null);
+});
+
+check('parseResponse chat: a profilePatch list of unrecognised field names also collapses to null', () => {
+  const payload = { ...goodChat, profilePatch: [{ field: 'nonsense', value: 'x' }, { field: 'alsoNonsense', value: 'y' }] };
   const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
   assert.equal(out.profilePatch, null);
 });
 
-check('parseResponse chat: profilePatch itself null stays null, unknown keys ignored', () => {
-  const out = parseResponse('chat', messageResponse({ ...goodChat, profilePatch: { daysPerWeek: 4, bogusField: 'x' } }), { digest: chatDigest });
+check('parseResponse chat: unknown field names are dropped, known ones kept', () => {
+  const payload = { ...goodChat, profilePatch: [{ field: 'daysPerWeek', value: '4' }, { field: 'bogusField', value: 'x' }] };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
   assert.equal(out.profilePatch.daysPerWeek, 4);
   assert.equal('bogusField' in out.profilePatch, false);
+});
+
+check('parseResponse chat: a malformed (non-array) profilePatch collapses to null rather than throwing', () => {
+  const out = parseResponse('chat', messageResponse({ reply: ['ok'] }), { digest: chatDigest });
+  assert.equal(out.profilePatch, null);
 });
 
 // ---------------------------------------------------------------------------

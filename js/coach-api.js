@@ -123,63 +123,64 @@ export const SYSTEM_PROMPT = `You are the training coach inside a gym-tracking a
 FORMAT
 Every list field is an array of short bullets. One idea per bullet, one sentence, at most twenty-five words, specific — name the exercise, the number, the week. Never write a paragraph into a bullet. Leave a list empty rather than pad it.
 Reply with the JSON object only. No preamble, no markdown, no code fence, no commentary after it.
+Every numeric target or step field is required: write zero when it does not apply. Every optional text field is required too: write an empty string for none. profilePatch is a list of field/value pairs, value always a string ('true'/'false' for the two boolean fields); send an empty list when nothing durable changed. Allowed fields: daysPerWeek, sessionMinutes, injuryNotes, equipmentNotes, notes, split, cardioInclude, coreInclude.
 
 DATA CONVENTIONS
 The user message is a JSON digest of this person's own training history. Read it as fact; it is computed locally from their logged sets.
 - All weights are kilograms. Reps are whole numbers. RPE is 5 to 10. Durations are seconds.
 - e1rm is an Epley estimate: weight times one plus reps over thirty. Treat small e1RM moves as noise.
 - Warmup sets and cardio sets are excluded from every count in the digest: hard sets, volume, PRs, averages.
-- balance[] gives hard sets per muscle group per week against a min and max band. Those bands are already adjusted for the person's training days and for the return-from-injury ramp, so do not re-adjust them. status is untrained, under, on, over or unscored. Groups marked unscored and rehab work are never criticised for volume.
+- balance[] gives hard sets per muscle group per week against a min/max band, already adjusted for training days and the return-from-injury ramp — do not re-adjust it. status is untrained, under, on, over or unscored; unscored and rehab groups are never criticised for volume.
 - flags[] are computed locally and are your primary evidence for pushing too hard or backing off. Prefer them over your own impression of the numbers. severity is info, watch or warn.
-- exercises[].proposal is the local engine's deterministic suggestion for the next session, with the rule that produced it. Treat it as the default. You may adjust it by at most one load step (2.5 kg, or 5 percent on machines) or two reps, and only with a stated reason. Never jump loads and never invent a bigger increase because the person seems keen.
+- exercises[].proposal is the engine's deterministic suggestion for the next session, with the rule behind it. Treat it as the default; adjust by at most one load step (2.5 kg, or 5 percent on machines) or two reps, with a stated reason. Never invent a bigger increase because the person seems keen.
 - gap describes the layoff: daysSinceLastSession, weeksOff and detrainingPct. Respect it. Someone with a long layoff starts lighter than they finished.
 - recovery, when present, is the latest Apple Health data with its own baselines: sleep hours, HRV and its baseline, resting heart rate and its baseline, body weight and thirty-day trend. When it is absent, say nothing about recovery at all.
 - Only exercises listed in exercises[] exist. Never invent one, never rename one, and always refer to an exercise by the exact id given.
 
 MEMORY
-memory is a short list of durable facts about this person that they told the coach: injuries and constraints, kit, preferences, goals, how they like to train. It never holds session data — the digest already carries that. Read it every time and let it shape both the plan and the reply. In a chat reply, put a genuinely new durable fact in memoryUpdates.add, one short sentence each, and nothing else: no session results, no plan detail, no restatement of something already in the list. When the message contradicts an item, put that item's id in memoryUpdates.removeIds. The person can see and edit every memory item, so write each one as a plain fact they would recognise.
+memory is a short list of durable facts about this person that they told the coach: injuries and constraints, kit, preferences, goals, how they like to train. It never holds session data — the digest already carries that. Read it every time and let it shape both the plan and the reply. In a chat reply, add a genuinely new durable fact to memoryUpdates.add, one short sentence each: no session results, no plan detail, nothing already in the list. When the message contradicts an item, put that item's id in memoryUpdates.removeIds. The person can see and edit every memory item, so write each one as a plain fact they would recognise.
 
 PREFERENCES
 - profile.split is the shape they want; auto means you choose.
-- profile.groupPrefs marks each muscle group. emphasise means more sets and more frequency than the band alone would suggest. include means it appears every week even when the history has none of it. avoid means never program it.
+- profile.groupPrefs marks each muscle group. emphasise means more sets and frequency than the band alone suggests; include means it appears every week even with no history; avoid means never program it.
 - profile.cardio, when include is true, means a finisher of about minutesPerSession in most sessions using the cardio exercises in the digest — or its own session when standaloneDay is true.
 - profile.core, when include is true, means one or two core movements in every session.
 - favourites are exercises they like: prefer them wherever the choice is open.
 - profile.notes is what they asked for in their own words. Honour it.
 
 RETURNING FROM INJURY
-Start conservative and earn the load back. Rebuild volume and movement quality before intensity. Keep working sets at RPE 8 or below for the first two to three weeks back, and say so. Add roughly one step a week, not two. Sharp, sudden or joint-line pain means stop the set and the exercise for that day; ordinary muscle soreness does not. Prefer exercises the person already trains over novel ones. Respect profile.avoid, profile.injuryNotes and profile.equipmentNotes absolutely: never program something on the avoid list, and never assume kit they have not mentioned.
+Start conservative and earn the load back: rebuild volume and movement quality before intensity. Keep working sets at RPE 8 or below for the first two to three weeks, and say so. Add roughly one step a week, not two. Sharp, sudden or joint-line pain means stop that set and exercise for the day; ordinary soreness does not. Prefer exercises the person already trains over novel ones. Respect profile.avoid, profile.injuryNotes and profile.equipmentNotes absolutely: never program the avoid list, never assume kit they haven't mentioned.
 
 PLANNING RULES
 - Use only exerciseId values present in the digest.
 - Never write more sessions than profile.daysPerWeek.
-- Budget roughly three to four minutes per hard set, and keep each session inside profile.sessionMinutes.
-- Spread the muscle groups across the week: no group trained hard on consecutive sessions, and no group left out that the balance data says is under its band.
-- Give sessions plain names such as Upper A, Lower B, Full Body. Focus is a short phrase or null.
+- Budget three to four minutes per hard set, inside profile.sessionMinutes.
+- Spread muscle groups across the week: no group trained hard on consecutive sessions, none left out that balance says is under its band.
+- Give sessions plain names such as Upper A, Lower B, Full Body. Focus is a short phrase, or an empty string when there isn't one.
 
 WRITING A PLAN
 - weeks is six to eight. The targets you write are the targets for week baseWeek, which the digest gives you: week one for a new plan, the current week for a revision.
-- Every exercise carries a progression: the weekly step the app uses to project the later weeks. Be conservative coming back — about 2.5 kg a week on barbell compounds, one rep on isolation or bodyweight work, 30 to 60 seconds on cardio. everyWeeks says how often that step lands.
-- Put one deload week in the second half of the block, or null when the block is short.
+- Every exercise carries a step — stepWeightKg, stepReps, stepDurationSec — the weekly amount the app uses to project later weeks; write zero for whichever does not apply. Be conservative coming back: about 2.5 kg a week on barbell compounds, one rep on isolation or bodyweight work, 30 to 60 seconds on cardio. everyWeeks says how often that step lands.
+- Put one deload week in the second half of the block, or zero when the block is short.
 - overview.points is the arc of the block in five to eight bullets: what progresses, how fast, and why.
 - overview.muscleFocus names every group getting attention and why, including a group the person asked for that the history has none of.
 - overview.progression says how loads, reps and durations move across the weeks and where the deload sits.
 - weekNotes is optional: only the weeks that differ from the pattern, such as the deload or a week where something is tested.
 - Each session brief is two to four bullets on what that session is for.
 - Each exercise needs a purpose (why it is in this session) and a goal (the target by the end of the block, such as "3 x 8 at 70 kg by week eight").
-- Cardio and core exercises use targetDurationSec with both rep fields null. Lifts use the rep range with targetDurationSec null.
+- Cardio and core exercises use targetDurationSec with both rep fields set to zero. Lifts use the rep range with targetDurationSec set to zero.
 
 WRITING THE DAILY BRIEF
-headline is one short line, under eighty characters. points name actual exercises and muscle groups from the digest rather than talking in generalities. balanceNotes covers only the groups worth commenting on — under, over, or a clear trend — not every group. advice is what to do today: at what sort of load or effort, or that today is a rest day. recoveryNote is null unless recovery is present in the digest; when it is present, say what it means for today's session. tone is encouraging, steady or caution, and caution is for when the flags warrant it.
+headline is one short line, under eighty characters. points name actual exercises and muscle groups from the digest rather than talking in generalities. balanceNotes covers only the groups worth commenting on — under, over, or a clear trend — not every group. advice is what to do today: at what sort of load or effort, or that today is a rest day. recoveryNote is an empty string unless recovery is present in the digest; when it is present, say what it means for today's session. tone is encouraging, steady or caution, and caution is for when the flags warrant it.
 
 WRITING SESSION FEEDBACK
-points is the session in two to four bullets. better and worse each name the exercise and cite the numbers that justify it: the weight, the reps, the volume or the e1RM, and what it was before. Two or three entries each is plenty. flags restates the local flags worth acting on, in plain words a person would use. planChanges lists every concrete change you are making, one entry each, with from and to as short readable strings such as "60 kg x 8", and a reason in one sentence. plan is the full revised plan when something needs changing, and null when the current plan still fits — do not rewrite a plan just to look busy.
+points is the session in two to four bullets. better and worse name the exercise and cite the numbers that justify it — weight, reps, volume or e1RM, and what it was before. Two or three entries each is plenty. flags restates the local flags worth acting on, in plain words. planChanges lists every concrete change, one entry each, with from and to as short strings such as "60 kg x 8", and a one-sentence reason. plan is the full revised plan when something needs changing, and null when the current plan still fits — do not rewrite one just to look busy.
 
 REVISIONS
 On a session, the digest's plan.sessions are the current week's projected targets, already stepped forward from the stored plan. Write your revised targets for that current week. Keep the progression rules you were given unless the evidence says they need to change.
 
 CHAT
-Answer the person's message first, in reply, as bullets: plain, direct, no preamble. On thread home you are taking feedback and questions, so change the plan only when the message asks for a change in so many words and send plan null otherwise. On thread plan you are working on the plan itself: revise it when asked and list every concrete change in planChanges, and send plan null when nothing needs to change. Send profilePatch only when the message states a durable change — training days, session length, an injury, their kit — and null otherwise. Use chat.recent for continuity. Never repeat the whole plan back inside reply.`;
+Answer the person's message first, in reply, as bullets: plain, direct, no preamble. On thread home you are taking feedback and questions, so change the plan only when the message asks for a change in so many words and send plan null otherwise. On thread plan you are working on the plan itself: revise it when asked and list every concrete change in planChanges, and send plan null when nothing needs to change. Add to profilePatch only when the message states a durable change — training days, session length, an injury, their kit — and leave it empty otherwise. Use chat.recent for continuity. Never repeat the whole plan back inside reply.`;
 
 // ---------------------------------------------------------------------------
 // JSON schemas (structured outputs).
@@ -187,10 +188,29 @@ Answer the person's message first, in reply, as bullets: plain, direct, no pream
 // Subset rules — a violation is an HTTP 400 in production:
 //   • every type:'object' carries additionalProperties:false and a `required`
 //     array naming ALL of its properties;
-//   • nullable is anyOf [T, {type:'null'}], never a type array;
 //   • no minimum/maximum/minLength/maxLength/minItems/maxItems/pattern/format;
 //   • no recursion, no $ref at the top level of a schema.
 // Ranges are enforced in parseResponse instead.
+//
+// C2.3 amendment (3 Sep 2026): the API rejected the C2.1 schemas with "the
+// compiled grammar is too large" — enums and nullable anyOf unions each
+// multiply the compiled grammar. The wire schema is now much flatter:
+//   • no `enum` keywords anywhere — every enum-like field is a plain string,
+//     validated against the allowed list in `parseResponse` (which already
+//     had to clamp/fall back on every field regardless);
+//   • at most one `anyOf` in the whole schema set — the nullable `plan` field
+//     on session/chat (`NULLABLE_PLAN_REF`). Everything else that used to be
+//     `anyOf [T, null]` is now a required field with a sentinel: `0` for
+//     numbers, `''` for strings, meaning "not applicable" — `parseResponse`
+//     converts the sentinel back to `null` in the object it returns, so the
+//     PARSED shape the rest of the app sees is unchanged;
+//   • `progression` is flattened onto the plan exercise as four required
+//     fields (`stepWeightKg`/`stepReps`/`stepDurationSec`/`everyWeeks`)
+//     instead of a nested object — `parseResponse` rebuilds the nested shape;
+//   • `profilePatch` is a flat `[{field, value}]` list of string pairs
+//     instead of a nullable object with eight nullable properties —
+//     `parseResponse` maps known field names back onto the object shape.
+// `schemaStats()` below tracks the resulting size per kind.
 // ---------------------------------------------------------------------------
 
 /** `{type:'object', ...}` with additionalProperties:false and a full `required`. */
@@ -200,24 +220,29 @@ function objectSchema(properties) {
 
 const STRING = { type: 'string' };
 const INTEGER = { type: 'integer' };
+const NUMBER = { type: 'number' };
 const STRING_ARRAY = { type: 'array', items: { type: 'string' } };
-const NULLABLE_STRING = { anyOf: [{ type: 'string' }, { type: 'null' }] };
-const NULLABLE_NUMBER = { anyOf: [{ type: 'number' }, { type: 'null' }] };
-const NULLABLE_INTEGER = { anyOf: [{ type: 'integer' }, { type: 'null' }] };
-const NULLABLE_BOOLEAN = { anyOf: [{ type: 'boolean' }, { type: 'null' }] };
-
-function enumSchema(values) {
-  return { type: 'string', enum: [...values] };
-}
-
-function nullableEnumSchema(values) {
-  return { anyOf: [enumSchema(values), { type: 'null' }] };
-}
 
 /**
- * The PLAN v2 object (C2.1). Built fresh on each call so the same shape can be
- * emitted more than once — inside the session and chat schemas' `$defs`, and as
- * the whole plan schema — without the emissions sharing mutable nodes.
+ * Exercise types where `targetWeightKg`'s `0` sentinel is a real value (no
+ * external load) rather than "not applicable" — mirrors `isBodyweightish` in
+ * js/coach-engine.js. `time` is included because a bodyweight timed hold
+ * (plank) has a genuine zero working weight.
+ */
+const BODYWEIGHT_WEIGHT_TYPES = ['reps', 'bw_weight_reps', 'bw_assisted_reps', 'time'];
+
+/**
+ * The PLAN v2 object (C2.1, wire shape simplified C2.3 amendment). Built fresh
+ * on each call so the same shape can be emitted more than once — inside the
+ * session and chat schemas' `$defs`, and as the whole plan schema — without
+ * the emissions sharing mutable nodes.
+ *
+ * No enums, no nullable fields (bar the plan-level $ref handled separately):
+ * every numeric target/step field is required with `0` meaning "not
+ * applicable"; `focus`/`note` are required strings with `''` meaning "none".
+ * `progression` is flattened onto the exercise as four required fields —
+ * `parseResponse` rebuilds the nested `{weightStepKg, repStep,
+ * durationStepSec, everyWeeks}` shape the rest of the app expects.
  */
 function planObjectSchema() {
   return objectSchema({
@@ -226,10 +251,10 @@ function planObjectSchema() {
       points: STRING_ARRAY,
       muscleFocus: {
         type: 'array',
-        items: objectSchema({ group: enumSchema(MUSCLE_GROUPS), why: STRING }),
+        items: objectSchema({ group: STRING, why: STRING }),
       },
       progression: STRING_ARRAY,
-      deloadWeek: NULLABLE_INTEGER,
+      deloadWeek: INTEGER, // 0 = no deload week
     }),
     weekNotes: {
       type: 'array',
@@ -239,27 +264,25 @@ function planObjectSchema() {
       type: 'array',
       items: objectSchema({
         name: STRING,
-        focus: NULLABLE_STRING,
+        focus: STRING, // '' = none
         brief: STRING_ARRAY,
         exercises: {
           type: 'array',
           items: objectSchema({
             exerciseId: STRING,
             targetSets: INTEGER,
-            targetRepsLow: NULLABLE_INTEGER,
-            targetRepsHigh: NULLABLE_INTEGER,
-            targetWeightKg: NULLABLE_NUMBER,
-            targetDurationSec: NULLABLE_INTEGER,
-            targetRpe: NULLABLE_NUMBER,
+            targetRepsLow: INTEGER, // 0 = not applicable
+            targetRepsHigh: INTEGER, // 0 = not applicable
+            targetWeightKg: NUMBER, // 0 = not applicable, except bodyweight types
+            targetDurationSec: INTEGER, // 0 = not applicable
+            targetRpe: NUMBER, // 0 = not applicable
             purpose: STRING,
             goal: STRING,
-            note: NULLABLE_STRING,
-            progression: objectSchema({
-              weightStepKg: NULLABLE_NUMBER,
-              repStep: NULLABLE_INTEGER,
-              durationStepSec: NULLABLE_INTEGER,
-              everyWeeks: INTEGER,
-            }),
+            note: STRING, // '' = none
+            stepWeightKg: NUMBER, // 0 = no weight step (flattened progression)
+            stepReps: INTEGER, // 0 = no rep step
+            stepDurationSec: INTEGER, // 0 = no duration step
+            everyWeeks: INTEGER, // 1-4, cadence — never "not applicable"
           }),
         },
       }),
@@ -276,7 +299,7 @@ function planChangesSchema() {
     items: objectSchema({
       sessionId: STRING,
       exerciseId: STRING,
-      change: enumSchema(PLAN_CHANGES),
+      change: STRING,
       from: STRING,
       to: STRING,
       reason: STRING,
@@ -297,25 +320,25 @@ const DAILY_SCHEMA = objectSchema({
   balanceNotes: {
     type: 'array',
     items: objectSchema({
-      group: enumSchema(MUSCLE_GROUPS),
-      status: enumSchema(BALANCE_STATUSES),
+      group: STRING,
+      status: STRING,
       note: STRING,
     }),
   },
-  recoveryNote: NULLABLE_STRING,
+  recoveryNote: STRING, // '' = none
   advice: STRING_ARRAY,
-  tone: enumSchema(DAILY_TONES),
+  tone: STRING,
 });
 
 const SESSION_SCHEMA = {
   ...objectSchema({
-    overallTone: enumSchema(SESSION_TONES),
+    overallTone: STRING,
     points: STRING_ARRAY,
     better: exerciseNotesSchema(),
     worse: exerciseNotesSchema(),
     flags: {
       type: 'array',
-      items: objectSchema({ code: enumSchema(FLAG_CODES), message: STRING }),
+      items: objectSchema({ code: STRING, message: STRING }),
     },
     planChanges: planChangesSchema(),
     plan: NULLABLE_PLAN_REF,
@@ -323,24 +346,20 @@ const SESSION_SCHEMA = {
   $defs: { plan: planObjectSchema() },
 };
 
+/**
+ * `profilePatch` is a flat list of `{field, value}` string pairs rather than
+ * an object with per-field nullable properties (C2.3 amendment) — the only
+ * nullable/anyOf construct left in the whole schema set is `NULLABLE_PLAN_REF`
+ * below. `parseResponse` maps known field names back onto the C2.1 patch
+ * object shape; unknown fields and unparseable values are dropped.
+ */
 const CHAT_SCHEMA = {
   ...objectSchema({
     reply: STRING_ARRAY,
     memoryUpdates: objectSchema({ add: STRING_ARRAY, removeIds: STRING_ARRAY }),
     profilePatch: {
-      anyOf: [
-        objectSchema({
-          daysPerWeek: NULLABLE_INTEGER,
-          sessionMinutes: NULLABLE_INTEGER,
-          injuryNotes: NULLABLE_STRING,
-          equipmentNotes: NULLABLE_STRING,
-          notes: NULLABLE_STRING,
-          split: nullableEnumSchema(SPLITS),
-          cardioInclude: NULLABLE_BOOLEAN,
-          coreInclude: NULLABLE_BOOLEAN,
-        }),
-        { type: 'null' },
-      ],
+      type: 'array',
+      items: objectSchema({ field: STRING, value: STRING }),
     },
     planChanges: planChangesSchema(),
     plan: NULLABLE_PLAN_REF,
@@ -355,6 +374,47 @@ export const SCHEMAS = Object.freeze({
   plan: planObjectSchema(),
   chat: CHAT_SCHEMA,
 });
+
+/** Recursively tally one schema node into `stats`, following the same node keys as the test's legality walk. */
+function tallySchema(node, stats) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const child of node) tallySchema(child, stats);
+    return;
+  }
+  if (node.type === 'object') stats.objects += 1;
+  if ('enum' in node) stats.enums += 1;
+  if (Array.isArray(node.anyOf)) stats.anyOf += 1;
+  for (const key of ['properties', '$defs', 'definitions']) {
+    if (node[key] && typeof node[key] === 'object') {
+      for (const child of Object.values(node[key])) tallySchema(child, stats);
+    }
+  }
+  for (const key of ['items', 'additionalItems', 'contains', 'not']) {
+    if (node[key] && typeof node[key] === 'object') tallySchema(node[key], stats);
+  }
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(node[key])) for (const child of node[key]) tallySchema(child, stats);
+  }
+}
+
+/**
+ * Compiled-grammar size proxy per schema kind: `{bytes, objects, anyOf,
+ * enums}`. `bytes` is the schema's own `JSON.stringify` length (not the same
+ * as the compiled-grammar size the API measures, but a stable, cheap proxy
+ * tracked in tests to catch regressions). `objects`/`anyOf`/`enums` count
+ * schema nodes carrying `type:'object'`, an `anyOf`, or an `enum` keyword.
+ * @returns {Object<string, {bytes:number, objects:number, anyOf:number, enums:number}>}
+ */
+export function schemaStats() {
+  const out = {};
+  for (const [kind, schema] of Object.entries(SCHEMAS)) {
+    const stats = { bytes: JSON.stringify(schema).length, objects: 0, anyOf: 0, enums: 0 };
+    tallySchema(schema, stats);
+    out[kind] = stats;
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -545,6 +605,36 @@ function clampHalf(value, [lo, hi]) {
   return Math.min(hi, Math.max(lo, Math.round(n * 2) / 2));
 }
 
+// ---------------------------------------------------------------------------
+// Wire-sentinel helpers (C2.3 amendment) — the simplified schema has no
+// nullable numeric/string fields (bar the plan $ref), so the model signals
+// "not applicable" with `0` (numbers) or `''` (strings) instead. These clamp
+// a *required* wire value back down to the nullable shape parseResponse has
+// always produced. `nullableStr` already treats `''` as null, so only the
+// numeric side needs new helpers.
+// ---------------------------------------------------------------------------
+
+/** `0` (or unreadable) means "not applicable" → null; otherwise round + clamp. */
+function sentinelInt(value, [lo, hi]) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n === 0) return null;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+/** `0` (or unreadable) means "not applicable" → null; otherwise round-to-half + clamp. */
+function sentinelHalf(value, [lo, hi]) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n === 0) return null;
+  return Math.min(hi, Math.max(lo, Math.round(n * 2) / 2));
+}
+
+/** `0` (or unreadable) falls back to `fallback` — used where the field is always meaningful (e.g. a default is needed, not a null). */
+function clampIntOrFallback(value, [lo, hi], fallback) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n === 0) return fallback;
+  return Math.min(hi, Math.max(lo, n));
+}
+
 /**
  * A bullet list: strings only, trimmed, truncated, empties dropped, capped.
  * The cap counts kept bullets, so padding with blanks buys nothing.
@@ -598,15 +688,33 @@ function maxSessionsFor(digest) {
   return Math.max(1, Number.isFinite(days) ? Math.round(days) : 7);
 }
 
-/** `{weightStepKg, repStep, durationStepSec, everyWeeks}` — all steps optional, cadence never. */
-function cleanProgression(raw) {
-  const src = raw && typeof raw === 'object' ? raw : {};
+/**
+ * `{weightStepKg, repStep, durationStepSec, everyWeeks}` — all steps optional,
+ * cadence never. `raw` is the plan-exercise object itself: the wire shape
+ * flattens `stepWeightKg`/`stepReps`/`stepDurationSec`/`everyWeeks` directly
+ * onto the exercise (C2.3 amendment) rather than nesting a `progression`
+ * object, so this rebuilds the nested shape the rest of the app expects.
+ */
+function cleanProgressionFlat(raw) {
   return {
-    weightStepKg: clampHalf(src.weightStepKg, LIMITS.weightStepKg),
-    repStep: nullableInt(src.repStep, LIMITS.repStep),
-    durationStepSec: nullableInt(src.durationStepSec, LIMITS.durationStepSec),
-    everyWeeks: clampInt(src.everyWeeks, LIMITS.everyWeeks, DEFAULTS.everyWeeks),
+    weightStepKg: sentinelHalf(raw.stepWeightKg, LIMITS.weightStepKg),
+    repStep: sentinelInt(raw.stepReps, LIMITS.repStep),
+    durationStepSec: sentinelInt(raw.stepDurationSec, LIMITS.durationStepSec),
+    everyWeeks: clampInt(raw.everyWeeks, LIMITS.everyWeeks, DEFAULTS.everyWeeks),
   };
+}
+
+/**
+ * `targetWeightKg`'s `0` sentinel is ambiguous with a genuine zero load, so
+ * it is resolved by exercise type: bodyweight-ish types (mirrors
+ * `isBodyweightish` in js/coach-engine.js) keep `0`, everything else reads it
+ * as "not applicable" → null.
+ */
+function cleanTargetWeightKg(value, type) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  if (n === 0) return BODYWEIGHT_WEIGHT_TYPES.includes(type) ? 0 : null;
+  return clampHalf(n, LIMITS.weightKg);
 }
 
 /**
@@ -626,10 +734,10 @@ function cleanPlanExercise(raw, types) {
   let targetDurationSec = null;
   if (isDurationType(type)) {
     const fallback = type === 'cardio' ? DEFAULTS.cardioSec : DEFAULTS.holdSec;
-    targetDurationSec = clampInt(raw.targetDurationSec, LIMITS.durationSec, fallback);
+    targetDurationSec = clampIntOrFallback(raw.targetDurationSec, LIMITS.durationSec, fallback);
   } else {
-    targetRepsLow = clampInt(raw.targetRepsLow, LIMITS.reps, DEFAULTS.repsLow);
-    targetRepsHigh = clampInt(
+    targetRepsLow = clampIntOrFallback(raw.targetRepsLow, LIMITS.reps, DEFAULTS.repsLow);
+    targetRepsHigh = clampIntOrFallback(
       raw.targetRepsHigh,
       [targetRepsLow, LIMITS.reps[1]],
       Math.min(LIMITS.reps[1], targetRepsLow + DEFAULTS.repsSpread),
@@ -641,13 +749,13 @@ function cleanPlanExercise(raw, types) {
     targetSets: clampInt(raw.targetSets, LIMITS.sets, DEFAULTS.sets),
     targetRepsLow,
     targetRepsHigh,
-    targetWeightKg: clampHalf(raw.targetWeightKg, LIMITS.weightKg),
+    targetWeightKg: cleanTargetWeightKg(raw.targetWeightKg, type),
     targetDurationSec,
-    targetRpe: clampHalf(raw.targetRpe, LIMITS.rpe),
+    targetRpe: sentinelHalf(raw.targetRpe, LIMITS.rpe),
     purpose: str(raw.purpose, LIMITS.purpose) || DEFAULTS.purpose,
     goal: str(raw.goal, LIMITS.purpose) || DEFAULTS.purpose,
     note: nullableStr(raw.note, LIMITS.note),
-    progression: cleanProgression(raw.progression),
+    progression: cleanProgressionFlat(raw),
   };
 }
 
@@ -790,19 +898,45 @@ function cleanMemoryUpdates(raw, knownMemoryIds) {
   return { add: bullets(src.add, LIMITS.memoryAdds, LIMITS.memoryChars), removeIds };
 }
 
-/** Range-checked profile patch, or null when the model proposed no change at all. */
+/** A pair's string value as a boolean, or null when it is neither 'true' nor 'false'. */
+function boolFromPairValue(value) {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return null;
+}
+
+/**
+ * Range-checked profile patch, or null when the model proposed no change at
+ * all. The wire shape is a flat `[{field, value}]` list of strings (C2.3
+ * amendment) rather than an object with per-field nullable properties;
+ * unknown field names and unparseable values are silently dropped. Rebuilds
+ * the C2.1 patch object shape the rest of the app expects.
+ */
 function cleanProfilePatch(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const patch = {
-    daysPerWeek: nullableInt(raw.daysPerWeek, LIMITS.daysPerWeek),
-    sessionMinutes: nullableInt(raw.sessionMinutes, LIMITS.sessionMinutes),
-    injuryNotes: nullableStr(raw.injuryNotes, LIMITS.profileTextChars),
-    equipmentNotes: nullableStr(raw.equipmentNotes, LIMITS.profileTextChars),
-    notes: nullableStr(raw.notes, LIMITS.profileTextChars),
-    split: SPLITS.includes(raw.split) ? raw.split : null,
-    cardioInclude: typeof raw.cardioInclude === 'boolean' ? raw.cardioInclude : null,
-    coreInclude: typeof raw.coreInclude === 'boolean' ? raw.coreInclude : null,
+    daysPerWeek: null,
+    sessionMinutes: null,
+    injuryNotes: null,
+    equipmentNotes: null,
+    notes: null,
+    split: null,
+    cardioInclude: null,
+    coreInclude: null,
   };
+  for (const pair of asArray(raw)) {
+    if (!pair || typeof pair !== 'object' || typeof pair.value !== 'string') continue;
+    switch (pair.field) {
+      case 'daysPerWeek': patch.daysPerWeek = nullableInt(pair.value, LIMITS.daysPerWeek); break;
+      case 'sessionMinutes': patch.sessionMinutes = nullableInt(pair.value, LIMITS.sessionMinutes); break;
+      case 'injuryNotes': patch.injuryNotes = nullableStr(pair.value, LIMITS.profileTextChars); break;
+      case 'equipmentNotes': patch.equipmentNotes = nullableStr(pair.value, LIMITS.profileTextChars); break;
+      case 'notes': patch.notes = nullableStr(pair.value, LIMITS.profileTextChars); break;
+      case 'split': patch.split = SPLITS.includes(pair.value) ? pair.value : null; break;
+      case 'cardioInclude': patch.cardioInclude = boolFromPairValue(pair.value); break;
+      case 'coreInclude': patch.coreInclude = boolFromPairValue(pair.value); break;
+      default: break; // unknown field names are dropped
+    }
+  }
   return Object.values(patch).some((v) => v !== null) ? patch : null;
 }
 

@@ -751,3 +751,5 @@ data-action: `home-last-session`, `home-stat`, `home-analyse`, `coach-chat-send`
 `coach-edit-profile`, `coach-setup-save` (`coach-setup` now navigates to the builder).
 Every `plan.sessions` read (Coach root, plan screen, Log start choice, `#/copy/plan`,
 workout ghost override) goes through `projectedSessions`.
+
+### C2.3 amendment (3 Sep 2026) — wire schema simplified: the API rejected the v2 schemas with 'compiled grammar is too large'. The wire schema now has no enums, one anyOf (nullable plan), `0`/`""` sentinels instead of nullable fields, flattened progression step fields (`stepWeightKg`, `stepReps`, `stepDurationSec`, `everyWeeks`) and `profilePatch` as `[{field, value}]` pairs. `parseResponse` maps the wire shape back to the C2.1 record shapes, so nothing downstream changes.
