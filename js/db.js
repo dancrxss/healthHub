@@ -344,6 +344,12 @@ export async function listSetsForWorkout(workoutId) {
   });
 }
 /** All sets for an exercise across all workouts. */
+/** Every set in the store (single-user scale). Used by the coach engine's
+ * dataset loader — one getAll instead of one transaction per workout. */
+export async function listAllSets() {
+  return getAllRecords('sets');
+}
+
 export async function listSetsForExercise(exerciseId) {
   return getAllByIndex('sets', 'by-exercise', exerciseId);
 }
