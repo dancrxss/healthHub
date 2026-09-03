@@ -20,3 +20,4 @@ smoke check passes.
 ```
 2026-07-31 ~11:45 UTC · pwa · 5c1edf8 · "Apple Health integration + native shell groundwork (SW v14): health store DB v2, js/health.js, Health UI, privacy.html" · Claude
 2026-09-03 13:03 UTC · pwa · 88841df · "Coach: AI training coach (Sonnet 5 via user's own key), Coach tab, plan-driven ghost sets, DB v3, SW v15 — smoke check green, no console errors" · Claude (for Dan)
+2026-09-03 14:45 UTC · pwa · 6b8e621 · "Coach v2: Home tab (default), plan builder, 6–8 week projected plan with explanations, bulleted coach output, two-thread chat + shared memory — DB v4, SW v16; smoke check green, no console errors" · Claude (for Dan)
