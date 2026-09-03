@@ -388,9 +388,18 @@ export function userMessageFor(error) {
     case 'refusal': return 'The coach declined to answer this one.';
     case 'truncated':
     case 'parse':
-    case 'request': return "The coach couldn't process that.";
+    case 'request': return withDetail("The coach couldn't process that.", error);
     default: return 'Something went wrong talking to the coach.';
   }
+}
+
+/** Append the API's own reason (clipped) so a rejected request is diagnosable in-app. */
+function withDetail(base, error) {
+  const d = error && error.detail;
+  const text = typeof d === 'string' ? d : (d && typeof d === 'object' && typeof d.message === 'string' ? d.message : '');
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return base;
+  return `${base} (${clean.slice(0, 220)}${clean.length > 220 ? '…' : ''})`;
 }
 
 // ---------------------------------------------------------------------------
