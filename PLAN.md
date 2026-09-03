@@ -457,3 +457,179 @@ blocked this".
 account, Xcode install, signing, TestFlight, App Privacy labels). Purpose
 strings + HealthKit entitlements (incl. background delivery) wired into the
 Xcode project.
+
+## Phase C — Coach: AI training coach (3 September 2026)
+
+Dan is returning after an injury. The Coach builds a return-to-training plan
+from his history, revises it after every session, and writes a daily summary
+(muscle-group balance, session feedback, overreach warnings). Powered by the
+user's **own** Claude API key; the app has no backend and gains none.
+Approved plan of record: `~/.claude/plans/so-i-am-getting-peaceful-riddle.md`
+(this section is the pinned contract extracted from it).
+
+### C0 — Constraints inherited
+
+- Vanilla JS, no build, **no Anthropic SDK** — `POST https://api.anthropic.com/v1/messages`
+  via raw `fetch`. CORS preflight verified 3 Sep 2026 from the Pages origin with
+  header `anthropic-dangerous-direct-browser-access: true`.
+- Model pinned: `claude-sonnet-5`. No picker.
+- No key ⇒ Coach tab hidden, zero network. App stays a fully working PWA.
+- Apple Health values leave the device **only** when meta `coach.shareRecovery === true`
+  (default off by absence; Settings → Coach → "Share recovery data with coach").
+  Signed off by Dan 3 Sep 2026. Exactly four derived values may leave when on:
+  sleep hours last night, HRV (ms) + 30-day baseline, resting HR + baseline,
+  body weight + 30-day trend %. Raw HealthKit samples never.
+- "Daily" = first open each day (date gate). No background jobs in v1.
+- No prompt caching (5-minute TTL, calls hours apart).
+
+### C1 — Data contract (DB v3, additive)
+
+Stores added in `onupgradeneeded` with `contains()` guards:
+
+```
+coachPlans     keyPath id, index 'by-created' on createdAt
+  CoachPlanRecord { id, version (1-based, monotonic), createdAt, source:'created'|'revised'|'manual',
+                    basedOnWorkoutId|null, rationale|null, weeks, sessions: PlanSession[] }
+  PlanSession     { id:'ps-1'.. (assigned locally, never model-supplied), order, name, focus|null,
+                    exercises: PlanExercise[] }
+  PlanExercise    { exerciseId, targetSets, targetRepsLow, targetRepsHigh, targetWeightKg|null,
+                    targetRpe|null, note|null }
+
+coachInsights  keyPath id, index 'by-kind-created' on ['kind','createdAt'], 'by-workout' on workoutId
+  CoachInsightRecord { id:'daily-YYYY-MM-DD'|'session-<workoutId>', kind:'daily'|'session', createdAt,
+                       date, workoutId|null, model, engineVersion, metrics, narrative, planId|null,
+                       usage:{inputTokens, outputTokens} }
+```
+
+Plan revisions are new records (never mutated). Dedicated `putCoachPlan` /
+`putCoachInsight` (no `syncedAt`). `WorkoutRecord` gains optional
+`planId|null`, `planSessionId|null`.
+
+Meta keys: `coach.profile` `{version:1, updatedAt, injuryNotes, goal:
+'return-from-injury'|'build-muscle'|'get-stronger'|'general-fitness', daysPerWeek,
+sessionMinutes, equipmentNotes, returnDate|null, avoidExerciseIds:[]}`,
+`coach.shareRecovery`, `coach.currentPlanId`, `coach.lastDailyDate`,
+`coach.pending` `{kind, workoutId?, queuedAt}|null`, `coach.lastError`,
+`coach.usageTotals` `{calls, inputTokens, outputTokens, estimatedCostUsd}`,
+`coach.unreadAt`.
+
+API key: localStorage `coach.apiKey` through `STRING_SETTING_DEFS` /
+`getStringSetting` / `setStringSetting` in `js/settings.js` (the boolean
+`SETTING_DEFS` table cannot hold a string). Synchronous so `route()` can hide
+the tab. Never logged, never sent anywhere except as `x-api-key`.
+
+### C2 — Engine contract (`js/coach-engine.js`, pure, Node-testable)
+
+`today` is always injected (like `weeklyVolumeFrom`). Dataset = `{workouts, sets, exercises}`.
+
+```
+COACH_ENGINE_VERSION = 'coach-engine-1'
+SET_TARGETS  chest 10–20 · back 10–20 · legs 12–22 · shoulders 8–16 · biceps 6–16 · triceps 6–16
+             abs 4–12 · accessory 0–12 (advisory) · rehab never flagged · cardio/other unscored
+             (max ×0.85 when daysPerWeek ≤ 3)
+RAMP_FACTORS [0.4, 0.5, 0.65, 0.8, 0.9, 1.0]   by week since return (index min(w-1,5))
+START_FACTORS weeksOff ≤2→0.95 · 3–4→0.85 · 5–8→0.75 · 9–16→0.65 · >16→0.60
+FLAG_CODES   volume-spike, group-volume-spike, rpe-creep, e1rm-regression, no-rest-day,
+             frequency-drop, return-ramp, low-hrv, elevated-rhr, short-sleep, weight-drop
+
+setTargetsFor(profile, weeksTrained)
+hardSetsByGroup(dataset, weeks, today)             hard set = !isWarmup && setType!=='cardio' && reps>=1
+muscleBalance(dataset, {weeks=4, today, profile})  → [{group, sets, min, max, status, trend}]
+                                                   status: untrained | under (<0.75·min) | on | over (>max)
+                                                   trend: last ISO week vs mean of prior 3, ±15% → up/down/flat
+trainingGap(dataset, today)                        → {daysSinceLastSession, weeksOff, status:'active'|'layoff'|'long-layoff',
+                                                      detrainingPct = min(0.35, 0.02·max(0, weeksOff-2))}
+                                                   active <10d · layoff 10–20 · long-layoff >20
+sessionDiff(dataset, workoutId)                    → per-exercise {verdict:'better'|'worse'|'same'|'new', volumeKg,
+                                                      volumePrevKg, e1rm, e1rmPrev, repsAtSameWeight, avgRpe, ...}
+loadFlags(dataset, {today, health})                → [{code, severity:'info'|'watch'|'warn', detail}]
+progressionFor(dataset, exerciseId, {today, profile, gap})
+                                                   → {weightKg, repsLow, repsHigh, sets, rule}
+                                                   layoff: START_FACTOR × median working weight of the highest-e1RM
+                                                   session in the 12 weeks before the gap, rounded down to 2.5
+                                                   (floors 20 barbell / 2.5 other / 0 bodyweight)
+                                                   active: double progression — top of range every set @RPE≤8|null
+                                                   → ×1.025 (min one 2.5 step), reps→low; in range → hold, low=achieved+1;
+                                                   below twice or RPE≥9.5 → hold; below ×3 → deload 10%.
+                                                   caps +5% weight/ex/week, +10% group sets/week
+nextPlanSession(plan, recentWorkouts)              walks plan.sessions after the last finished workout's planSessionId, wraps
+planRefSets(planExercise)                          → targetSets × {weightKg, reps, durationSeconds:null, distanceM:null, kcal:null}
+buildDigest({dataset, profile, today, health, workoutId, plan, kind})
+```
+
+Digest (< 4 kB; `recovery` only when consent; `session` only for kind 'session'):
+
+```
+{ schemaVersion:1, kind, today, profile:{goal, daysPerWeek, sessionMinutes, injuryNotes, equipmentNotes, avoid},
+  gap, week:{isoWeek, sessions, hardSets, volumeKg, avgRpe},
+  balance:[{g, sets, min, max, status, trend}], flags:[{code, severity, detail}],
+  exercises:[{id, name, group, type, lastDate, workWeightKg, topReps, e1rm, e1rmPrev, bestE1rm, weeksSince,
+              proposal:{weightKg, repsLow, repsHigh, sets, rule}}],
+  recovery?:{sleepH, hrvMs, hrvBaselineMs, restingHr, restingHrBaseline, weightKg, weightTrend30dPct},
+  session?:{workoutId, date, name, durationMin, hardSets, volumeKg, avgRpe,
+            exercises:[{id, name, verdict, volumeKg, volumePrevKg, e1rm, e1rmPrev, sets:[{w,r,rpe}], prevTop:{w,r,rpe}}]},
+  plan?:{version, sessions:[...]} }
+```
+
+Exercise window is anchored to the **last training session**, not today:
+daily/session ≤12 most-trained in the 8 weeks ending there; plan ≤20 in 16 weeks.
+
+### C3 — API contract (`js/coach-api.js`)
+
+```
+POST https://api.anthropic.com/v1/messages
+content-type: application/json · x-api-key · anthropic-version: 2023-06-01
+anthropic-dangerous-direct-browser-access: true
+{ model:'claude-sonnet-5', max_tokens: daily 4000 | session 8000 | plan 8000,
+  system: SYSTEM_PROMPT (frozen constant),
+  output_config: { effort: daily 'low' | others 'medium', format:{type:'json_schema', schema} },
+  messages:[{role:'user', content: JSON.stringify(digest)}] }
+```
+Never send `thinking`, `temperature/top_p/top_k`, prefill, `tools`, beta headers,
+`cache_control`. Schema subset: `additionalProperties:false` + full `required` on
+every object; nullable via `anyOf`; no min/max/length/items/pattern keywords.
+
+Kinds: `daily` → `{headline, body, balanceNotes[{group, status, note}], recoveryNote|null,
+todayAdvice, tone}`; `session` → `{overallTone, summary, better[], worse[], flags[],
+planChanges[], plan: PLAN|null}` (one call = feedback + revision); `plan` → PLAN.
+PLAN = `{weeks, rationale, sessions[{name, focus, exercises[{exerciseId, targetSets,
+targetRepsLow, targetRepsHigh, targetWeightKg|null, targetRpe|null, note}]}]}`.
+
+`parseResponse` clamps: unknown exerciseId dropped; empty session dropped; empty
+plan rejected; sets 1–8; reps 1–30, high ≥ low; weight 0–500 to 0.5; sessions ≤
+daysPerWeek; ≤10 exercises/session; headline 80 / body 600 / notes 200 chars;
+`ps-N` ids assigned locally.
+
+Errors (`CoachApiError.code`): offline (queue) · auth 401/403 · request 400 ·
+model 404 · rate-limit 429 (retry, Retry-After) · server 5xx/529 (retry) ·
+refusal · truncated (retry once at ×1.5 max_tokens) · parse. Max 2 retries,
+1 s then 4 s + jitter. 60 s abort. `testApiKey` uses `/v1/messages/count_tokens`.
+
+### C4 — Triggers (`js/coach.js`)
+
+`initCoach()` from `ui.js init()` (fire-and-forget): flush `coach.pending`, then
+`runDaily()` if `coach.lastDailyDate !== todayISO()`; `visibilitychange` re-checks.
+`onWorkoutFinished(workoutId)` from `finishFlow`, never awaited. Single-flight lock
+across all kinds; idempotency checks inside the lock. Results set `coach.unreadAt`
+(dot on the tab, cleared on `#/coach`).
+
+### C5 — Routes and DOM hooks
+
+Routes: `#/coach`, `#/coach/balance`, `#/coach/session/:workoutId`, `#/coach/plan`,
+`#/coach/history`, `#/coach/setup` (= `#/coach` + setup sheet), `#/copy/plan`.
+Tab: `nav#tabbar button[data-tab="coach"]` (last; `hidden` until a key exists).
+Screen: `section#s-coach`.
+data-action: `coach-setup`, `coach-open-settings`, `coach-start-session`,
+`coach-regenerate`, `coach-clear`, `coach-key-input`, `coach-key-show`,
+`coach-key-save`, `coach-test-key`, `start-planned`, `start-empty`.
+`data-copy-cat="plan"`; `data-setting="coach.shareRecovery"`.
+
+Ghost sets: `startPlannedWorkout(plan, planSession)` in `ui.js` tags the workout
+with `planId`/`planSessionId`; `workout.js` swaps `lastByEx` for `planRefSets`
+on planned workouts (no change to `buildSetRow`/`autofillWeight`); a `plan` chip
+on each `.ex-card` header makes the swap visible. Log `+` unchanged when no plan.
+
+### C6 — Out of scope (v1)
+
+Streaming, chatting with the coach, model picker, inventing exercises not in the
+library, web search, native background refresh / notifications, any server.
