@@ -2,8 +2,9 @@
 // Run: `node tests/coach-api.test.mjs`  (exits non-zero on any failure).
 //
 // Never touches the network: `fetchImpl`, `sleep` and `random` are injected.
-// The digest fixtures are hand-written to the shape documented in PLAN.md C2 —
-// this file deliberately does not import js/coach-engine.js.
+// The digest fixtures are hand-written to the shape documented in PLAN.md
+// § "Phase C2" (C2.1 shapes / C2.2 digest shape / C2.3 API contract) — this
+// file deliberately does not import js/coach-engine.js.
 
 import assert from 'node:assert/strict';
 import {
@@ -12,17 +13,22 @@ import {
   COACH_COUNT_TOKENS_URL,
   ANTHROPIC_VERSION,
   MAX_TOKENS,
+  TIMEOUT_MS,
+  MAX_ATTEMPTS,
   SYSTEM_PROMPT,
   SCHEMAS,
   PRICING,
   CoachApiError,
   buildHeaders,
   buildRequest,
+  timeoutFor,
+  attemptsFor,
   extractText,
   parseResponse,
   estimateCostUsd,
   usageFrom,
   userMessageFor,
+  normaliseNarrative,
   callCoach,
   testApiKey,
 } from '../js/coach-api.js';
@@ -50,24 +56,50 @@ async function checkAsync(name, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Fixtures — digests, hand-built to the C2.1/C2.2 shape.
 // ---------------------------------------------------------------------------
 
 const KEY = 'sk-ant-test-key-not-real';
 
-/** Digest for kind 'daily' / 'plan'. daysPerWeek 3, three known exercises. */
+/** profile v2 (C2.1): all the new fields, plus the v1 fields that survive. */
+const profileV2 = {
+  version: 2,
+  split: 'auto',
+  groupPrefs: {},
+  cardio: { include: true, minutesPerSession: 10, standaloneDay: false, exerciseIds: ['ex-run'] },
+  core: { include: true },
+  favouriteExerciseIds: ['ex-bench'],
+  notes: null,
+  goal: 'return-from-injury',
+  daysPerWeek: 3,
+  sessionMinutes: 45,
+  injuryNotes: 'left shoulder, cleared by physio',
+  equipmentNotes: 'commercial gym',
+  avoid: [],
+};
+
+/** Two known memory ids — used to test memoryUpdates.removeIds filtering. */
+const memoryV2 = [
+  { id: 'm-1', text: 'Left shoulder impingement, cleared by physio.', addedAt: '2099-01-01', source: 'user' },
+  { id: 'm-2', text: 'Prefers dumbbells over barbells for pressing.', addedAt: '2099-01-02', source: 'chat-home' },
+];
+
+/** The `plan` echo carried on every digest kind (C2.2) — slim, projected current week. */
+const planEcho = { version: 2, weeks: 6, baseWeek: 1, currentWeek: 1, deloadWeek: null, sessions: [] };
+
+/**
+ * Digest for kind 'daily' / 'plan'. daysPerWeek 3. Exercises cover all three
+ * type families: default weight_reps (bench/squat/row), cardio (run), and
+ * time (plank) plus one weight_time (carry) — `type` is omitted for the
+ * default, per the engine's byte-saving convention.
+ */
 const dailyDigest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   kind: 'daily',
   today: '2099-01-05',
-  profile: {
-    goal: 'return-from-injury',
-    daysPerWeek: 3,
-    sessionMinutes: 45,
-    injuryNotes: 'left shoulder, cleared by physio',
-    equipmentNotes: 'commercial gym',
-    avoid: [],
-  },
+  profile: profileV2,
+  memory: memoryV2,
+  plan: planEcho,
   gap: { daysSinceLastSession: 21, weeksOff: 3, status: 'long-layoff', detrainingPct: 0.02 },
   week: { isoWeek: '2099-W01', sessions: 1, hardSets: 12, volumeKg: 4200, avgRpe: 7.5 },
   balance: [
@@ -76,9 +108,12 @@ const dailyDigest = {
   ],
   flags: [{ code: 'return-ramp', severity: 'info', detail: 'Week 1 back' }],
   exercises: [
-    { id: 'ex-bench', name: 'Bench Press', group: 'chest', type: 'strength', lastDate: '2098-12-15', workWeightKg: 60, topReps: 8, e1rm: 76, e1rmPrev: 74, bestE1rm: 90, weeksSince: 3, proposal: { weightKg: 50, repsLow: 6, repsHigh: 8, sets: 3, rule: 'layoff' } },
-    { id: 'ex-squat', name: 'Back Squat', group: 'legs', type: 'strength', lastDate: '2098-12-15', workWeightKg: 90, topReps: 5, e1rm: 105, e1rmPrev: 103, bestE1rm: 120, weeksSince: 3, proposal: { weightKg: 70, repsLow: 5, repsHigh: 8, sets: 3, rule: 'layoff' } },
-    { id: 'ex-row', name: 'Barbell Row', group: 'back', type: 'strength', lastDate: '2098-12-15', workWeightKg: 55, topReps: 10, e1rm: 73, e1rmPrev: 70, bestE1rm: 80, weeksSince: 3, proposal: { weightKg: 45, repsLow: 8, repsHigh: 12, sets: 3, rule: 'layoff' } },
+    { id: 'ex-bench', name: 'Bench Press', group: 'chest', lastDate: '2098-12-15', workWeightKg: 60, topReps: 8, e1rm: 76, e1rmPrev: 74, bestE1rm: 90, weeksSince: 3, proposal: { weightKg: 50, repsLow: 6, repsHigh: 8, sets: 3, rule: 'layoff' } },
+    { id: 'ex-squat', name: 'Back Squat', group: 'legs', lastDate: '2098-12-15', workWeightKg: 90, topReps: 5, e1rm: 105, e1rmPrev: 103, bestE1rm: 120, weeksSince: 3, proposal: { weightKg: 70, repsLow: 5, repsHigh: 8, sets: 3, rule: 'layoff' } },
+    { id: 'ex-row', name: 'Barbell Row', group: 'back', lastDate: '2098-12-15', workWeightKg: 55, topReps: 10, e1rm: 73, e1rmPrev: 70, bestE1rm: 80, weeksSince: 3, proposal: { weightKg: 45, repsLow: 8, repsHigh: 12, sets: 3, rule: 'layoff' } },
+    { id: 'ex-run', name: 'Treadmill Run', group: 'cardio', type: 'cardio', lastDurationSec: 1200, proposal: { durationSec: 900 } },
+    { id: 'ex-plank', name: 'Plank', group: 'abs', type: 'time', lastDurationSec: 40, proposal: { durationSec: 45 } },
+    { id: 'ex-carry', name: 'Farmer Carry', group: 'accessory', type: 'weight_time', lastDurationSec: 30, proposal: { durationSec: 40 } },
   ],
 };
 
@@ -103,6 +138,22 @@ const sessionDigest = {
 
 const planDigest = { ...dailyDigest, kind: 'plan' };
 
+/** Digest for kind 'chat' — carries the thread + short transcript (C2.2). */
+const chatDigest = {
+  ...dailyDigest,
+  kind: 'chat',
+  chat: {
+    thread: 'home',
+    recent: [
+      { role: 'user', text: 'How is my bench doing?' },
+      { role: 'coach', text: 'Bench is trending up nicely.' },
+    ],
+    message: 'Can we add cardio on Fridays?',
+  },
+};
+
+const DIGESTS_BY_KIND = { daily: dailyDigest, session: sessionDigest, plan: planDigest, chat: chatDigest };
+
 function messageResponse(payload, extra = {}) {
   return {
     id: 'msg_test',
@@ -116,30 +167,84 @@ function messageResponse(payload, extra = {}) {
 
 const goodDaily = {
   headline: 'Chest is lagging — start there',
-  body: 'Bench Press has not been trained in three weeks and chest sits under its band.',
+  points: ['Bench Press has not been trained in three weeks.', 'Chest sits under its weekly band.'],
   balanceNotes: [{ group: 'chest', status: 'under', note: 'Four hard sets against a floor of ten.' }],
   recoveryNote: null,
-  todayAdvice: 'Open with Bench Press at fifty kilos for three sets of eight, then Barbell Row.',
+  advice: ['Open with Bench Press at fifty kilos for three sets of eight.', 'Finish with Barbell Row.'],
   tone: 'steady',
 };
 
-const goodPlan = {
-  weeks: 6,
-  rationale: 'Rebuild volume before intensity after a three-week layoff.',
+/** A minimal, valid v2 plan payload — override fields per-test. */
+function planPayload(overrides = {}) {
+  return {
+    weeks: 6,
+    overview: {
+      points: ['Rebuild volume before intensity.'],
+      muscleFocus: [{ group: 'chest', why: 'Under its band after the layoff.' }],
+      progression: ['Add 2.5 kg a week on compounds.'],
+      deloadWeek: 4,
+    },
+    weekNotes: [{ week: 4, focus: 'Deload', points: ['Cut sets by one.'] }],
+    sessions: [
+      {
+        name: 'Upper A',
+        focus: 'push',
+        brief: ['Chest and shoulders, moderate volume.'],
+        exercises: [
+          {
+            exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8,
+            targetWeightKg: 50, targetDurationSec: null, targetRpe: 7,
+            purpose: 'Main chest press.', goal: '3x8 at 70kg by week eight.', note: 'Stop two shy.',
+            progression: { weightStepKg: 2.5, repStep: 1, durationStepSec: null, everyWeeks: 1 },
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+const goodPlan = planPayload({
   sessions: [
-    { name: 'Upper A', focus: 'push', exercises: [{ exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 50, targetRpe: 7, note: 'Stop two shy.' }] },
-    { name: 'Lower A', focus: null, exercises: [{ exerciseId: 'ex-squat', targetSets: 3, targetRepsLow: 5, targetRepsHigh: 8, targetWeightKg: 70, targetRpe: 7.5, note: null }] },
+    ...planPayload().sessions,
+    {
+      name: 'Cardio Finisher',
+      focus: null,
+      brief: ['Easy aerobic work.'],
+      exercises: [
+        {
+          exerciseId: 'ex-run', targetSets: 1, targetRepsLow: null, targetRepsHigh: null,
+          targetWeightKg: null, targetDurationSec: 900, targetRpe: null,
+          purpose: 'Aerobic base.', goal: '20 minutes by week eight.', note: null,
+          progression: { weightStepKg: null, repStep: null, durationStepSec: 60, everyWeeks: 2 },
+        },
+        {
+          exerciseId: 'ex-plank', targetSets: 3, targetRepsLow: null, targetRepsHigh: null,
+          targetWeightKg: null, targetDurationSec: 45, targetRpe: null,
+          purpose: 'Core stability.', goal: 'Hold 60 seconds by week eight.', note: null,
+          progression: { weightStepKg: null, repStep: null, durationStepSec: 10, everyWeeks: 2 },
+        },
+      ],
+    },
   ],
-};
+});
 
 const goodSession = {
   overallTone: 'solid',
-  summary: 'Bench moved up, everything else held.',
+  points: ['Bench moved up.', 'Everything else held steady.'],
   better: [{ exerciseId: 'ex-bench', name: 'Bench Press', note: 'Sixty kilos for eight, up from 57.5.' }],
   worse: [],
   flags: [{ code: 'return-ramp', message: 'First week back — keep the lid on.' }],
   planChanges: [{ sessionId: 'ps-1', exerciseId: 'ex-bench', change: 'weight-up', from: '57.5 kg x 8', to: '60 kg x 8', reason: 'Cleared the top of the range at RPE 7.5.' }],
   plan: goodPlan,
+};
+
+const goodChat = {
+  reply: ['Yes, we can add a Friday cardio day.', 'I have adjusted the plan below.'],
+  memoryUpdates: { add: ['Wants a dedicated Friday cardio session.'], removeIds: ['m-1'] },
+  profilePatch: { daysPerWeek: 4, sessionMinutes: null, injuryNotes: null, equipmentNotes: null, notes: null, split: null, cardioInclude: true, coreInclude: null },
+  planChanges: [],
+  plan: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -180,37 +285,34 @@ function recordingSleep() {
 }
 
 // ---------------------------------------------------------------------------
-// 1. buildRequest shape
+// 1. buildRequest shape — per kind: model, max_tokens, effort, format.type,
+//    one user message == JSON.stringify(digest), system === SYSTEM_PROMPT.
 // ---------------------------------------------------------------------------
 
-check('buildRequest: daily shape', () => {
-  const { url, body } = buildRequest({ kind: 'daily', digest: dailyDigest });
-  assert.equal(url, COACH_API_URL);
-  assert.equal(body.model, COACH_MODEL);
-  assert.equal(body.max_tokens, 4000);
-  assert.equal(body.max_tokens, MAX_TOKENS.daily);
-  assert.equal(body.output_config.effort, 'low');
-  assert.equal(body.output_config.format.type, 'json_schema');
-  assert.equal(body.output_config.format.schema, SCHEMAS.daily);
-  assert.equal(body.system, SYSTEM_PROMPT);
-  assert.equal(body.messages[0].role, 'user');
-  assert.equal(body.messages[0].content, JSON.stringify(dailyDigest));
-});
+const EXPECTED = {
+  daily: { maxTokens: 4000, effort: 'low' },
+  session: { maxTokens: 10000, effort: 'medium' },
+  plan: { maxTokens: 16000, effort: 'medium' },
+  chat: { maxTokens: 6000, effort: 'low' },
+};
 
-check('buildRequest: session shape (medium effort, 8000 tokens)', () => {
-  const { body } = buildRequest({ kind: 'session', digest: sessionDigest });
-  assert.equal(body.max_tokens, 8000);
-  assert.equal(body.output_config.effort, 'medium');
-  assert.equal(body.output_config.format.schema, SCHEMAS.session);
-  assert.equal(body.messages[0].content, JSON.stringify(sessionDigest));
-});
-
-check('buildRequest: plan shape (medium effort, 8000 tokens)', () => {
-  const { body } = buildRequest({ kind: 'plan', digest: planDigest });
-  assert.equal(body.max_tokens, 8000);
-  assert.equal(body.output_config.effort, 'medium');
-  assert.equal(body.output_config.format.schema, SCHEMAS.plan);
-});
+for (const kind of ['daily', 'session', 'plan', 'chat']) {
+  check(`buildRequest: ${kind} shape`, () => {
+    const digest = DIGESTS_BY_KIND[kind];
+    const { url, body } = buildRequest({ kind, digest });
+    assert.equal(url, COACH_API_URL);
+    assert.equal(body.model, COACH_MODEL);
+    assert.equal(body.max_tokens, EXPECTED[kind].maxTokens);
+    assert.equal(body.max_tokens, MAX_TOKENS[kind]);
+    assert.equal(body.output_config.effort, EXPECTED[kind].effort);
+    assert.equal(body.output_config.format.type, 'json_schema');
+    assert.equal(body.output_config.format.schema, SCHEMAS[kind]);
+    assert.equal(body.system, SYSTEM_PROMPT);
+    assert.equal(body.messages.length, 1);
+    assert.equal(body.messages[0].role, 'user');
+    assert.equal(body.messages[0].content, JSON.stringify(digest));
+  });
+}
 
 check('buildRequest: unknown kind is rejected', () => {
   assert.throws(() => buildRequest({ kind: 'weekly', digest: dailyDigest }), (err) => err instanceof CoachApiError);
@@ -221,8 +323,8 @@ check('buildRequest: unknown kind is rejected', () => {
 // ---------------------------------------------------------------------------
 
 check('buildRequest: never sends thinking/sampling/tool params or a prefill', () => {
-  for (const kind of ['daily', 'session', 'plan']) {
-    const { body } = buildRequest({ kind, digest: dailyDigest });
+  for (const kind of ['daily', 'session', 'plan', 'chat']) {
+    const { body } = buildRequest({ kind, digest: DIGESTS_BY_KIND[kind] });
     for (const forbidden of ['thinking', 'temperature', 'top_p', 'top_k', 'tools', 'tool_choice', 'stop_sequences', 'cache_control', 'betas', 'system_cache_control']) {
       assert.equal(Object.prototype.hasOwnProperty.call(body, forbidden), false, `${kind} body must not carry ${forbidden}`);
     }
@@ -238,23 +340,27 @@ check('buildRequest: never sends thinking/sampling/tool params or a prefill', ()
 // 3. SYSTEM_PROMPT is frozen and digest-independent
 // ---------------------------------------------------------------------------
 
-check('SYSTEM_PROMPT: identical across different digests', () => {
-  const a = buildRequest({ kind: 'daily', digest: dailyDigest }).body.system;
-  const b = buildRequest({ kind: 'session', digest: sessionDigest }).body.system;
-  assert.equal(a, b);
-  assert.equal(a, SYSTEM_PROMPT);
+check('SYSTEM_PROMPT: identical across every kind and digest', () => {
+  const systems = ['daily', 'session', 'plan', 'chat'].map((kind) => buildRequest({ kind, digest: DIGESTS_BY_KIND[kind] }).body.system);
+  for (const s of systems) assert.equal(s, SYSTEM_PROMPT);
 });
 
-check('SYSTEM_PROMPT: no interpolation, no dates, under 6000 chars', () => {
+check('SYSTEM_PROMPT: no interpolation, no 4-digit numbers, under 9000 chars', () => {
   assert.equal(typeof SYSTEM_PROMPT, 'string');
   assert.equal(SYSTEM_PROMPT.includes('${'), false, 'system prompt must not interpolate');
-  assert.equal(/\b(19|20)\d{2}\b/.test(SYSTEM_PROMPT), false, 'system prompt must not contain a year');
-  assert.ok(SYSTEM_PROMPT.length < 6000, `system prompt is ${SYSTEM_PROMPT.length} chars`);
+  assert.equal(/\b\d{4}\b/.test(SYSTEM_PROMPT), false, 'system prompt must not contain a 4-digit number');
+  assert.ok(SYSTEM_PROMPT.length < 9000, `system prompt is ${SYSTEM_PROMPT.length} chars`);
   assert.ok(SYSTEM_PROMPT.length > 1500, 'system prompt looks truncated');
 });
 
+check('SYSTEM_PROMPT: covers memory, targetDurationSec, baseWeek, bullets and chat threads', () => {
+  for (const word of ['memory', 'memoryUpdates', 'targetDurationSec', 'baseWeek', 'bullet', 'thread']) {
+    assert.ok(SYSTEM_PROMPT.includes(word), `system prompt should mention "${word}"`);
+  }
+});
+
 // ---------------------------------------------------------------------------
-// 4. Schema legality walk
+// 4. Schema legality walk — all four schemas, incl. $defs.
 // ---------------------------------------------------------------------------
 
 const FORBIDDEN_KEYWORDS = [
@@ -293,7 +399,9 @@ function resolvePointer(root, ref) {
   return cur;
 }
 
-for (const kind of ['daily', 'session', 'plan']) {
+const EXPECTED_REFS = { daily: 0, session: 1, plan: 0, chat: 1 };
+
+for (const kind of ['daily', 'session', 'plan', 'chat']) {
   check(`schema ${kind}: every object node is closed with a full required list`, () => {
     const root = SCHEMAS[kind];
     assert.equal(root.type, 'object', 'top-level schema must be an object schema');
@@ -324,21 +432,50 @@ for (const kind of ['daily', 'session', 'plan']) {
       assert.ok(node.$ref.startsWith('#/'), `${path}: only local refs allowed`);
       assert.notEqual(resolvePointer(root, node.$ref), undefined, `${path}: ${node.$ref} does not resolve`);
     });
-    if (kind === 'session') assert.equal(refs, 1, 'session schema should reference $defs/plan exactly once');
-    else assert.equal(refs, 0, `${kind} schema should carry no refs`);
+    assert.equal(refs, EXPECTED_REFS[kind], `${kind} schema should carry ${EXPECTED_REFS[kind]} ref(s)`);
   });
 }
 
-check('schema session: plan is nullable via anyOf against $defs/plan', () => {
-  const plan = SCHEMAS.session.properties.plan;
-  assert.deepEqual(plan, { anyOf: [{ $ref: '#/$defs/plan' }, { type: 'null' }] });
+check('schema session/chat: plan is nullable via anyOf against $defs/plan', () => {
+  const NULLABLE_PLAN_REF = { anyOf: [{ $ref: '#/$defs/plan' }, { type: 'null' }] };
+  assert.deepEqual(SCHEMAS.session.properties.plan, NULLABLE_PLAN_REF);
+  assert.deepEqual(SCHEMAS.chat.properties.plan, NULLABLE_PLAN_REF);
   assert.equal(SCHEMAS.session.$defs.plan.type, 'object');
+  assert.equal(SCHEMAS.chat.$defs.plan.type, 'object');
 });
 
-check('schema plan: top level is the plan object itself', () => {
-  assert.deepEqual([...SCHEMAS.plan.required].sort(), ['rationale', 'sessions', 'weeks']);
+check('schema plan: top level is the plan object itself (PLAN v2 required list)', () => {
+  assert.deepEqual([...SCHEMAS.plan.required].sort(), ['overview', 'sessions', 'weekNotes', 'weeks']);
+});
+
+check('schema: PLAN v2 is emitted identically in all three places, never sharing nodes', () => {
   assert.deepEqual(SCHEMAS.plan, SCHEMAS.session.$defs.plan);
-  assert.notEqual(SCHEMAS.plan, SCHEMAS.session.$defs.plan, 'the two emissions must not share nodes');
+  assert.deepEqual(SCHEMAS.plan, SCHEMAS.chat.$defs.plan);
+  assert.notEqual(SCHEMAS.plan, SCHEMAS.session.$defs.plan, 'session emission must not share nodes with the top-level plan schema');
+  assert.notEqual(SCHEMAS.plan, SCHEMAS.chat.$defs.plan, 'chat emission must not share nodes with the top-level plan schema');
+  assert.notEqual(SCHEMAS.session.$defs.plan, SCHEMAS.chat.$defs.plan, 'session and chat emissions must not share nodes with each other');
+});
+
+check('schema plan: exercise progression and duration fields are present', () => {
+  const exerciseProps = SCHEMAS.plan.properties.sessions.items.properties.exercises.items.properties;
+  assert.deepEqual(
+    Object.keys(exerciseProps).sort(),
+    ['exerciseId', 'goal', 'note', 'progression', 'purpose', 'targetDurationSec', 'targetRepsHigh', 'targetRepsLow', 'targetRpe', 'targetSets', 'targetWeightKg'],
+  );
+  const progressionProps = exerciseProps.progression.properties;
+  assert.deepEqual(Object.keys(progressionProps).sort(), ['durationStepSec', 'everyWeeks', 'repStep', 'weightStepKg']);
+});
+
+check('schema chat: profilePatch fields incl. split enum and cardio/core booleans', () => {
+  const patchSchema = SCHEMAS.chat.properties.profilePatch.anyOf[0];
+  assert.deepEqual(
+    Object.keys(patchSchema.properties).sort(),
+    ['cardioInclude', 'coreInclude', 'daysPerWeek', 'equipmentNotes', 'injuryNotes', 'notes', 'sessionMinutes', 'split'],
+  );
+  assert.deepEqual(patchSchema.properties.split.anyOf[0].enum, ['auto', 'full-body', 'upper-lower', 'ppl']);
+  assert.deepEqual(patchSchema.properties.cardioInclude, { anyOf: [{ type: 'boolean' }, { type: 'null' }] });
+  assert.deepEqual(patchSchema.properties.coreInclude, { anyOf: [{ type: 'boolean' }, { type: 'null' }] });
+  assert.deepEqual(SCHEMAS.chat.properties.profilePatch.anyOf[1], { type: 'null' });
 });
 
 check('schema daily: enums and nullables', () => {
@@ -384,7 +521,7 @@ check('buildRequest: the key never reaches the body', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. parseResponse
+// 6. parseResponse — happy paths
 // ---------------------------------------------------------------------------
 
 check('extractText: concatenates every text block', () => {
@@ -407,6 +544,7 @@ check('parseResponse session: happy path assigns ps-N ids and order', () => {
   assert.deepEqual(out.plan.sessions.map((s) => s.id), ['ps-1', 'ps-2']);
   assert.deepEqual(out.plan.sessions.map((s) => s.order), [1, 2]);
   assert.equal(out.plan.weeks, 6);
+  assert.equal(out.plan.overview.deloadWeek, 4);
 });
 
 check('parseResponse plan: happy path', () => {
@@ -415,6 +553,15 @@ check('parseResponse plan: happy path', () => {
   assert.equal(out.sessions.length, 2);
   assert.equal(out.sessions[0].id, 'ps-1');
   assert.equal(out.sessions[0].exercises[0].exerciseId, 'ex-bench');
+  assert.deepEqual(out.overview.muscleFocus, [{ group: 'chest', why: 'Under its band after the layoff.' }]);
+});
+
+check('parseResponse chat: happy path', () => {
+  const out = parseResponse('chat', messageResponse(goodChat), { digest: chatDigest });
+  assert.deepEqual(out.reply, goodChat.reply);
+  assert.deepEqual(out.memoryUpdates, { add: goodChat.memoryUpdates.add, removeIds: ['m-1'] });
+  assert.deepEqual(out.profilePatch, goodChat.profilePatch);
+  assert.equal(out.plan, null);
 });
 
 check('parseResponse: session-only exercise ids count as known', () => {
@@ -426,71 +573,220 @@ check('parseResponse: session-only exercise ids count as known', () => {
   assert.deepEqual(daily.better, []);
 });
 
-check('parseResponse: clamps sets, reps, weight and RPE', () => {
-  const payload = {
-    weeks: 99,
-    rationale: 'x',
+// ---------------------------------------------------------------------------
+// 6b. parseResponse — duration vs. rep types, driven by the digest's type map
+// ---------------------------------------------------------------------------
+
+check('parseResponse plan: a cardio exercise keeps duration and nulls reps', () => {
+  const payload = planPayload({
     sessions: [{
-      name: 'Upper A',
-      focus: null,
-      exercises: [{ exerciseId: 'ex-bench', targetSets: 99, targetRepsLow: 12, targetRepsHigh: 4, targetWeightKg: 72.3, targetRpe: 12, note: null }],
+      name: 'Cardio', focus: null, brief: [],
+      exercises: [{
+        exerciseId: 'ex-run', targetSets: 1, targetRepsLow: 8, targetRepsHigh: 12,
+        targetWeightKg: 50, targetDurationSec: 720, targetRpe: 6,
+        purpose: 'Aerobic base.', goal: '12 minutes.', note: null,
+        progression: { weightStepKg: 1, repStep: 1, durationStepSec: 30, everyWeeks: 1 },
+      }],
     }],
-  };
+  });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
   const ex = out.sessions[0].exercises[0];
-  assert.equal(out.weeks, 16);
-  assert.equal(ex.targetSets, 8);
-  assert.equal(ex.targetRepsLow, 12);
-  assert.equal(ex.targetRepsHigh, 12, 'high must be lifted to at least low');
-  assert.equal(ex.targetWeightKg, 72.5);
-  assert.equal(ex.targetRpe, 10);
+  assert.equal(ex.targetDurationSec, 720);
+  assert.equal(ex.targetRepsLow, null);
+  assert.equal(ex.targetRepsHigh, null);
 });
 
-check('parseResponse: weight and RPE floors, and out-of-range reps', () => {
-  const payload = {
-    weeks: 0,
-    rationale: 'x',
+check('parseResponse plan: a time plank keeps duration (defaulted) and nulls reps', () => {
+  const payload = planPayload({
     sessions: [{
-      name: 'Lower',
-      focus: null,
-      exercises: [{ exerciseId: 'ex-squat', targetSets: 0, targetRepsLow: 99, targetRepsHigh: 99, targetWeightKg: 900, targetRpe: 1, note: null }],
+      name: 'Core', focus: null, brief: [],
+      exercises: [{
+        exerciseId: 'ex-plank', targetSets: 3, targetRepsLow: 10, targetRepsHigh: 15,
+        targetWeightKg: null, targetDurationSec: null, targetRpe: null,
+        purpose: 'Core hold.', goal: 'Hold longer.', note: null,
+      }],
     }],
-  };
+  });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
   const ex = out.sessions[0].exercises[0];
-  assert.equal(out.weeks, 1);
-  assert.equal(ex.targetSets, 1);
+  assert.equal(ex.targetDurationSec, 45, 'missing duration on a time type defaults to 45s');
+  assert.equal(ex.targetRepsLow, null);
+  assert.equal(ex.targetRepsHigh, null);
+});
+
+check('parseResponse plan: a missing cardio duration defaults to 600s', () => {
+  const payload = planPayload({
+    sessions: [{
+      name: 'Cardio', focus: null, brief: [],
+      exercises: [{ exerciseId: 'ex-run', targetSets: 1, purpose: 'Base.', goal: 'Base.', note: null }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.sessions[0].exercises[0].targetDurationSec, 600);
+});
+
+check('parseResponse plan: a weight_time carry keeps duration and nulls reps', () => {
+  const payload = planPayload({
+    sessions: [{
+      name: 'Carries', focus: null, brief: [],
+      exercises: [{
+        exerciseId: 'ex-carry', targetSets: 3, targetRepsLow: 5, targetRepsHigh: 8,
+        targetWeightKg: 40, targetDurationSec: 50, targetRpe: 7,
+        purpose: 'Grip and core.', goal: '60s holds.', note: null,
+      }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  const ex = out.sessions[0].exercises[0];
+  assert.equal(ex.targetDurationSec, 50);
+  assert.equal(ex.targetRepsLow, null);
+  assert.equal(ex.targetRepsHigh, null);
+  assert.equal(ex.targetWeightKg, 40, 'weight_time still carries a load');
+});
+
+check('parseResponse plan: a lift (weight_reps) keeps reps and nulls duration', () => {
+  const payload = planPayload({
+    sessions: [{
+      name: 'Upper', focus: null, brief: [],
+      exercises: [{
+        exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 10,
+        targetWeightKg: 60, targetDurationSec: 900, targetRpe: 7,
+        purpose: 'Press.', goal: 'Progress.', note: null,
+      }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  const ex = out.sessions[0].exercises[0];
+  assert.equal(ex.targetDurationSec, null);
+  assert.equal(ex.targetRepsLow, 6);
+  assert.equal(ex.targetRepsHigh, 10);
+});
+
+// ---------------------------------------------------------------------------
+// 6c. parseResponse — plan-level clamps
+// ---------------------------------------------------------------------------
+
+check('parseResponse plan: weeks 12 clamps to 8, deloadWeek 1 clamps to null', () => {
+  const payload = planPayload({ weeks: 12, overview: { ...planPayload().overview, deloadWeek: 1 } });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.weeks, 8);
+  assert.equal(out.overview.deloadWeek, null, 'a deload week before week 2 is invalid');
+});
+
+check('parseResponse plan: weeks 0 clamps up to 6 (the minimum)', () => {
+  const payload = planPayload({ weeks: 0 });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.weeks, 6);
+});
+
+check('parseResponse plan: weekNotes dedupe by week, drop out-of-range, sort', () => {
+  const payload = planPayload({
+    weeks: 6,
+    weekNotes: [
+      { week: 3, focus: 'A', points: ['first'] },
+      { week: 3, focus: 'B', points: ['duplicate, dropped'] },
+      { week: 0, focus: 'C', points: ['out of range'] },
+      { week: 99, focus: 'D', points: ['out of range'] },
+      { week: 5, focus: 'E', points: ['fifth'] },
+    ],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.deepEqual(out.weekNotes.map((n) => n.week), [3, 5]);
+  assert.equal(out.weekNotes[0].focus, 'A', 'first occurrence of a duplicated week wins');
+});
+
+check('parseResponse plan: 9 brief bullets truncate to 5', () => {
+  const payload = planPayload({
+    sessions: [{ ...planPayload().sessions[0], brief: Array.from({ length: 9 }, (_, i) => `Bullet ${i + 1}`) }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.sessions[0].brief.length, 5);
+});
+
+check('parseResponse plan: a 300-char purpose truncates to 160', () => {
+  const long = 'x'.repeat(300);
+  const payload = planPayload({
+    sessions: [{
+      ...planPayload().sessions[0],
+      exercises: [{ ...planPayload().sessions[0].exercises[0], purpose: long }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.ok(out.sessions[0].exercises[0].purpose.length <= 160);
+});
+
+check('parseResponse plan: progression clamps — weightStepKg 20 → 10, everyWeeks 0 → 1', () => {
+  const payload = planPayload({
+    sessions: [{
+      ...planPayload().sessions[0],
+      exercises: [{
+        ...planPayload().sessions[0].exercises[0],
+        progression: { weightStepKg: 20, repStep: 1, durationStepSec: 0, everyWeeks: 0 },
+      }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  const prog = out.sessions[0].exercises[0].progression;
+  assert.equal(prog.weightStepKg, 10);
+  assert.equal(prog.everyWeeks, 1);
+});
+
+check('parseResponse plan: a missing progression object becomes all nulls plus everyWeeks 1', () => {
+  const base = planPayload().sessions[0].exercises[0];
+  const { progression, ...withoutProgression } = base;
+  const payload = planPayload({ sessions: [{ ...planPayload().sessions[0], exercises: [withoutProgression] }] });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.deepEqual(out.sessions[0].exercises[0].progression, {
+    weightStepKg: null, repStep: null, durationStepSec: null, everyWeeks: 1,
+  });
+});
+
+check('parseResponse plan: an unknown muscleFocus group is dropped, known ones kept', () => {
+  const payload = planPayload({
+    overview: { ...planPayload().overview, muscleFocus: [{ group: 'quads', why: 'x' }, { group: 'chest', why: 'y' }] },
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.deepEqual(out.overview.muscleFocus, [{ group: 'chest', why: 'y' }]);
+});
+
+check('parseResponse plan: targetSets 99 clamps to 8', () => {
+  const payload = planPayload({
+    sessions: [{ ...planPayload().sessions[0], exercises: [{ ...planPayload().sessions[0].exercises[0], targetSets: 99 }] }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.sessions[0].exercises[0].targetSets, 8);
+});
+
+check('parseResponse plan: reps out of range clamp, and low is never above high', () => {
+  const payload = planPayload({
+    sessions: [{
+      ...planPayload().sessions[0],
+      exercises: [{ ...planPayload().sessions[0].exercises[0], targetRepsLow: 99, targetRepsHigh: 4 }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  const ex = out.sessions[0].exercises[0];
   assert.equal(ex.targetRepsLow, 30);
-  assert.equal(ex.targetRepsHigh, 30);
-  assert.equal(ex.targetWeightKg, 500);
-  assert.equal(ex.targetRpe, 5);
+  assert.equal(ex.targetRepsHigh, 30, 'high is lifted to at least low');
 });
 
-check('parseResponse: null weight and RPE survive', () => {
-  const payload = {
-    weeks: 4,
-    rationale: 'x',
-    sessions: [{ name: 'Full', focus: null, exercises: [{ exerciseId: 'ex-row', targetSets: 3, targetRepsLow: 8, targetRepsHigh: 12, targetWeightKg: null, targetRpe: null, note: null }] }],
-  };
+check('parseResponse plan: sessions trimmed to profile.daysPerWeek (3)', () => {
+  const session = (name) => ({
+    name, focus: null, brief: [],
+    exercises: [{ exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 50, targetRpe: 7, purpose: 'x', goal: 'y', note: null }],
+  });
+  const payload = planPayload({ sessions: ['A', 'B', 'C', 'D', 'E'].map(session) });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
-  assert.equal(out.sessions[0].exercises[0].targetWeightKg, null);
-  assert.equal(out.sessions[0].exercises[0].targetRpe, null);
-});
-
-check('parseResponse: sessions trimmed to daysPerWeek (3)', () => {
-  const session = (name) => ({ name, focus: null, exercises: [{ exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 50, targetRpe: 7, note: null }] });
-  const payload = { weeks: 4, rationale: 'x', sessions: ['A', 'B', 'C', 'D', 'E'].map(session) };
-  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
-  assert.equal(out.sessions.length, 3);
+  assert.equal(out.sessions.length, 3, 'planDigest.profile.daysPerWeek is 3');
   assert.deepEqual(out.sessions.map((s) => s.name), ['A', 'B', 'C']);
   assert.deepEqual(out.sessions.map((s) => s.id), ['ps-1', 'ps-2', 'ps-3']);
 });
 
-check('parseResponse: exercises capped at 10 per session', () => {
-  const exercise = () => ({ exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 50, targetRpe: 7, note: null });
-  const payload = { weeks: 4, rationale: 'x', sessions: [{ name: 'A', focus: null, exercises: Array.from({ length: 14 }, exercise) }] };
+check('parseResponse plan: exercises capped at 12 per session', () => {
+  const base = planPayload().sessions[0].exercises[0];
+  const payload = planPayload({ sessions: [{ ...planPayload().sessions[0], exercises: Array.from({ length: 16 }, () => ({ ...base })) }] });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
-  assert.equal(out.sessions[0].exercises.length, 10);
+  assert.equal(out.sessions[0].exercises.length, 12);
 });
 
 check('parseResponse: unknown exerciseIds are dropped everywhere', () => {
@@ -502,14 +798,12 @@ check('parseResponse: unknown exerciseIds are dropped everywhere', () => {
     ],
     worse: [{ exerciseId: 'ex-ghost', name: 'Ghost', note: 'Nope.' }],
     planChanges: [{ sessionId: 'ps-1', exerciseId: 'ex-ghost', change: 'add', from: '-', to: '-', reason: 'Invented.' }],
-    plan: {
-      weeks: 4,
-      rationale: 'x',
+    plan: planPayload({
       sessions: [
-        { name: 'Ghost day', focus: null, exercises: [{ exerciseId: 'ex-ghost', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 40, targetRpe: 7, note: null }] },
-        { name: 'Real day', focus: null, exercises: [{ exerciseId: 'ex-squat', targetSets: 3, targetRepsLow: 5, targetRepsHigh: 8, targetWeightKg: 70, targetRpe: 7, note: null }] },
+        { name: 'Ghost day', focus: null, brief: [], exercises: [{ exerciseId: 'ex-ghost', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 40, targetRpe: 7, purpose: 'x', goal: 'y', note: null }] },
+        { name: 'Real day', focus: null, brief: [], exercises: [{ exerciseId: 'ex-squat', targetSets: 3, targetRepsLow: 5, targetRepsHigh: 8, targetWeightKg: 70, targetRpe: 7, purpose: 'x', goal: 'y', note: null }] },
       ],
-    },
+    }),
   };
   const out = parseResponse('session', messageResponse(payload), { digest: sessionDigest });
   assert.deepEqual(out.better.map((b) => b.exerciseId), ['ex-bench']);
@@ -523,7 +817,7 @@ check('parseResponse: unknown exerciseIds are dropped everywhere', () => {
 check('parseResponse session: an all-unknown plan collapses to null', () => {
   const payload = {
     ...goodSession,
-    plan: { weeks: 4, rationale: 'x', sessions: [{ name: 'Ghost', focus: null, exercises: [{ exerciseId: 'ex-ghost', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 40, targetRpe: 7, note: null }] }] },
+    plan: planPayload({ sessions: [{ name: 'Ghost', focus: null, brief: [], exercises: [{ exerciseId: 'ex-ghost', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 40, targetRpe: 7, purpose: 'x', goal: 'y', note: null }] }] }),
   };
   const out = parseResponse('session', messageResponse(payload), { digest: sessionDigest });
   assert.equal(out.plan, null);
@@ -534,8 +828,17 @@ check('parseResponse session: explicit null plan stays null', () => {
   assert.equal(out.plan, null);
 });
 
+check('parseResponse chat: an all-unknown plan collapses to null too', () => {
+  const payload = {
+    ...goodChat,
+    plan: planPayload({ sessions: [{ name: 'Ghost', focus: null, brief: [], exercises: [{ exerciseId: 'ex-ghost', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 40, targetRpe: 7, purpose: 'x', goal: 'y', note: null }] }] }),
+  };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
+  assert.equal(out.plan, null);
+});
+
 check('parseResponse plan: an empty plan throws', () => {
-  const payload = { weeks: 4, rationale: 'x', sessions: [] };
+  const payload = planPayload({ sessions: [] });
   assert.throws(
     () => parseResponse('plan', messageResponse(payload), { digest: planDigest }),
     (err) => err instanceof CoachApiError && err.code === 'parse' && /empty plan/i.test(err.message),
@@ -543,11 +846,9 @@ check('parseResponse plan: an empty plan throws', () => {
 });
 
 check('parseResponse: never trusts a model-supplied session id', () => {
-  const payload = {
-    weeks: 4,
-    rationale: 'x',
-    sessions: [{ id: 'evil-id', order: 99, name: 'A', focus: null, exercises: [{ exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 50, targetRpe: 7, note: null }] }],
-  };
+  const payload = planPayload({
+    sessions: [{ id: 'evil-id', order: 99, name: 'A', focus: null, brief: [], exercises: [{ exerciseId: 'ex-bench', targetSets: 3, targetRepsLow: 6, targetRepsHigh: 8, targetWeightKg: 50, targetRpe: 7, purpose: 'x', goal: 'y', note: null }] }],
+  });
   const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
   assert.equal(out.sessions[0].id, 'ps-1');
   assert.equal(out.sessions[0].order, 1);
@@ -562,23 +863,23 @@ check('parseResponse: truncates long copy at a word boundary', () => {
   assert.ok(headline.startsWith(out.headline.slice(0, -1)), 'truncation must be a prefix of the original');
 });
 
-check('parseResponse: body, notes and names get their own budgets', () => {
+check('parseResponse: notes and names get their own budgets', () => {
   const long = 'word '.repeat(400);
   const payload = {
     ...goodSession,
-    summary: long,
+    points: [long],
     better: [{ exerciseId: 'ex-bench', name: long, note: long }],
     flags: [{ code: 'rpe-creep', message: long }],
   };
   const out = parseResponse('session', messageResponse(payload), { digest: sessionDigest });
-  assert.ok(out.summary.length <= 600);
+  assert.ok(out.points[0].length <= 200);
   assert.ok(out.better[0].name.length <= 40);
   assert.ok(out.better[0].note.length <= 300);
   assert.ok(out.flags[0].message.length <= 300);
 });
 
 check('parseResponse: missing arrays coerce to []', () => {
-  const out = parseResponse('session', messageResponse({ overallTone: 'great', summary: 'ok' }), { digest: sessionDigest });
+  const out = parseResponse('session', messageResponse({ overallTone: 'great', points: ['ok'] }), { digest: sessionDigest });
   assert.deepEqual(out.better, []);
   assert.deepEqual(out.worse, []);
   assert.deepEqual(out.flags, []);
@@ -608,6 +909,61 @@ check('parseResponse: unparseable text throws parse', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 6d. parseResponse — chat-specific clamps
+// ---------------------------------------------------------------------------
+
+check('parseResponse chat: reply capped at 10 x 300 chars', () => {
+  const payload = { ...goodChat, reply: Array.from({ length: 14 }, (_, i) => `Reply bullet number ${i + 1} `.repeat(20)) };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
+  assert.equal(out.reply.length, 10);
+  for (const line of out.reply) assert.ok(line.length <= 300);
+});
+
+check('parseResponse chat: memoryUpdates.add capped at 5 x 160 chars', () => {
+  const payload = { ...goodChat, memoryUpdates: { add: Array.from({ length: 8 }, (_, i) => `Fact ${i + 1} `.repeat(40)), removeIds: [] } };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
+  assert.equal(out.memoryUpdates.add.length, 5);
+  for (const fact of out.memoryUpdates.add) assert.ok(fact.length <= 160);
+});
+
+check('parseResponse chat: removeIds is filtered to known digest memory ids', () => {
+  const payload = { ...goodChat, memoryUpdates: { add: [], removeIds: ['m-1', 'm-unknown', 'm-1', 'm-2'] } };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
+  assert.deepEqual(out.memoryUpdates.removeIds, ['m-1', 'm-2'], 'unknown ids dropped, duplicates dropped, order kept');
+});
+
+check('parseResponse chat: profilePatch is range-checked', () => {
+  const payload = {
+    ...goodChat,
+    profilePatch: {
+      daysPerWeek: 15, sessionMinutes: 5, injuryNotes: 'x'.repeat(700), equipmentNotes: null,
+      notes: null, split: 'nonsense', cardioInclude: true, coreInclude: null,
+    },
+  };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
+  assert.equal(out.profilePatch.daysPerWeek, 7);
+  assert.equal(out.profilePatch.sessionMinutes, 20);
+  assert.equal(out.profilePatch.injuryNotes.length, 600, 'profile text fields clamp at 600 chars');
+  assert.equal(out.profilePatch.split, null, 'an invalid split enum value is dropped');
+  assert.equal(out.profilePatch.cardioInclude, true);
+});
+
+check('parseResponse chat: an all-null profilePatch becomes null', () => {
+  const payload = {
+    ...goodChat,
+    profilePatch: { daysPerWeek: null, sessionMinutes: null, injuryNotes: null, equipmentNotes: null, notes: null, split: null, cardioInclude: null, coreInclude: null },
+  };
+  const out = parseResponse('chat', messageResponse(payload), { digest: chatDigest });
+  assert.equal(out.profilePatch, null);
+});
+
+check('parseResponse chat: profilePatch itself null stays null, unknown keys ignored', () => {
+  const out = parseResponse('chat', messageResponse({ ...goodChat, profilePatch: { daysPerWeek: 4, bogusField: 'x' } }), { digest: chatDigest });
+  assert.equal(out.profilePatch.daysPerWeek, 4);
+  assert.equal('bogusField' in out.profilePatch, false);
+});
+
+// ---------------------------------------------------------------------------
 // 7. stop_reason handling
 // ---------------------------------------------------------------------------
 
@@ -634,7 +990,7 @@ check('parseResponse: max_tokens becomes a retryable truncated error', () => {
 // 8-11. callCoach
 // ---------------------------------------------------------------------------
 
-await checkAsync('callCoach: 429, 429, 200 resolves after two backoffs', async () => {
+await checkAsync('callCoach: 429, 429, 200 resolves after two backoffs (~1000 then ~4000)', async () => {
   const fetchImpl = fakeFetch([
     { status: 429, body: { error: { message: 'slow down' } } },
     { status: 429, body: { error: { message: 'slow down' } } },
@@ -668,7 +1024,7 @@ await checkAsync('callCoach: sends the pinned headers and body on every attempt'
   assert.equal(call.init.headers['x-api-key'], KEY);
   assert.equal(call.init.headers['anthropic-version'], ANTHROPIC_VERSION);
   assert.equal(call.init.headers['anthropic-dangerous-direct-browser-access'], 'true');
-  assert.ok(call.init.signal, 'a 60 s abort signal must be attached');
+  assert.ok(call.init.signal, 'an abort signal must be attached');
   const body = JSON.parse(call.init.body);
   assert.equal(body.model, COACH_MODEL);
   assert.equal(body.system, SYSTEM_PROMPT);
@@ -702,7 +1058,7 @@ await checkAsync('callCoach: 400 keeps the API message in detail; 404 is model',
   assert.equal(missing.calls.length, 1);
 });
 
-await checkAsync('callCoach: 500 three times throws server after three calls', async () => {
+await checkAsync('callCoach: 500 three times throws server after three calls (daily: 3 attempts)', async () => {
   const fetchImpl = fakeFetch([
     { status: 500, body: {} },
     { status: 503, body: {} },
@@ -715,6 +1071,20 @@ await checkAsync('callCoach: 500 three times throws server after three calls', a
   );
   assert.equal(fetchImpl.calls.length, 3);
   assert.deepEqual(sleep.delays, [1000, 4000]);
+});
+
+await checkAsync('callCoach: plan kind gets only 2 attempts — 500 twice throws after exactly 2 fetches', async () => {
+  const fetchImpl = fakeFetch([
+    { status: 500, body: {} },
+    { status: 500, body: {} },
+  ]);
+  const sleep = recordingSleep();
+  await assert.rejects(
+    callCoach({ kind: 'plan', digest: planDigest, apiKey: KEY, fetchImpl, sleep, random: () => 0 }),
+    (err) => err instanceof CoachApiError && err.code === 'server',
+  );
+  assert.equal(fetchImpl.calls.length, 2, 'MAX_ATTEMPTS.plan is 2');
+  assert.deepEqual(sleep.delays, [1000]);
 });
 
 await checkAsync('callCoach: Retry-After seconds are honoured', async () => {
@@ -746,8 +1116,8 @@ await checkAsync('callCoach: truncated retries once at 1.5x max_tokens', async (
   const sleep = recordingSleep();
   const out = await callCoach({ kind: 'session', digest: sessionDigest, apiKey: KEY, fetchImpl, sleep, random: () => 0 });
   assert.equal(fetchImpl.calls.length, 2);
-  assert.equal(JSON.parse(fetchImpl.calls[0].init.body).max_tokens, 8000);
-  assert.equal(JSON.parse(fetchImpl.calls[1].init.body).max_tokens, 12000);
+  assert.equal(JSON.parse(fetchImpl.calls[0].init.body).max_tokens, 10000);
+  assert.equal(JSON.parse(fetchImpl.calls[1].init.body).max_tokens, 15000);
   assert.equal(out.narrative.overallTone, 'solid');
 });
 
@@ -809,7 +1179,32 @@ await checkAsync('callCoach: an already-aborted external signal surfaces the abo
 });
 
 // ---------------------------------------------------------------------------
-// 11b / 12. Copy and cost
+// 11b. Timeouts and attempts
+// ---------------------------------------------------------------------------
+
+check('TIMEOUT_MS and timeoutFor: per-kind defaults and override behaviour', () => {
+  assert.deepEqual(TIMEOUT_MS, { daily: 60000, session: 90000, plan: 180000, chat: 60000 });
+  for (const kind of ['daily', 'session', 'plan', 'chat']) {
+    assert.equal(timeoutFor(kind, undefined), TIMEOUT_MS[kind]);
+    assert.equal(timeoutFor(kind, null), TIMEOUT_MS[kind]);
+    assert.equal(timeoutFor(kind, 0), TIMEOUT_MS[kind]);
+    assert.equal(timeoutFor(kind, -5), TIMEOUT_MS[kind]);
+    assert.equal(timeoutFor(kind, NaN), TIMEOUT_MS[kind]);
+    assert.equal(timeoutFor(kind, 5000), 5000, 'a positive override wins');
+  }
+  assert.equal(timeoutFor('unknown-kind', undefined), 60000, 'unknown kinds fall back to the default timeout');
+});
+
+check('MAX_ATTEMPTS and attemptsFor: plan gets 2, everything else gets 3', () => {
+  assert.deepEqual(MAX_ATTEMPTS, { plan: 2, default: 3 });
+  assert.equal(attemptsFor('plan'), 2);
+  for (const kind of ['daily', 'session', 'chat', 'unknown-kind']) {
+    assert.equal(attemptsFor(kind), 3);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12. Copy and cost
 // ---------------------------------------------------------------------------
 
 check('userMessageFor: pinned copy', () => {
@@ -876,6 +1271,54 @@ await checkAsync('testApiKey: 401 throws auth; empty key never calls out', async
   const unused = fakeFetch([]);
   await assert.rejects(testApiKey('', { fetchImpl: unused }), (err) => err.code === 'auth');
   assert.equal(unused.calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 14. normaliseNarrative — v1 → v2 shim
+// ---------------------------------------------------------------------------
+
+check('normaliseNarrative: v1 daily {body, todayAdvice} becomes {points, advice}', () => {
+  const v1 = { headline: 'Chest lagging', body: 'Bench has not moved.', todayAdvice: 'Push it today.', tone: 'steady' };
+  const out = normaliseNarrative('daily', v1);
+  assert.deepEqual(out.points, ['Bench has not moved.']);
+  assert.deepEqual(out.advice, ['Push it today.']);
+  assert.equal(out.headline, 'Chest lagging');
+});
+
+check('normaliseNarrative: v1 session {summary} becomes {points}', () => {
+  const v1 = { overallTone: 'solid', summary: 'Bench moved up.', better: [], worse: [], flags: [], planChanges: [], plan: null };
+  const out = normaliseNarrative('session', v1);
+  assert.deepEqual(out.points, ['Bench moved up.']);
+});
+
+check('normaliseNarrative: v1 chat {text} becomes {reply}', () => {
+  const v1 = { text: 'Sure, adding cardio Friday.' };
+  const out = normaliseNarrative('chat', v1);
+  assert.deepEqual(out.reply, ['Sure, adding cardio Friday.']);
+});
+
+check('normaliseNarrative: v1 plan {rationale} becomes overview.points, adds empty weekNotes', () => {
+  const v1 = { weeks: 6, rationale: 'Rebuild volume first.', sessions: [] };
+  const out = normaliseNarrative('plan', v1);
+  assert.deepEqual(out.overview.points, ['Rebuild volume first.']);
+  assert.deepEqual(out.overview.muscleFocus, []);
+  assert.equal(out.overview.deloadWeek, null);
+  assert.deepEqual(out.weekNotes, []);
+});
+
+check('normaliseNarrative: already-v2 input is returned unchanged (same reference)', () => {
+  assert.equal(normaliseNarrative('daily', goodDaily), goodDaily);
+  assert.equal(normaliseNarrative('plan', goodPlan), goodPlan);
+  const sessionOut = normaliseNarrative('session', goodSession);
+  assert.equal(sessionOut, goodSession);
+  const chatOut = normaliseNarrative('chat', goodChat);
+  assert.equal(chatOut, goodChat);
+});
+
+check('normaliseNarrative: null-safe', () => {
+  assert.equal(normaliseNarrative('daily', null), null);
+  assert.equal(normaliseNarrative('daily', undefined), undefined);
+  assert.deepEqual(normaliseNarrative('daily', ['not', 'an', 'object']), ['not', 'an', 'object']);
 });
 
 console.log(`\nAll ${passed} assertions passed.`);
