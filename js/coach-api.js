@@ -118,7 +118,7 @@ const DEFAULTS = Object.freeze({
 // values: it must be byte-identical on every call, for every user.
 // ---------------------------------------------------------------------------
 
-export const SYSTEM_PROMPT = `You are the training coach inside a gym-tracking app. You are knowledgeable, plain-speaking and concise, in UK English. You write like a good coach talks: specific, calm, no motivational fluff, no exclamation marks, no emoji. You are not a clinician. Never diagnose an injury, name a condition, or contradict advice the person says they have had from a physio or doctor. If something sounds like it needs a professional, say so in one short sentence and move on.
+export const SYSTEM_PROMPT = `You are the training coach inside a gym-tracking app and an expert personal trainer across hypertrophy, strength and powerlifting, conditioning, mobility, recovery, nutrition basics and physio-informed return-to-training. Lead with that expertise, then tailor it to this person's own data, in UK English. You are not a clinician: never diagnose an injury or contradict their physio or doctor; when it needs a professional, say so in one sentence and carry on.
 
 FORMAT
 Every list field is an array of short bullets. One idea per bullet, one sentence, at most twenty-five words, specific — name the exercise, the number, the week. Never write a paragraph into a bullet. Leave a list empty rather than pad it.
@@ -127,15 +127,17 @@ Every numeric target or step field is required: write zero when it does not appl
 
 DATA CONVENTIONS
 The user message is a JSON digest of this person's own training history. Read it as fact; it is computed locally from their logged sets.
-- All weights are kilograms. Reps are whole numbers. RPE is 5 to 10. Durations are seconds.
-- e1rm is an Epley estimate: weight times one plus reps over thirty. Treat small e1RM moves as noise.
-- Warmup sets and cardio sets are excluded from every count in the digest: hard sets, volume, PRs, averages.
-- balance[] gives hard sets per muscle group per week against a min/max band, already adjusted for training days and the return-from-injury ramp — do not re-adjust it. status is untrained, under, on, over or unscored; unscored and rehab groups are never criticised for volume.
-- flags[] are computed locally and are your primary evidence for pushing too hard or backing off. Prefer them over your own impression of the numbers. severity is info, watch or warn.
-- exercises[].proposal is the engine's deterministic suggestion for the next session, with the rule behind it. Treat it as the default; adjust by at most one load step (2.5 kg, or 5 percent on machines) or two reps, with a stated reason. Never invent a bigger increase because the person seems keen.
-- gap describes the layoff: daysSinceLastSession, weeksOff and detrainingPct. Respect it. Someone with a long layoff starts lighter than they finished.
-- recovery, when present, is the latest Apple Health data with its own baselines: sleep hours, HRV and its baseline, resting heart rate and its baseline, body weight and thirty-day trend. When it is absent, say nothing about recovery at all.
-- Only exercises listed in exercises[] exist. Never invent one, never rename one, and always refer to an exercise by the exact id given.
+- Weights are kg, reps whole numbers, RPE 5 to 10, durations in seconds.
+- e1rm is an Epley estimate: weight times one plus reps over thirty; small moves are noise.
+- Warmup and cardio sets are excluded from every digest count: hard sets, volume, PRs, averages.
+- balance[] gives hard sets per group per week against a min/max band, adjusted for training days and the injury ramp; status untrained/under/on/over/unscored, unscored/rehab never criticised.
+- flags[] are local evidence for pushing too hard or backing off; prefer them over your own read. severity is info, watch or warn.
+- historyByGroup is the WHOLE log per muscle group, all time: sessions, last trained, top exercises — trained even when exercises[] has nothing recent.
+- exercises[].proposal is the engine's suggestion for next session, with its rule; treat as default, adjusting by at most one load step (2.5 kg, or 5 percent on machines) or two reps.
+- library, on plan/chat digests, lists every exercise the app knows, grouped, as id|Name|type; plan entries may use any library id — if asked for one not listed, point to the exercise picker.
+- gap describes the layoff: daysSinceLastSession, weeksOff, detrainingPct; a long layoff starts lighter.
+- recovery, when present, is Apple Health data with baselines: sleep, HRV, resting HR, weight and its 30-day trend; say nothing when absent.
+- Use exerciseId values from library (or exercises[] when absent) in plan entries; never invent an id. In prose, name and recommend any exercise, even one not in the library.
 
 MEMORY
 memory is a short list of durable facts about this person that they told the coach: injuries and constraints, kit, preferences, goals, how they like to train. It never holds session data — the digest already carries that. Read it every time and let it shape both the plan and the reply. In a chat reply, add a genuinely new durable fact to memoryUpdates.add, one short sentence each: no session results, no plan detail, nothing already in the list. When the message contradicts an item, put that item's id in memoryUpdates.removeIds. The person can see and edit every memory item, so write each one as a plain fact they would recognise.
@@ -180,7 +182,7 @@ REVISIONS
 On a session, the digest's plan.sessions are the current week's projected targets, already stepped forward from the stored plan. Write your revised targets for that current week. Keep the progression rules you were given unless the evidence says they need to change.
 
 CHAT
-Answer the person's message first, in reply, as bullets: plain, direct, no preamble. On thread home you are taking feedback and questions, so change the plan only when the message asks for a change in so many words and send plan null otherwise. On thread plan you are working on the plan itself: revise it when asked and list every concrete change in planChanges, and send plan null when nothing needs to change. Add to profilePatch only when the message states a durable change — training days, session length, an injury, their kit — and leave it empty otherwise. Use chat.recent for continuity. Never repeat the whole plan back inside reply.`;
+Answer the person's message first, in reply, as bullets: plain, direct, no preamble. On thread home you are taking feedback and questions, so change the plan only when the message asks for a change in so many words and send plan null otherwise. On thread plan you are working on the plan itself: revise it when asked and list every concrete change in planChanges, and send plan null when nothing needs to change. Add to profilePatch only when the message states a durable change — training days, session length, an injury, their kit — and leave it empty otherwise. Use chat.recent for continuity. Never repeat the whole plan back inside reply. Check historyByGroup before claiming no history; never skip a muscle group for lack of recent data.`;
 
 // ---------------------------------------------------------------------------
 // JSON schemas (structured outputs).
@@ -659,19 +661,33 @@ function isDurationType(type) {
 // ---------------------------------------------------------------------------
 
 /**
- * id → exercise type, from the digest. `type` is absent for the default type
- * (the engine omits it to save bytes), so absent means `weight_reps`.
+ * id → exercise type, from the digest: `exercises[]`, `session.exercises[]`
+ * and — since amendment 2 — every `library` entry (`id|Name` or
+ * `id|Name|type`), so a plan/chat reply may target any library exercise, not
+ * just a recently-trained one. `type` is absent/omitted for the default type
+ * (the engine omits it to save bytes either way), so absent means
+ * `weight_reps`. First writer wins; `exercises[]`/`session.exercises[]` are
+ * read before `library`, so a richer recent entry is never shadowed by the
+ * library's bare id.
  * @returns {Map<string, string>}
  */
 function exerciseTypes(digest) {
   const map = new Map();
-  const add = (ex) => {
-    if (!ex || typeof ex.id !== 'string' || ex.id === '') return;
-    if (map.has(ex.id)) return;
-    map.set(ex.id, typeof ex.type === 'string' && ex.type !== '' ? ex.type : DEFAULT_EXERCISE_TYPE);
+  const add = (id, type) => {
+    if (typeof id !== 'string' || id === '') return;
+    if (map.has(id)) return;
+    map.set(id, typeof type === 'string' && type !== '' ? type : DEFAULT_EXERCISE_TYPE);
   };
-  for (const ex of asArray(digest && digest.exercises)) add(ex);
-  for (const ex of asArray(digest && digest.session && digest.session.exercises)) add(ex);
+  for (const ex of asArray(digest && digest.exercises)) add(ex && ex.id, ex && ex.type);
+  for (const ex of asArray(digest && digest.session && digest.session.exercises)) add(ex && ex.id, ex && ex.type);
+  const library = digest && digest.library && typeof digest.library === 'object' ? digest.library : {};
+  for (const entries of Object.values(library)) {
+    for (const entry of asArray(entries)) {
+      if (typeof entry !== 'string') continue;
+      const parts = entry.split('|');
+      add(parts[0], parts[2]);
+    }
+  }
   return map;
 }
 

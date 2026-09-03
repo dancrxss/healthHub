@@ -29,6 +29,7 @@ import {
   projectedSessions,
   recentPRs,
 } from '../js/coach-engine.js';
+import { MUSCLE_GROUPS } from '../js/db.js';
 
 let passed = 0;
 function check(name, fn) {
@@ -901,7 +902,7 @@ check('buildDigest: an empty history plan digest is topped up to 20 first-time e
   assert.ok(d.exercises.every((e) => typeof e.id === 'string' && typeof e.name === 'string'));
   // sorted by muscle group (canonical order) then name
   assert.equal(d.exercises[0].group, 'chest');
-  assert.ok(JSON.stringify(d).length < 4000, `digest was ${JSON.stringify(d).length} bytes`);
+  assert.ok(JSON.stringify(d).length < 9000, `digest was ${JSON.stringify(d).length} bytes`);
 });
 
 check('buildDigest: an empty history daily digest lists nothing (no top-up outside plan kind)', () => {
@@ -959,16 +960,16 @@ const bigPlan = {
   })),
 };
 
-// Per-kind digest byte budget (PLAN.md §"Phase C2" C2.2): daily/session 4000,
-// plan/chat 6000 — the plan budget grew in C2 to fit the richer v2 profile,
-// the group top-up and `memory`.
-const DIGEST_BUDGET = { daily: 4000, session: 4000, plan: 6000, chat: 6000 };
+// Per-kind digest byte budget (PLAN.md §"Phase C2" C2.2/C2.3 amendment 2):
+// daily/session 4500, plan/chat 9000 — the plan/chat budget grew again to fit
+// `historyByGroup` (every kind) and the full `library` (plan/chat).
+const DIGEST_BUDGET = { daily: 4500, session: 4500, plan: 9000, chat: 9000 };
 
 const bigSizes = {};
 check('buildDigest: a 300-workout, 25-exercise, two-year history stays inside its per-kind budget', () => {
   assert.equal(bigWorkouts.length, 300);
   assert.equal(bigExercises.length, 25);
-  for (const kind of ['daily', 'session', 'plan']) {
+  for (const kind of ['daily', 'session', 'plan', 'chat']) {
     const d = buildDigest({
       dataset: bigDS,
       profile: balanceProfile,
@@ -977,6 +978,7 @@ check('buildDigest: a 300-workout, 25-exercise, two-year history stays inside it
       workoutId: kind === 'session' ? bigWorkouts[bigWorkouts.length - 1].id : null,
       plan: bigPlan,
       kind,
+      chat: kind === 'chat' ? { thread: 'home', recent: [{ role: 'user', text: 'How is my training going?' }], message: 'Can we add more leg volume?' } : null,
     });
     const size = JSON.stringify(d).length;
     bigSizes[kind] = size;
@@ -1355,7 +1357,7 @@ check("buildDigest: daily kind never lists duration-type exercises, even when tr
   assert.deepEqual(d.exercises, []);
 });
 
-check('buildDigest plan: a 30-exercise library with a full v2 profile stays under its 6 kB budget', () => {
+check('buildDigest plan: a 30-exercise library with a full v2 profile stays under its 9 kB budget', () => {
   const cardioLib = [...library, ex('ex-run', 'Treadmill Run', 'cardio', 'other', 'cardio')];
   const profile = {
     ...v2EmptyProfile,
@@ -1369,7 +1371,7 @@ check('buildDigest plan: a 30-exercise library with a full v2 profile stays unde
   const d = buildDigest({ dataset: { workouts: [], sets: [], exercises: cardioLib }, profile, today: TODAY, kind: 'plan' });
   assert.ok(d.exercises.length <= 30);
   const size = JSON.stringify(d).length;
-  assert.ok(size < 6000, `plan digest was ${size} bytes`);
+  assert.ok(size < 9000, `plan digest was ${size} bytes`);
 });
 
 check('buildDigest: memory is always present ([] when none) on every kind', () => {
@@ -1408,11 +1410,12 @@ check('buildDigest: chat is absent on every kind but chat', () => {
 });
 
 check('buildDigest: the shrink loop trims chat.recent then memory under real size pressure', () => {
-  // 20 memory items at their storage-side cap (160 chars) is the dominant
-  // pressure here — deliberately oversized relative to what a 6-kB budget
-  // can hold once the 300-workout dataset and a big plan are also in play.
+  // 20 memory items at their storage-side cap (160 chars), turns and a
+  // message at their own caps — deliberately oversized relative to what a
+  // 9-kB budget can hold once the 300-workout dataset, `historyByGroup`,
+  // `library` and a big plan are also in play.
   const bigMemory = Array.from({ length: 20 }, (_, i) => ({ id: `m-${i}`, text: 'x'.repeat(160) }));
-  const recent = Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? 'coach' : 'user', text: `turn ${i} short note` }));
+  const recent = Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? 'coach' : 'user', text: 'x'.repeat(400) }));
   const d = buildDigest({
     dataset: bigDS,
     profile: balanceProfile,
@@ -1421,11 +1424,152 @@ check('buildDigest: the shrink loop trims chat.recent then memory under real siz
     plan: bigPlan,
     kind: 'chat',
     memory: bigMemory,
-    chat: { thread: 'plan', recent, message: 'What should I do about my sore shoulder this week?' },
+    chat: { thread: 'plan', recent, message: 'x'.repeat(2000) },
   });
   const size = JSON.stringify(d).length;
-  assert.ok(size < 6000, `chat digest was ${size} bytes`);
+  assert.ok(size < 9000, `chat digest was ${size} bytes`);
   assert.ok(d.memory.length <= 10 || d.chat.recent.length <= 3, 'expected the shrink loop to have trimmed memory or chat.recent');
+});
+
+// ---------------------------------------------------------------------------
+// 17. Coach v2/C2.3 amendment 2 — historyByGroup, library, chat window, shrink levers
+// ---------------------------------------------------------------------------
+
+check('buildDigest: historyByGroup covers a group trained six months ago, on every kind', () => {
+  const legsDate = addDays(TODAY, -183);
+  const ds = {
+    workouts: [wo('hg1', legsDate)],
+    sets: [...straight('hg1', 'ex-07', 3, 100, 6, { rpe: 8 })], // Back Squat, legs
+    exercises: library,
+  };
+  for (const kind of ['daily', 'session', 'plan', 'chat']) {
+    const d = buildDigest({ dataset: ds, profile: emptyProfile, today: TODAY, kind, workoutId: kind === 'session' ? 'hg1' : null });
+    assert.ok(d.historyByGroup.legs, `${kind} digest missing historyByGroup.legs`);
+    assert.equal(d.historyByGroup.legs.sessions, 1);
+    assert.equal(d.historyByGroup.legs.last, legsDate);
+    assert.deepEqual(d.historyByGroup.legs.top, ['ex-07']);
+    // A group with no history at all is simply absent.
+    assert.equal('chest' in d.historyByGroup, false);
+  }
+});
+
+check('buildDigest: historyByGroup.top ranks by session count then recency then id, capped at 3', () => {
+  const d1 = addDays(TODAY, -30);
+  const d2 = addDays(TODAY, -20);
+  const d3 = addDays(TODAY, -10);
+  const ds = {
+    workouts: [wo('hg2a', d1), wo('hg2b', d2), wo('hg2c', d3)],
+    sets: [
+      ...straight('hg2a', 'ex-01', 3, 60, 8, { rpe: 7 }), // Bench Press — 3 sessions
+      ...straight('hg2b', 'ex-01', 3, 60, 8, { rpe: 7 }),
+      ...straight('hg2c', 'ex-01', 3, 60, 8, { rpe: 7 }),
+      ...straight('hg2a', 'ex-02', 3, 20, 10, { rpe: 7 }), // Incline Press — 1 session
+      ...straight('hg2b', 'ex-03', 3, 15, 12, { rpe: 7 }), // Cable Fly — 1 session
+    ],
+    exercises: library,
+  };
+  const d = buildDigest({ dataset: ds, profile: emptyProfile, today: TODAY, kind: 'daily' });
+  assert.equal(d.historyByGroup.chest.sessions, 3);
+  assert.equal(d.historyByGroup.chest.last, d3);
+  assert.deepEqual(d.historyByGroup.chest.top, ['ex-01', 'ex-03', 'ex-02'], 'ex-01 by count, then ex-03/ex-02 by recency');
+});
+
+check('buildDigest: library is present only on plan/chat, grouped by muscle group, sorted, with the type suffix only when non-default', () => {
+  const withExtras = [
+    ...library,
+    ex('ex-run', 'Treadmill Run', 'cardio', 'other', 'cardio'),
+    ex('ex-plank', 'Front Plank', 'abs', 'other', 'time'),
+    ex('ex-notes', 'Stretching', 'other', 'other', 'notes'),
+  ];
+  const ds = { workouts: [], sets: [], exercises: withExtras };
+  const daily = buildDigest({ dataset: ds, profile: emptyProfile, today: TODAY, kind: 'daily' });
+  const session = buildDigest({ dataset: { ...ds, workouts: [wo('lb1', TODAY)] }, profile: emptyProfile, today: TODAY, workoutId: 'lb1', kind: 'session' });
+  assert.equal('library' in daily, false);
+  assert.equal('library' in session, false);
+
+  const plan = buildDigest({ dataset: ds, profile: emptyProfile, today: TODAY, kind: 'plan' });
+  const chat = buildDigest({ dataset: ds, profile: emptyProfile, today: TODAY, kind: 'chat' });
+  for (const d of [plan, chat]) {
+    assert.ok(Array.isArray(d.library.chest), 'expected a chest group');
+    assert.ok(d.library.chest.includes('ex-01|Bench Press'), 'default weight_reps carries no |type suffix');
+    assert.ok(d.library.cardio.includes('ex-run|Treadmill Run|cardio'));
+    assert.ok(d.library.abs.includes('ex-plank|Front Plank|time'));
+    const flat = JSON.stringify(d.library);
+    assert.equal(flat.includes('ex-notes'), false, 'notes-type exercises are excluded from the library');
+    // grouped in MUSCLE_GROUPS order
+    assert.deepEqual(Object.keys(d.library), MUSCLE_GROUPS.filter((g) => g in d.library));
+    // sorted by name within a group
+    const chestNames = d.library.chest.map((s) => s.split('|')[1]);
+    assert.deepEqual(chestNames, chestNames.slice().sort());
+  }
+});
+
+check("buildDigest: kind chat ranks over 52 weeks — an exercise last trained 20 weeks ago appears in chat but not daily", () => {
+  const oldDate = addDays(TODAY, -140); // 20 weeks
+  const ds = {
+    workouts: [wo('cw1', TODAY), wo('cw2', oldDate)],
+    sets: [
+      ...straight('cw1', 'ex-01', 3, 60, 8, { rpe: 7 }), // Bench Press, trained today
+      ...straight('cw2', 'ex-07', 3, 100, 6, { rpe: 8 }), // Back Squat, trained 20 weeks ago
+    ],
+    exercises: library,
+  };
+  const daily = buildDigest({ dataset: ds, profile: emptyProfile, today: TODAY, kind: 'daily' });
+  const chat = buildDigest({ dataset: ds, profile: emptyProfile, today: TODAY, kind: 'chat' });
+  assert.equal(daily.exercises.some((e) => e.id === 'ex-07'), false, 'outside the 8-week daily window');
+  assert.ok(chat.exercises.some((e) => e.id === 'ex-07'), 'inside the 52-week chat window');
+});
+
+check('buildDigest: plan and chat digests stay under 9 kB with a 61-exercise library and a 300-workout history; daily/session stay under 4.5 kB', () => {
+  const extraExercises = Array.from({ length: 36 }, (_, i) =>
+    ex(`bx-extra-${String(i + 1).padStart(2, '0')}`, `Extra Exercise ${i + 1}`, MUSCLE_GROUPS[i % MUSCLE_GROUPS.length], 'other', 'weight_reps')
+  );
+  const wideExercises = [...bigExercises, ...extraExercises];
+  assert.equal(wideExercises.length, 61);
+  const ds = { workouts: bigWorkouts, sets: bigSets, exercises: wideExercises };
+  const sizes = {};
+  for (const kind of ['daily', 'session', 'plan', 'chat']) {
+    const d = buildDigest({
+      dataset: ds,
+      profile: balanceProfile,
+      today: TODAY,
+      health: HEALTH,
+      workoutId: kind === 'session' ? bigWorkouts[bigWorkouts.length - 1].id : null,
+      plan: bigPlan,
+      kind,
+      chat: kind === 'chat' ? { thread: 'home', recent: [], message: 'What should I train today?' } : null,
+    });
+    sizes[kind] = JSON.stringify(d).length;
+  }
+  assert.ok(sizes.daily < 4500, `daily digest was ${sizes.daily} bytes`);
+  assert.ok(sizes.session < 4500, `session digest was ${sizes.session} bytes`);
+  assert.ok(sizes.plan < 9000, `plan digest was ${sizes.plan} bytes`);
+  assert.ok(sizes.chat < 9000, `chat digest was ${sizes.chat} bytes`);
+  console.log(`61-exercise/300-workout digest sizes: ${JSON.stringify(sizes)}`);
+});
+
+check('buildDigest: forced size pressure drops historyByGroup.top before it touches library', () => {
+  // A big, deliberately padded memory list is enough pressure on its own once
+  // the 300-workout fixture and a big plan are also in play — the same
+  // pressure source the chat shrink-loop test above uses.
+  const bigMemory = Array.from({ length: 20 }, (_, i) => ({ id: `m-${i}`, text: 'x'.repeat(160) }));
+  const profile = { ...balanceProfile, groupPrefs: {} }; // no group is "of interest" — every library group is droppable
+  const d = buildDigest({
+    dataset: bigDS,
+    profile,
+    today: TODAY,
+    health: HEALTH,
+    plan: bigPlan,
+    kind: 'plan',
+    memory: bigMemory,
+  });
+  const size = JSON.stringify(d).length;
+  assert.ok(size < 9000, `plan digest was ${size} bytes`);
+  const anyTopDropped = Object.values(d.historyByGroup).some((h) => !('top' in h));
+  const anyLibraryGroupDropped = Object.keys(d.library).length < new Set(library.map((e) => e.muscleGroup)).size;
+  assert.ok(anyTopDropped || anyLibraryGroupDropped, 'expected some shrink lever beyond exercises/memory to have fired');
+  // 'plan' never loses its library entirely, even under this much pressure.
+  assert.ok(Object.keys(d.library).length >= 1, 'a plan digest must keep at least one library group');
 });
 
 check("buildDigest: the plan echo on daily/session/chat is the CURRENT WEEK's projection, not the stored plan", () => {

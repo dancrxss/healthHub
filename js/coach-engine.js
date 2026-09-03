@@ -153,11 +153,22 @@ const DEFAULT_SETS = 3;
 const RAMP_SETS = 2;
 const RAMP_SETS_UNTIL_WEEK = 2;
 
-/** Digest budget. The API prompt is built from this, so it is a hard cap. Per kind (PLAN.md C2.2). */
-const DIGEST_MAX_BYTES = { daily: 4000, session: 4000, plan: 6000, chat: 6000 };
-const DIGEST_EXERCISE_CAP = { daily: 12, session: 12, plan: 20 };
+/** Digest budget. The API prompt is built from this, so it is a hard cap. Per kind
+ * (PLAN.md C2.2, C2.2/C2.3 amendment 2 — grew to fit `historyByGroup` on every
+ * kind, plus the full `library` on plan/chat). */
+const DIGEST_MAX_BYTES = { daily: 4500, session: 4500, plan: 9000, chat: 9000 };
+/** Ranked-exercise list cap per kind. 'chat' matches 'plan' — a chat digest is
+ * not backed by the group top-up `library` gives, so it gets the wider window
+ * below instead (amendment 2). */
+const DIGEST_EXERCISE_CAP = { daily: 12, session: 12, plan: 20, chat: 20 };
 const DIGEST_EXERCISE_FLOOR = 4;
-const DIGEST_WINDOW_WEEKS = { daily: 8, session: 8, plan: 16 };
+/** How far back `rankedExercises` looks, anchored at the last session. 'chat'
+ * is a full year (52 weeks) — the digest's `library` already carries a
+ * complete exercise inventory, but the ranked list is what carries recent
+ * proposals/e1RM, so it must not silently exclude anything trained this year
+ * (amendment 2 — this was the direct cause of the coach denying it could see
+ * legs/back/biceps history that was simply outside the old 8-week window). */
+const DIGEST_WINDOW_WEEKS = { daily: 8, session: 8, plan: 16, chat: 52 };
 const DIGEST_SESSION_EXERCISE_CAP = 8;
 const DIGEST_SESSION_EXERCISE_FLOOR = 3;
 const DIGEST_SET_CAP = 6;
@@ -175,6 +186,8 @@ const DIGEST_CHAT_MESSAGE_CHARS = 1200;
 const DIGEST_CHAT_TURN_CHARS = 400;
 /** `memory`: the shrink-loop floor (items are stored capped at 20; no floor otherwise). */
 const DIGEST_MEMORY_FLOOR = 10;
+/** `historyByGroup[g].top`: how many exerciseIds it carries per group before the shrink loop trims it. */
+const DIGEST_HISTORY_TOP_N = 3;
 
 const DAY_MS = 86400000;
 
@@ -1435,6 +1448,103 @@ function libraryTopUp(dataset, { avoid, exclude }) {
     });
 }
 
+/**
+ * `historyByGroup` (PLAN.md C2.2/C2.3 amendment 2): the WHOLE log, ALL TIME,
+ * summarised per muscle group — deliberately unbounded by the ranked
+ * exercise window above, so a group trained months ago never disappears from
+ * the digest. Only groups with at least one finished-session hard set appear
+ * at all; `top` is at most `DIGEST_HISTORY_TOP_N` exerciseIds, by session
+ * count then recency then id — the same ranking `rankedExercises` uses, just
+ * with no window and no rep-type-only filter (a group's `top` can include a
+ * duration-type exercise, since it only needs `isHardSet`, which already
+ * excludes cardio-tagged sets — the same exclusion every hard-set count in
+ * this file uses).
+ *
+ * @param {Object} dataset
+ * @returns {Object<string, {sessions: number, last: string, top: string[]}>}
+ *   keyed by muscle group, in MUSCLE_GROUPS order; a group with no history at
+ *   all is simply absent.
+ */
+function historyByGroupOf(dataset) {
+  const exercises = exerciseIndex(dataset);
+  const workouts = finishedWorkoutIndex(dataset);
+  const groupWorkouts = new Map(); // group -> Set<workoutId>
+  const groupLast = new Map(); // group -> latest date
+  const groupExerciseStats = new Map(); // group -> Map(exerciseId -> {sessions:Set, lastDate})
+  for (const s of dataset.sets || []) {
+    if (!isHardSet(s)) continue;
+    const w = workouts.get(s.workoutId);
+    if (!w) continue;
+    const ex = exercises.get(s.exerciseId);
+    const group = ex ? ex.muscleGroup : null;
+    if (group == null) continue;
+    if (!groupWorkouts.has(group)) {
+      groupWorkouts.set(group, new Set());
+      groupExerciseStats.set(group, new Map());
+    }
+    groupWorkouts.get(group).add(w.id);
+    if (!groupLast.has(group) || w.date > groupLast.get(group)) groupLast.set(group, w.date);
+    const stats = groupExerciseStats.get(group);
+    let st = stats.get(s.exerciseId);
+    if (!st) {
+      st = { sessions: new Set(), lastDate: w.date };
+      stats.set(s.exerciseId, st);
+    }
+    st.sessions.add(w.id);
+    if (w.date > st.lastDate) st.lastDate = w.date;
+  }
+  const out = {};
+  for (const group of MUSCLE_GROUPS) {
+    if (!groupWorkouts.has(group)) continue;
+    const top = [...groupExerciseStats.get(group).entries()]
+      .map(([id, st]) => ({ id, count: st.sessions.size, lastDate: st.lastDate }))
+      .sort((a, b) => {
+        if (a.count !== b.count) return b.count - a.count;
+        if (a.lastDate !== b.lastDate) return a.lastDate < b.lastDate ? 1 : -1;
+        return a.id < b.id ? -1 : 1;
+      })
+      .slice(0, DIGEST_HISTORY_TOP_N)
+      .map((e) => e.id);
+    out[group] = { sessions: groupWorkouts.get(group).size, last: groupLast.get(group), top };
+  }
+  return out;
+}
+
+/**
+ * `library` (kinds 'plan'/'chat' only, PLAN.md C2.2/C2.3 amendment 2): every
+ * plannable-or-known exercise the app has, grouped by muscle group, as
+ * compact `id|Name` (or `id|Name|type` when the type is not the default
+ * `weight_reps`) strings — so a plan/chat reply may reference ANY library
+ * exercise, not just a recently-trained one. `notes`-type exercises are
+ * excluded (nothing to plan or log a target for). Sorted by MUSCLE_GROUPS
+ * order then exercise name then id; a group with nothing in the library is
+ * simply absent.
+ *
+ * @param {Object} dataset
+ * @returns {Object<string, string[]>}
+ */
+function buildLibrary(dataset) {
+  const byGroup = new Map();
+  for (const exRec of dataset.exercises || []) {
+    if (!exRec) continue;
+    const type = normalizeExerciseType(exRec.exerciseType);
+    if (type === 'notes') continue;
+    if (!byGroup.has(exRec.muscleGroup)) byGroup.set(exRec.muscleGroup, []);
+    byGroup.get(exRec.muscleGroup).push(exRec);
+  }
+  const out = {};
+  for (const group of MUSCLE_GROUPS) {
+    const list = byGroup.get(group);
+    if (!list || !list.length) continue;
+    list.sort((a, b) => (a.name !== b.name ? (a.name < b.name ? -1 : 1) : a.id < b.id ? -1 : 1));
+    out[group] = list.map((exRec) => {
+      const type = normalizeExerciseType(exRec.exerciseType);
+      return type === 'weight_reps' ? `${exRec.id}|${exRec.name}` : `${exRec.id}|${exRec.name}|${type}`;
+    });
+  }
+  return out;
+}
+
 /** Full digest entry for an exercise with history. */
 function trainedEntry(dataset, exerciseId, { today, profile, gap }) {
   const ex = exerciseIndex(dataset).get(exerciseId);
@@ -1551,6 +1661,20 @@ function planExerciseEntry(dataset, exercise, { today, profile, gap }) {
 }
 
 /**
+ * A muscle group is "of interest" per the athlete's profile — shared between
+ * `extendPlanExercises` (the group top-up) and `buildDigest`'s shrink loop
+ * (a `library` group of interest is never dropped under size pressure).
+ */
+function groupIsOfInterest(profile, group) {
+  const groupPrefs = profile && profile.groupPrefs && typeof profile.groupPrefs === 'object' ? profile.groupPrefs : {};
+  const pref = groupPrefs[group];
+  if (pref === 'include' || pref === 'emphasise') return true;
+  if (group === 'abs' && profile && profile.core && profile.core.include === true) return true;
+  if (group === 'cardio' && profile && profile.cardio && profile.cardio.include === true) return true;
+  return false;
+}
+
+/**
  * Extends a 'plan' digest's exercise list (PLAN.md C2.2):
  *  - every `profile.favouriteExerciseIds` not already present is added first
  *    (so the hard cap below never crowds a favourite out for a low-priority
@@ -1575,8 +1699,6 @@ function extendPlanExercises(dataset, entries, { today, profile, gap, avoid }) {
     profile && profile.cardio && Array.isArray(profile.cardio.exerciseIds) ? profile.cardio.exerciseIds : []
   );
   const groupPrefs = profile && profile.groupPrefs && typeof profile.groupPrefs === 'object' ? profile.groupPrefs : {};
-  const coreInclude = !!(profile && profile.core && profile.core.include === true);
-  const cardioInclude = !!(profile && profile.cardio && profile.cardio.include === true);
   const exercises = exerciseIndex(dataset);
 
   for (const id of favourites) {
@@ -1588,10 +1710,7 @@ function extendPlanExercises(dataset, entries, { today, profile, gap, avoid }) {
   }
 
   for (const group of MUSCLE_GROUPS) {
-    const pref = groupPrefs[group];
-    const eligible =
-      pref === 'include' || pref === 'emphasise' || (group === 'abs' && coreInclude) || (group === 'cardio' && cardioInclude);
-    if (!eligible) continue;
+    if (!groupIsOfInterest(profile, group)) continue;
     const favSet = group === 'cardio' ? new Set([...favourites, ...cardioFavourites]) : favourites;
     const candidates = (dataset.exercises || [])
       .filter((e) => e && e.muscleGroup === group && !avoid.has(e.id) && !present.has(e.id) && isPlannableType(e.exerciseType))
@@ -1695,18 +1814,34 @@ function slimPlan(plan, today) {
  * the same inputs always produce a deep-equal object.
  *
  * Size: `JSON.stringify(digest).length` is guaranteed below the per-kind
- * budget (`daily`/`session` 4000, `plan`/`chat` 6000). Shrunk deterministically
- * in this order: the exercise list (floor 4), the session's exercise list
- * (floor 3), the attached plan dropped, `chat.recent` cut to 3 turns, then
- * `memory` cut to the 10 most recent.
+ * budget (`daily`/`session` 4500, `plan`/`chat` 9000 — PLAN.md C2.2/C2.3
+ * amendment 2). Shrunk deterministically in this order: the exercise list
+ * (floor 4), the session's exercise list (floor 3), the attached plan
+ * dropped, `chat.recent` cut to 3 turns, `memory` cut to the 10 most recent,
+ * `historyByGroup[*].top` dropped from every group, then — 'plan'/'chat'
+ * only, and only once every earlier lever is exhausted — `library` groups the
+ * profile has no interest in are dropped largest-first; a 'plan' digest never
+ * loses `library` entirely (the smallest group, if none are of interest, is
+ * kept back), a 'chat' digest may.
  *
- * The exercise window is anchored to the LAST TRAINING SESSION, not to today,
- * so a layoff never empties the list: 8 weeks back for 'daily'/'session'
- * (≤ 12 exercises), 16 weeks for 'plan' (≤ 20, before the group top-up can
- * take it to 30). For kind 'plan' with fewer than 8 trained exercises in the
- * window the list is topped up with untrained library exercises so the model
- * has something to build a plan out of; `extendPlanExercises` then layers on
- * favourites and the per-group top-up described there.
+ * The RANKED exercise window (`exercises[]`) is anchored to the LAST TRAINING
+ * SESSION, not to today, so a layoff never empties the list: 8 weeks back for
+ * 'daily'/'session' (≤ 12 exercises), 16 weeks for 'plan' (≤ 20, before the
+ * group top-up can take it to 30), 52 weeks for 'chat' (≤ 20) — a chat digest
+ * has no group top-up to fall back on, so its own window is wide enough that
+ * a muscle group trained within the last year is never silently excluded.
+ * For kind 'plan' with fewer than 8 trained exercises in the window the list
+ * is topped up with untrained library exercises so the model has something
+ * to build a plan out of; `extendPlanExercises` then layers on favourites and
+ * the per-group top-up described there.
+ *
+ * `historyByGroup` is present on EVERY kind and is NOT windowed at all — it
+ * summarises the WHOLE log, all time, per muscle group (`{sessions, last,
+ * top}`), so a group the ranked window above has aged out of (trained months
+ * ago, say) still shows up as "the person has trained this" rather than
+ * looking untouched. `library` (kinds 'plan'/'chat' only) is the complete
+ * exercise inventory grouped by muscle group as compact `id|Name[|type]`
+ * strings, so a plan/chat reply may reference any exercise the app knows.
  *
  * `recovery` appears only when `health` is passed (the caller passes it only
  * with the athlete's consent) and then carries exactly its seven fields.
@@ -1763,6 +1898,29 @@ export function buildDigest(args) {
   const chatMessage = kind === 'chat' && chat ? clip(String(chat.message || ''), DIGEST_CHAT_MESSAGE_CHARS) : '';
   const chatThread = kind === 'chat' && chat ? chat.thread : null;
 
+  // historyByGroup — every kind (amendment 2): the whole log, all time, so a
+  // group trained outside the ranked-exercise window above is never invisible.
+  const historyFull = historyByGroupOf(dataset);
+  const historyGroupOrder = Object.keys(historyFull);
+
+  // library — kinds 'plan'/'chat' only: the full inventory, so a reply may
+  // name any exercise the app knows, not just a recently-trained one. Groups
+  // the profile has no interest in are the only ones the shrink loop may drop.
+  const libraryFull = kind === 'plan' || kind === 'chat' ? buildLibrary(dataset) : null;
+  const libraryGroupOrder = libraryFull ? Object.keys(libraryFull) : [];
+  const protectedLibraryGroups = new Set(libraryGroupOrder.filter((g) => groupIsOfInterest(profile, g)));
+  const droppableLibraryGroups = libraryGroupOrder
+    .filter((g) => !protectedLibraryGroups.has(g))
+    .map((g) => ({ g, size: JSON.stringify(libraryFull[g]).length }))
+    .sort((a, b) => (b.size !== a.size ? b.size - a.size : a.g < b.g ? -1 : 1))
+    .map((e) => e.g);
+  // A 'plan' digest must never lose its library entirely: when every group is
+  // droppable (none of interest), the smallest one — last after the largest-
+  // first drop order above — is kept back. 'chat' has no such floor.
+  const libraryAllDroppable = protectedLibraryGroups.size === 0 && libraryGroupOrder.length > 0;
+  const maxLibraryDropCount =
+    kind === 'plan' && libraryAllDroppable ? Math.max(0, droppableLibraryGroups.length - 1) : droppableLibraryGroups.length;
+
   const base = {
     schemaVersion: 1,
     kind,
@@ -1783,8 +1941,15 @@ export function buildDigest(args) {
     flags,
   };
 
-  const assemble = (exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount) => {
+  const assemble = (exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount, dropHistoryTop, libraryDropCount) => {
     const out = { ...base, exercises: entries.slice(0, exerciseCount) };
+    out.historyByGroup = {};
+    for (const group of historyGroupOrder) {
+      const h = historyFull[group];
+      out.historyByGroup[group] = dropHistoryTop
+        ? { sessions: h.sessions, last: h.last }
+        : { sessions: h.sessions, last: h.last, top: h.top };
+    }
     if (health) {
       out.recovery = {
         sleepH: round1(health.sleepH),
@@ -1823,6 +1988,14 @@ export function buildDigest(args) {
     if (kind === 'chat') {
       out.chat = { thread: chatThread, recent: chatRecentFull.slice(-chatRecentCount), message: chatMessage };
     }
+    if (kind === 'plan' || kind === 'chat') {
+      const dropped = new Set(droppableLibraryGroups.slice(0, libraryDropCount));
+      out.library = {};
+      for (const group of libraryGroupOrder) {
+        if (dropped.has(group)) continue;
+        out.library[group] = libraryFull[group];
+      }
+    }
     return out;
   };
 
@@ -1832,16 +2005,20 @@ export function buildDigest(args) {
   let includePlan = true;
   let chatRecentCount = DIGEST_CHAT_RECENT_CAP;
   let memoryCount = memoryFull.length;
+  let dropHistoryTop = false;
+  let libraryDropCount = 0;
   const maxBytes = DIGEST_MAX_BYTES[kind] || DIGEST_MAX_BYTES.daily;
-  let digest = assemble(exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount);
+  let digest = assemble(exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount, dropHistoryTop, libraryDropCount);
   while (JSON.stringify(digest).length >= maxBytes) {
     if (exerciseCount > DIGEST_EXERCISE_FLOOR) exerciseCount -= 1;
     else if (sessionExerciseCount > DIGEST_SESSION_EXERCISE_FLOOR) sessionExerciseCount -= 1;
     else if (includePlan && kind !== 'plan' && plan) includePlan = false;
     else if (kind === 'chat' && chatRecentCount > DIGEST_CHAT_RECENT_FLOOR) chatRecentCount = DIGEST_CHAT_RECENT_FLOOR;
     else if (memoryCount > DIGEST_MEMORY_FLOOR) memoryCount = DIGEST_MEMORY_FLOOR;
+    else if (!dropHistoryTop) dropHistoryTop = true;
+    else if ((kind === 'plan' || kind === 'chat') && libraryDropCount < maxLibraryDropCount) libraryDropCount += 1;
     else break;
-    digest = assemble(exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount);
+    digest = assemble(exerciseCount, sessionExerciseCount, includePlan, chatRecentCount, memoryCount, dropHistoryTop, libraryDropCount);
   }
   return digest;
 }

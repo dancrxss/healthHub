@@ -137,7 +137,16 @@ const sessionDigest = {
   },
 };
 
-const planDigest = { ...dailyDigest, kind: 'plan' };
+/** `library` (C2.2/C2.3 amendment 2): ids here are NOT in `exercises[]` or
+ * `session.exercises[]` — the only way `parseResponse` can know them is via
+ * `digest.library`. 'ex-deadlift' is the default weight_reps type (no |type
+ * suffix); 'ex-bike' is a duration type (|cardio suffix). */
+const library = {
+  back: ['ex-deadlift|Deadlift'],
+  cardio: ['ex-bike|Assault Bike|cardio'],
+};
+
+const planDigest = { ...dailyDigest, kind: 'plan', library };
 
 /** Digest for kind 'chat' — carries the thread + short transcript (C2.2). */
 const chatDigest = {
@@ -368,6 +377,21 @@ check('SYSTEM_PROMPT: covers memory, targetDurationSec, baseWeek, bullets and ch
   for (const word of ['memory', 'memoryUpdates', 'targetDurationSec', 'baseWeek', 'bullet', 'thread']) {
     assert.ok(SYSTEM_PROMPT.includes(word), `system prompt should mention "${word}"`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 3b. SYSTEM_PROMPT — C2.3 amendment 2: expert-coach role, historyByGroup, library
+// ---------------------------------------------------------------------------
+
+check('SYSTEM_PROMPT: covers historyByGroup, library and the expert-trainer role (powerlifting, physio)', () => {
+  for (const word of ['historyByGroup', 'library', 'powerlifting', 'physio']) {
+    assert.ok(SYSTEM_PROMPT.includes(word), `system prompt should mention "${word}"`);
+  }
+});
+
+check('SYSTEM_PROMPT: no longer tells the coach only exercises[] exists', () => {
+  assert.equal(SYSTEM_PROMPT.includes('Only exercises listed'), false);
+  assert.equal(SYSTEM_PROMPT.includes('never rename one'), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -652,6 +676,48 @@ check('parseResponse plan: a cardio exercise keeps duration and nulls reps', () 
   assert.equal(ex.targetRepsHigh, null);
   assert.equal(ex.note, null, 'the "" wire sentinel becomes null in the parsed shape');
   assert.deepEqual(ex.progression, { weightStepKg: 1, repStep: 1, durationStepSec: 30, everyWeeks: 1 });
+});
+
+check('parseResponse plan: an exerciseId known only via digest.library is kept, not dropped', () => {
+  const payload = planPayload({
+    sessions: [{
+      name: 'Pull', focus: null, brief: [],
+      exercises: [{
+        exerciseId: 'ex-deadlift', targetSets: 3, targetRepsLow: 4, targetRepsHigh: 6,
+        targetWeightKg: 100, targetDurationSec: 0, targetRpe: 8,
+        purpose: 'Main pull.', goal: '3x5 at 120kg by week eight.', note: '',
+        stepWeightKg: 2.5, stepReps: 0, stepDurationSec: 0, everyWeeks: 1,
+      }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.sessions.length, 1, 'the library-only exercise must not be dropped as unknown');
+  const ex = out.sessions[0].exercises[0];
+  assert.equal(ex.exerciseId, 'ex-deadlift');
+  assert.equal(ex.targetRepsLow, 4);
+  assert.equal(ex.targetRepsHigh, 6);
+  assert.equal(ex.targetDurationSec, null, 'default weight_reps type from the library, not a duration type');
+});
+
+check('parseResponse plan: a library entry with a |cardio suffix is treated as a duration type', () => {
+  const payload = planPayload({
+    sessions: [{
+      name: 'Conditioning', focus: null, brief: [],
+      exercises: [{
+        exerciseId: 'ex-bike', targetSets: 1, targetRepsLow: 8, targetRepsHigh: 12,
+        targetWeightKg: 0, targetDurationSec: 600, targetRpe: 6,
+        purpose: 'Aerobic base.', goal: '10 minutes by week eight.', note: '',
+        stepWeightKg: 0, stepReps: 0, stepDurationSec: 30, everyWeeks: 1,
+      }],
+    }],
+  });
+  const out = parseResponse('plan', messageResponse(payload), { digest: planDigest });
+  assert.equal(out.sessions.length, 1, 'the library-only cardio exercise must not be dropped as unknown');
+  const ex = out.sessions[0].exercises[0];
+  assert.equal(ex.exerciseId, 'ex-bike');
+  assert.equal(ex.targetDurationSec, 600);
+  assert.equal(ex.targetRepsLow, null, 'the library |cardio suffix makes this a duration type, so reps are nulled');
+  assert.equal(ex.targetRepsHigh, null);
 });
 
 check('parseResponse plan: a time plank keeps duration (defaulted) and nulls reps', () => {
