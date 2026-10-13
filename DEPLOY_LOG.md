@@ -26,3 +26,4 @@ smoke check passes.
 2026-09-03 16:11 UTC · pwa · 6e6e213 · "Coach: full exercise library + all-time group history in the digest, year-wide chat window, expert-PT prompt — SW v19, smoke green" · Claude (for Dan)
 2026-09-03 18:01 UTC · pwa · b90e49f · "iOS-native polish, chat UX, coach exercise creation + anatomy knowledge — SW v20, smoke green; iOS shell rebuilt" · Claude (for Dan)
 2026-10-13 12:49 UTC · pwa · 2817bed · "Real personal records, per-exercise Progress scatter (top set), DD/MM/YYYY dates — SW v21, smoke green; www rebuilt + cap sync" · Claude (for Dan)
+2026-10-13 13:03 UTC · pwa · d1fcfc8 · "Press-and-hold drag to reorder exercises (shared drag-reorder.js), A–Z pick lists — SW v22, smoke green; www rebuilt + cap sync" · Claude (for Dan)
