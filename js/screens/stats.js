@@ -38,8 +38,9 @@ import {
   sheetRow, optionSheet, confirmSheet, formatWeight, formatDate, getUnits,
   kgToDisplay, mmss, trimNum, setScreenCleanup,
 } from '../ui.js';
-import { uid, formatDMY } from '../util.js';
-import { playOnce, playOut, stagger, flip, springHome, motionOK } from '../motion.js';
+import { uid, formatDMY, sortByText } from '../util.js';
+import { playOnce, playOut, stagger, flip } from '../motion.js';
+import { dragReorder } from '../drag-reorder.js';
 import { healthAvailable, getHealthSummary, onHealthUpdate } from '../health.js';
 
 const PR_STORAGE_KEY = 'stats.prExercise';
@@ -206,8 +207,9 @@ async function loadIndex() {
     const loggedIds = new Set();
     for (const sets of setLists) for (const s of sets) loggedIds.add(s.exerciseId);
     const loggedExercises = exercises.filter((e) => loggedIds.has(e.id));
-    const loggedGroups = MUSCLE_GROUPS.filter((g) =>
-      loggedExercises.some((e) => e.muscleGroup === g));
+    // A–Z, like every other list the user picks from.
+    const loggedGroups = sortByText(MUSCLE_GROUPS.filter((g) =>
+      loggedExercises.some((e) => e.muscleGroup === g)));
     return { exMap, exercises, loggedIds, loggedExercises, loggedGroups };
   })();
   return indexCache;
@@ -703,7 +705,7 @@ function addCardSheet() {
         onClick: async () => {
           closeSheet();
           const { loggedGroups } = await loadIndex();
-          const groups = loggedGroups.length ? loggedGroups : MUSCLE_GROUPS;
+          const groups = loggedGroups.length ? loggedGroups : sortByText(MUSCLE_GROUPS);
           optionSheet({
             title: 'Choose category',
             options: groups.map((g) => ({ value: g, label: titleCase(g) })),
@@ -807,161 +809,31 @@ function bindDragAndDrop(grid) {
   }
 }
 
-/** Clamp a tilt angle symmetrically; NaN-safe (a stray velocity means level). */
-function clampTilt(deg, max) {
-  if (!Number.isFinite(deg)) return 0;
-  return deg < -max ? -max : deg > max ? max : deg;
-}
-
 function startDrag(e, grid) {
   if (e.button != null && e.button > 0) return;
-  const handle = e.currentTarget;
-  const card = handle.closest('.stats-module');
+  const card = e.currentTarget.closest('.stats-module');
   if (!card) return;
   e.preventDefault();
-
-  const cards = () => [...grid.children].filter((el) => el.classList.contains('stats-module'));
-  const startOffsetTop = card.offsetTop;
-  const startPointerY = e.clientY;
-  const startScrollY = window.scrollY;
-  let pointerY = e.clientY;
-  let translateY = 0;
-  let active = true;
-  let scrollRAF = null;
-
-  card.classList.add('dragging');
-  grid.classList.add('stats-grid-dragging');
-  document.body.classList.add('stats-dragging');
-  // Capture on the GRID, not the handle: reordering runs insertBefore on the
-  // card, and that momentary disconnect would strip capture from anything
-  // inside it — the drag would freeze at the first swap. The grid never moves.
-  try { grid.setPointerCapture(e.pointerId); } catch (err) { /* mouse w/o capture */ }
-
-  // Carry physics: the card leans into its own motion. Velocity is smoothed
-  // from successive pointer deltas (raw per-frame deltas jitter badly) and the
-  // tilt is clamped hard — past ~2deg it stops reading as weight and starts
-  // reading as a bug. Computed inside the existing update path; no second loop.
-  let velocity = 0;
-  let lastPointerY = e.clientY;
-  const MAX_TILT = 2;
-
-  const applyTransform = () => {
-    const wanted = startOffsetTop + (pointerY - startPointerY) + (window.scrollY - startScrollY);
-    translateY = Math.round(wanted - card.offsetTop);
-    const tilt = motionOK() ? clampTilt(velocity * 0.06, MAX_TILT) : 0;
-    card.style.transform = `translateY(${translateY}px) scale(1.03) rotate(${tilt}deg)`;
-  };
-
-  const flip = (mutate) => {
-    const others = cards().filter((el) => el !== card);
-    const first = others.map((el) => [el, el.getBoundingClientRect().top]);
-    mutate();
-    const moved = [];
-    for (const [el, top] of first) {
-      const dy = top - el.getBoundingClientRect().top;
-      if (!dy) continue;
-      el.style.transition = 'none';
-      el.style.transform = `translateY(${dy}px)`;
-      moved.push(el);
-    }
-    if (!moved.length) return;
-    void grid.offsetHeight; // flush the inverted state before transitioning back
-    requestAnimationFrame(() => {
-      for (const el of moved) {
-        el.style.transition = 'transform 180ms ease';
-        el.style.transform = '';
-      }
-    });
-  };
-
-  const maybeReorder = () => {
-    const list = cards();
-    if (list.length < 2) return;
-    const midY = card.offsetTop + translateY + card.offsetHeight / 2;
-    const siblings = list.filter((el) => el !== card);
-    const target = siblings.find((el) => midY < el.offsetTop + el.offsetHeight / 2) || null;
-    const currentNext = list[list.indexOf(card) + 1] || null;
-    if (target === currentNext) return;
-    flip(() => {
-      if (target) grid.insertBefore(card, target);
-      else {
-        const last = siblings[siblings.length - 1];
-        last.after(card);
-      }
-    });
-    applyTransform();
-  };
-
-  const update = () => { applyTransform(); maybeReorder(); };
-
-  const EDGE = 92;
-  const autoScroll = () => {
-    if (!active) return;
-    const vh = window.innerHeight;
-    let speed = 0;
-    if (pointerY < EDGE) speed = -Math.min(18, Math.ceil((EDGE - pointerY) / 5));
-    else if (pointerY > vh - EDGE) speed = Math.min(18, Math.ceil((pointerY - (vh - EDGE)) / 5));
-    if (speed) {
-      const before = window.scrollY;
-      window.scrollBy(0, speed);
-      if (window.scrollY !== before) update();
-    }
-    scrollRAF = requestAnimationFrame(autoScroll);
-  };
-
-  const onMove = (ev) => {
-    if (!active || ev.pointerId !== e.pointerId) return;
-    pointerY = ev.clientY;
-    // Exponential smoothing: mostly history, a little of the new delta.
-    velocity = velocity * 0.7 + (pointerY - lastPointerY) * 0.3;
-    lastPointerY = pointerY;
-    update();
-  };
-
-  const finish = (ev) => {
-    if (!active) return;
-    if (ev && ev.pointerId !== undefined && ev.pointerId !== e.pointerId) return;
-    active = false;
-    if (scrollRAF) cancelAnimationFrame(scrollRAF);
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', finish);
-    window.removeEventListener('pointercancel', finish);
-    try { grid.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
-
-    // Drop: the card springs into its slot on the house curve rather than
-    // easing flatly into it. springHome sets the final (empty) transform
-    // immediately and animates FROM the lifted one, so the DOM is correct even
-    // if the animation is skipped or cut short.
-    const clear = () => {
-      if (cleared) return;
-      cleared = true;
-      card.style.transition = '';
-      card.style.transform = '';
-      card.classList.remove('dragging');
-      grid.classList.remove('stats-grid-dragging');
-      document.body.classList.remove('stats-dragging');
-    };
-    let cleared = false;
-    const from = card.style.transform || `translateY(${translateY}px) scale(1.03)`;
-    const anim = springHome(card, from, { duration: 420 });
-    if (anim && anim.finished) anim.finished.then(clear).catch(clear);
-    setTimeout(clear, 460); // fallback: WAAPI unsupported, or the tab is hidden
-
-    const order = cards().map((el) => el.dataset.moduleId);
-    const layout = getStatsLayout();
-    const byId = new Map(layout.map((m) => [m.id, m]));
-    const next = order.map((id) => byId.get(id)).filter(Boolean);
-    for (const m of layout) if (!order.includes(m.id)) next.push(m);
-    setStatsLayout(next);
-  };
-
-  // Window-level listeners: they hear the pointer wherever capture routes it —
-  // including after a card reorder — and are removed in finish().
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', finish);
-  window.addEventListener('pointercancel', finish);
-  applyTransform();
-  scrollRAF = requestAnimationFrame(autoScroll);
+  // The gesture itself lives in drag-reorder.js (shared with the workout
+  // screen); this only says what is draggable here and what a drop means.
+  dragReorder({
+    pointerId: e.pointerId,
+    clientY: e.clientY,
+    item: card,
+    container: grid,
+    isItem: (el) => el.classList.contains('stats-module'),
+    itemClass: 'dragging',
+    containerClass: 'stats-grid-dragging',
+    bodyClass: 'stats-dragging',
+    onDrop: (order) => {
+      const ids = order.map((el) => el.dataset.moduleId);
+      const layout = getStatsLayout();
+      const byId = new Map(layout.map((m) => [m.id, m]));
+      const next = ids.map((id) => byId.get(id)).filter(Boolean);
+      for (const m of layout) if (!ids.includes(m.id)) next.push(m);
+      setStatsLayout(next);
+    },
+  });
 }
 
 // ============================================================================

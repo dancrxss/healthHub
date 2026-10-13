@@ -39,7 +39,7 @@ import {
   unitLabel, trimNum, formatDate, currentWorkout, setScreenCleanup,
   startPlannedWorkout, requestBottomScroll,
 } from '../ui.js';
-import { todayISO, formatDMY } from '../util.js';
+import { todayISO, formatDMY, sortByText } from '../util.js';
 import { stagger } from '../motion.js';
 import { normalizeExerciseType } from '../exercise-types.js';
 import {
@@ -1174,7 +1174,7 @@ function splitCard(draft, paint) {
 }
 
 function muscleGroupsCard(draft, paint) {
-  const groups = MUSCLE_GROUPS.filter((g) => g !== 'cardio' && g !== 'other');
+  const groups = sortByText(MUSCLE_GROUPS.filter((g) => g !== 'cardio' && g !== 'other'));
   return h('div', { class: 'tab-card coach-card coach-builder-card' },
     h('div', { class: 'coach-card-title', text: 'Muscle groups' }),
     ...groups.map((g) => groupPrefRow(g, draft, paint)),
@@ -1236,9 +1236,9 @@ function coreCard(draft) {
   );
 }
 
-/** All non-cardio-type exercises, grouped by muscle group in MUSCLE_GROUPS order. */
+/** All non-cardio-type exercises, grouped by muscle group, groups A–Z. */
 function groupedExerciseGroups(exercises) {
-  const buckets = new Map(MUSCLE_GROUPS.filter((g) => g !== 'cardio').map((g) => [g, []]));
+  const buckets = new Map(sortByText(MUSCLE_GROUPS.filter((g) => g !== 'cardio')).map((g) => [g, []]));
   for (const e of exercises) {
     if (normalizeExerciseType(e.exerciseType) === 'cardio') continue;
     const g = buckets.has(e.muscleGroup) ? e.muscleGroup : 'other';

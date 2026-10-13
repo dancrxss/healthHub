@@ -818,32 +818,29 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
 .swipe-host.swipe-card > .swipe-surface > .ex-card { margin-bottom: 0; }
 
 /* ----------------------------------------------------------------------------
-   Long-press selection on an exercise card (js/screens/workout.js)
+   Press-and-hold drag on an exercise card (js/screens/workout.js +
+   js/drag-reorder.js). The held card lifts and follows the thumb; the others
+   slide aside; the order is saved on release.
    ---------------------------------------------------------------------------- */
 .ex-card { transition: box-shadow var(--dur-base) var(--ease-settle); }
-.ex-selected {
+.ex-dragging {
+  position: relative;
+  z-index: 6;
+  will-change: transform;
+  border-radius: var(--radius);
   outline: 1.5px solid var(--accent);
   outline-offset: -1.5px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.55);
+  /* Transform is driven per-frame by JS; only the shadow eases in. The lift
+     keyframes (stats.css card-lift) animate `scale`, a separate property. */
+  transition: box-shadow var(--dur-base) var(--ease-settle);
+  animation: card-lift 320ms var(--ease-spring);
 }
-.ex-select-bar { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
-.ex-select-bar[hidden] { display: none; }
-.ex-select-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 38px; height: 38px;
-  border: 0; border-radius: 999px;
-  background: var(--card-2); color: var(--text);
-  cursor: pointer;
-  transition: opacity var(--dur-base) var(--ease-spring),
-              transform var(--dur-base) var(--ease-spring);
-}
-.ex-select-btn:active { opacity: 0.6; transform: scale(0.94); transition-duration: var(--dur-press); }
-.ex-select-btn svg { width: 18px; height: 18px; }
-.ex-select-btn.danger { color: var(--danger); }
-.ex-select-btn.done { background: var(--accent); color: var(--accent-ink); }
+/* While something is held, nothing else on the screen should react to a
+   stray touch, and no text should be selectable under the thumb. */
+.ex-drag-active > :not(.ex-dragging) { pointer-events: none; }
+body.ex-drag-on { cursor: grabbing; -webkit-user-select: none; user-select: none; }
+.superset-label { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 /* The set grid is the swipe surface's own background, so it must be opaque. */
 .ex-card .swipe-surface { background: var(--card); }
 .copy-routine { margin-bottom: 12px; }
-/* With the toolbar in place the name has less room — truncate rather than
-   reflow the card to two lines while it is selected. */
-.ex-selected .ex-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

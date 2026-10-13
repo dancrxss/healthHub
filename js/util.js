@@ -47,3 +47,18 @@ export function formatHM(value) {
   const pad = (n) => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * Alphabetical order for anything the user picks from a list — exercises,
+ * categories, equipment. Case- and accent-insensitive, ignores stray leading
+ * or trailing spaces (imported names have them), and sorts "Set 2" before
+ * "Set 10".
+ */
+export function compareText(a, b) {
+  return String(a == null ? '' : a).trim()
+    .localeCompare(String(b == null ? '' : b).trim(), 'en-GB', { sensitivity: 'base', numeric: true });
+}
+/** Sort items by a text key, alphabetically (see compareText). Returns a new array. */
+export function sortByText(items, key = (x) => x) {
+  return [...items].sort((a, b) => compareText(key(a), key(b)));
+}

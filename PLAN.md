@@ -796,3 +796,36 @@ format in prose.
 Hooks: `data-action="exercise-progress" | "exercise-prs" | "card-progress" |
 "card-prs" | "progress-metric" (data-metric) | "progress-range" (data-range)`,
 `data-stat-nav="progress"`, `data-sheet="progress" | "prs"`. SW v21.
+
+## Phase 2.1 — Press-and-hold drag reordering, A–Z pick lists (13 October 2026)
+
+**Reordering.** The long-press toolbar (Move up / Move down / Delete / Done
+arrows) is gone. Press and hold an exercise card for 450 ms and it lifts; keep
+the finger down and drag — the other cards slide aside as its midpoint crosses
+theirs, the page auto-scrolls near the screen edges, and the order is written to
+the workout **only on release**. A cancelled touch puts the card back. A press
+that moves >8 px before the hold completes is a scroll and picks nothing up.
+Hold a card inside a superset to reorder within the superset; hold the
+"Superset" label to carry the whole block. Delete stays on swipe-left and the
+⋯ menu.
+
+One implementation: `js/drag-reorder.js` (`dragReorder`, `isDragging`),
+extracted from the Statistics grid's drag code, which now uses it too.
+Two platform facts it encodes: (1) to take a touch over from native scrolling
+part-way through, touchmove must be cancelled from a non-passive listener that
+is already on the **document** when the touch starts — the same listener on a
+screen element leaves every touchmove uncancelable and the browser fires
+pointercancel on the first move; (2) a long press also raises `contextmenu`,
+which must be prevented or it cancels the touch. `js/swipe.js` stands down
+while a drag is in flight. Cards carry `data-entry-index`; classes
+`.ex-dragging`, `.ex-drag-active`, `body.ex-drag-on`. Retired hooks:
+`entry-up`, `entry-down`, `entry-delete`, `entry-done`, `.ex-selected`,
+`.ex-select-bar`.
+
+**A–Z lists.** `util.compareText` / `sortByText` (case- and accent-insensitive,
+trims stray spaces, numeric-aware) order every list the user picks from:
+picker categories and exercises, the Category and Equipment options when
+editing an exercise, Statistics categories, the Coach plan builder's muscle
+groups and its multi-select sheets, and `listExercises` / `listTemplates`.
+Scales with a natural order (day/week/month, 3M/6M/1Y, goals, splits) keep it.
+SW v22.

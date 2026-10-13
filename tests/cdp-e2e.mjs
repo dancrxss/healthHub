@@ -219,7 +219,12 @@ try {
 
   // --- 4. Add exercise via category -> Barbell Bench Press ---
   await gotoPicker('add-exercise');
+  const catLabels = await evalJS(`[...document.querySelectorAll('#s-pick .pick-cat')].map((el) => el.firstElementChild.textContent)`);
+  const azSorted = (arr) => arr.every((v, i) => i === 0 || arr[i - 1].trim().localeCompare(v.trim(), 'en-GB', { sensitivity: 'base', numeric: true }) <= 0);
+  check('picker: categories are listed alphabetically', catLabels.length >= 5 && azSorted(catLabels) && catLabels[0] === 'Abs', JSON.stringify(catLabels));
   await clickText('category Chest', '#s-pick .pick-cat', 'Chest');
+  const chestNames = await poll('chest exercise rows', `(() => { const n = [...document.querySelectorAll('#s-pick .pick-row .pick-row-name')].map((el) => el.textContent); return n.length ? n : null; })()`);
+  check('picker: exercises inside a category are listed alphabetically', chestNames.length >= 3 && azSorted(chestNames), JSON.stringify(chestNames));
   await poll('category list (#/pick/chest)', `location.hash === '#/pick/chest'`);
   // Wait for the exercise list to render before asserting its shape (avoids racing
   // the async renderPick swap while the old category list is still on screen).
@@ -837,7 +842,7 @@ try {
   await confirmTopSheet();
   await poll('back on log after cleanup', `location.hash === '#/log'`);
 
-  // --- 15e. Long-press to reorder, and swipe-to-delete ---------------------
+  // --- 15e. Press-hold-drag to reorder, and swipe-to-delete ----------------
   await evalJS(`import('./js/ui.js').then((ui) => { ui.go('#/log'); return true; })`);
   await clickSel('start gesture-check workout', '#s-log [data-action="start-workout"]');
   await poll('gesture workout up', `location.hash === '#/workout'`);
@@ -861,34 +866,74 @@ try {
   })()`));
   await poll('menu closed', `document.querySelectorAll('#sheet-root .sheet-backdrop').length === 0`);
 
-  // Long press the SECOND card, then move it up.
-  await evalJS(`(() => {
-    const card = document.querySelectorAll('#s-workout .ex-card')[1];
-    const r = card.getBoundingClientRect();
-    card.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, clientX: r.left + 40, clientY: r.top + 10, bubbles: true }));
-    return true;
-  })()`);
-  await poll('card selected by long press', `document.querySelector('#s-workout .ex-card.ex-selected') != null`, 4000);
-  // Lift the finger, as a real long press does once the selection appears.
-  await evalJS(`(() => {
-    const card = document.querySelector('#s-workout .ex-card.ex-selected');
-    card.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
-    return true;
-  })()`);
-  check('reorder: a long press selects the card and reveals its toolbar',
-    await exists('#s-workout .ex-selected [data-action="entry-up"]'));
-  await clickSel('move it up', '#s-workout .ex-selected [data-action="entry-up"]');
-  const after = await poll('order changed', `(() => {
-    const ids = [...document.querySelectorAll('#s-workout .ex-card')].map((c) => c.dataset.exerciseId);
-    return ids[0] !== ${J(before[0])} ? ids : null;
-  })()`);
-  check('reorder: moving up reorders the workout and persists', after[0] === before[1], JSON.stringify(after));
-  const persisted = await evalJS(`(async () => {
+  // Press and HOLD the second card, then drag it above the first with a real
+  // touch sequence (Input.dispatchTouchEvent — the page must not scroll away
+  // underneath it, and nothing may be saved until the finger lifts).
+  const entriesNow = () => evalJS(`(async () => {
     const db = await import('./js/db.js');
     const w = await db.getWorkout(localStorage.getItem('currentWorkoutId'));
     return (w.entries || []).map((e) => e.exerciseId);
   })()`);
-  check('reorder: the new order is written to the workout record', persisted[0] === before[1], JSON.stringify(persisted));
+  const grab = await evalJS(`(() => {
+    const cards = [...document.querySelectorAll('#s-workout .ex-card')];
+    cards[1].scrollIntoView({ block: 'center' });
+    const name = cards[1].querySelector('.ex-name').getBoundingClientRect();
+    const first = cards[0].getBoundingClientRect();
+    return { x: name.left + 30, y: name.top + name.height / 2, targetY: first.top + 4, scrollY: window.scrollY, vh: window.innerHeight };
+  })()`);
+  const touchAt = (type, x, y) => send('Input.dispatchTouchEvent', {
+    type, touchPoints: type === 'touchEnd' ? [] : [{ x: Math.round(x), y: Math.round(y), id: 1 }],
+  });
+  await touchAt('touchStart', grab.x, grab.y);
+  check('reorder: holding a card lifts it for dragging — no arrow toolbar',
+    await poll('card picked up', `document.querySelector('#s-workout .ex-dragging') != null`, 4000)
+      && !(await exists('#s-workout [data-action="entry-up"]')) && !(await exists('#s-workout .ex-select-bar')));
+  const dragSteps = 14;
+  let dragY = grab.y;
+  for (let i = 1; i <= dragSteps; i++) {
+    dragY = grab.y + ((grab.targetY - grab.y) * i) / dragSteps;
+    await touchAt('touchMove', grab.x, dragY);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const midDrag = await evalJS(`({
+    dom: [...document.querySelectorAll('#s-workout .ex-card')].map((c) => c.dataset.exerciseId),
+    held: document.querySelector('#s-workout .ex-dragging') != null,
+    scrollY: window.scrollY,
+  })`);
+  check('reorder: the card stays held while dragging and the other card slides aside',
+    midDrag.held && midDrag.dom[0] === before[1], JSON.stringify(midDrag));
+  // (The page may auto-scroll when the finger nears the screen edge — that is
+  // the helper's own doing. What must NOT happen is the browser taking the
+  // touch back for a native scroll, which would drop the card: `held` above.)
+  check('reorder: nothing is saved until the finger lifts', (await entriesNow())[0] === before[0], JSON.stringify(await entriesNow()));
+  await touchAt('touchEnd', grab.x, dragY);
+  const persisted = await poll('order saved on release', `(async () => {
+    const db = await import('./js/db.js');
+    const w = await db.getWorkout(localStorage.getItem('currentWorkoutId'));
+    const ids = (w.entries || []).map((e) => e.exerciseId);
+    return ids[0] === ${J(before[1])} ? ids : null;
+  })()`);
+  check('reorder: releasing commits the new order to the workout record', persisted && persisted[0] === before[1] && persisted[1] === before[0], JSON.stringify(persisted));
+  const after = await poll('screen rebuilt in the new order', `(() => {
+    if (document.querySelector('#s-workout .ex-dragging')) return null;
+    const cards = [...document.querySelectorAll('#s-workout .ex-card')];
+    const ids = cards.map((c) => c.dataset.exerciseId);
+    const idx = cards.map((c) => c.dataset.entryIndex).join(',');
+    return ids[0] === ${J(before[1])} && idx === '0,1' ? ids : null;
+  })()`);
+  check('reorder: the dropped card settles and the screen shows the saved order', after && after[0] === before[1], JSON.stringify(after));
+
+  // A press that moves straight away is a scroll, not a hold: nothing lifts.
+  const flick = await evalJS(`(() => {
+    const name = document.querySelector('#s-workout .ex-card .ex-name').getBoundingClientRect();
+    return { x: name.left + 30, y: name.top + name.height / 2 };
+  })()`);
+  await touchAt('touchStart', flick.x, flick.y);
+  for (let i = 1; i <= 6; i++) { await touchAt('touchMove', flick.x, flick.y - i * 12); await new Promise((r) => setTimeout(r, 20)); }
+  await new Promise((r) => setTimeout(r, 550));
+  check('reorder: a moving press (a scroll) never picks a card up', !(await exists('#s-workout .ex-dragging')));
+  await touchAt('touchEnd', flick.x, flick.y - 72);
+  check('reorder: order unchanged by a scroll gesture', (await entriesNow())[0] === before[1], JSON.stringify(await entriesNow()));
 
   // Swipe a set row left far enough to reveal Delete, then use it.
   await clickSel('add a set to swipe', `.ex-card[data-exercise-id="${before[1]}"] .add-set`);

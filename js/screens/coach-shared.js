@@ -9,7 +9,7 @@
 // through textContent / the h() `text` prop — never innerHTML.
 // ============================================================================
 
-import { formatDMY, formatHM } from '../util.js';
+import { formatDMY, formatHM, sortByText } from '../util.js';
 import {
   h, Icon, openSheet, closeSheet, sheetHeader, sheetGroup, formatWeight,
 } from '../ui.js';
@@ -347,8 +347,13 @@ export function multiSelectSheet({ title, groups = [], selected = new Set(), onS
   const paint = (query = '') => {
     const q = query.trim().toLowerCase();
     const sections = [];
-    for (const group of groups) {
-      const items = (group.items || []).filter((it) => !q || it.label.toLowerCase().includes(q));
+    // Groups and the items inside them are always A–Z, whatever order the
+    // caller built them in.
+    for (const group of sortByText(groups, (g) => g.label)) {
+      const items = sortByText(
+        (group.items || []).filter((it) => !q || it.label.toLowerCase().includes(q)),
+        (it) => it.label,
+      );
       if (!items.length) continue;
       sections.push(h('div', { class: 'sheet-label', text: group.label }));
       sections.push(sheetGroup(...items.map(rowFor)));

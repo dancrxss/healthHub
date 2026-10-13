@@ -16,7 +16,7 @@ import {
   weeklyVolumeFrom,
   trainingFrequencyFrom,
 } from '../js/calc.js';
-import { formatDMY, formatHM } from '../js/util.js';
+import { formatDMY, formatHM, compareText, sortByText } from '../js/util.js';
 
 let passed = 0;
 function check(name, fn) {
@@ -441,6 +441,28 @@ check('formatHM: 24-hour local time', () => {
   assert.equal(formatHM('2026-07-28T07:05:00'), '07:05');
   assert.equal(formatHM('2026-07-28T17:10:00'), '17:10');
   assert.equal(formatHM(null), '');
+});
+
+// ---------------------------------------------------------------------------
+// util list order — every pick list is A–Z
+// ---------------------------------------------------------------------------
+
+check('sortByText: muscle groups come out alphabetical', () => {
+  const groups = ['chest', 'back', 'legs', 'shoulders', 'biceps', 'triceps', 'abs', 'cardio', 'accessory', 'rehab', 'other'];
+  assert.deepEqual(sortByText(groups), ['abs', 'accessory', 'back', 'biceps', 'cardio', 'chest', 'legs', 'other', 'rehab', 'shoulders', 'triceps']);
+  assert.deepEqual(groups[0], 'chest', 'the input array is not mutated');
+});
+
+check('compareText: case, stray spaces and numbers do not disturb the order', () => {
+  const names = ['squat', 'Bench Press', ' Face pulls ', 'bench press (incline)', 'Set 10', 'Set 2', 'Éz Bar Curl'];
+  assert.deepEqual(sortByText(names), ['Bench Press', 'bench press (incline)', 'Éz Bar Curl', ' Face pulls ', 'Set 2', 'Set 10', 'squat']);
+  assert.equal(compareText('abs', 'Abs'), 0);
+  assert.ok(compareText(null, 'a') < 0);
+});
+
+check('sortByText: sorts objects by a text key', () => {
+  const ex = [{ name: 'Row' }, { name: 'curl' }, { name: 'Bench' }];
+  assert.deepEqual(sortByText(ex, (e) => e.name).map((e) => e.name), ['Bench', 'curl', 'Row']);
 });
 
 console.log(`\nAll ${passed} assertions passed.`);

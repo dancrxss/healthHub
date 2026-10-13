@@ -312,7 +312,7 @@ export async function deleteExercise(id) {
 /** All exercises, sorted by name. */
 export async function listExercises() {
   const all = await getAllRecords('exercises');
-  return all.sort((a, b) => a.name.localeCompare(b.name));
+  return all.sort((a, b) => String(a.name || '').trim().localeCompare(String(b.name || '').trim(), 'en-GB', { sensitivity: 'base', numeric: true }));
 }
 
 // ---- Workouts ----
@@ -396,7 +396,7 @@ export async function getTemplate(id) {
 }
 export async function listTemplates() {
   const all = await getAllRecords('templates');
-  return all.sort((a, b) => a.name.localeCompare(b.name));
+  return all.sort((a, b) => String(a.name || '').trim().localeCompare(String(b.name || '').trim(), 'en-GB', { sensitivity: 'base', numeric: true }));
 }
 /** Delete a template. User-initiated only (Routines tab, after confirm). */
 export async function deleteTemplate(id) {

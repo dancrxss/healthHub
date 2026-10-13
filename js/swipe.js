@@ -22,6 +22,7 @@
 // ============================================================================
 
 import { motionOK } from './motion.js';
+import { isDragging } from './drag-reorder.js';
 
 /** The currently open row, so opening one closes the last. */
 let openHost = null;
@@ -150,6 +151,15 @@ export function swipeRow(content, opts) {
 
   surface.addEventListener('pointermove', (e) => {
     if (mode === 'none' || e.pointerId !== pointerId) return;
+    // A press-and-hold reorder has taken this touch (drag-reorder.js): the
+    // card is being carried, so sideways drift must never open its Delete.
+    if (isDragging()) {
+      if (mode === 'swiping') finish(false);
+      mode = 'none';
+      pointerId = null;
+      if (claimedBy && claimedBy.host === host) claimedBy = null;
+      return;
+    }
     const totalX = e.clientX - startX;
     const totalY = e.clientY - startY;
 

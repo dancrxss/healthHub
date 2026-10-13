@@ -9,7 +9,7 @@
 // ============================================================================
 
 import * as db from '../db.js';
-import { uid, nowISO } from '../util.js';
+import { uid, nowISO, compareText, sortByText } from '../util.js';
 import {
   h, Icon, go,
   currentWorkout, getEntries, saveEntries, createInitialSet,
@@ -80,18 +80,18 @@ function listBody(all, browse) {
   if (currentGroup) {
     let items = all.filter((e) => e.muscleGroup === currentGroup);
     if (q) items = items.filter((e) => e.name.toLowerCase().includes(q));
-    items.sort((a, b) => a.name.localeCompare(b.name));
+    items.sort((a, b) => compareText(a.name, b.name));
     return items.length ? items.map((e) => exerciseRow(e, browse)) : [emptyRow('No exercises here yet.')];
   }
 
   if (q) {
-    const items = all.filter((e) => e.name.toLowerCase().includes(q)).sort((a, b) => a.name.localeCompare(b.name));
+    const items = all.filter((e) => e.name.toLowerCase().includes(q)).sort((a, b) => compareText(a.name, b.name));
     return items.length ? items.map((e) => exerciseRow(e, browse)) : [emptyRow('No matches. Use + to create one.')];
   }
 
-  // Category rows: MUSCLE_GROUPS (display order) that have at least one exercise.
+  // Category rows: every muscle group that has at least one exercise, A–Z.
   const present = new Set(all.map((e) => e.muscleGroup));
-  const groups = db.MUSCLE_GROUPS.filter((g) => present.has(g));
+  const groups = sortByText(db.MUSCLE_GROUPS.filter((g) => present.has(g)));
   return groups.map((g) => h('button', { class: 'pick-cat', type: 'button', onclick: () => go('#/pick/' + g) },
     h('span', { text: titleCase(g) }),
     h('span', { class: 'pick-cat-chev' }, Icon('chevron')),
@@ -210,7 +210,7 @@ export async function editExerciseSheet(ex, onSaved = reRenderPick) {
 
   const catVal = h('span', { class: 'sheet-row-value', text: titleCase(work.muscleGroup) });
   const catRow = editRow('Category', catVal, () => optionSheet({
-    title: 'Category', options: db.MUSCLE_GROUPS.map((g) => ({ value: g, label: titleCase(g) })),
+    title: 'Category', options: sortByText(db.MUSCLE_GROUPS).map((g) => ({ value: g, label: titleCase(g) })),
     current: work.muscleGroup, onPick: (v) => { work.muscleGroup = v; catVal.textContent = titleCase(v); },
   }));
 
@@ -264,7 +264,7 @@ async function createCustomSheet() {
 
   const catVal = h('span', { class: 'sheet-row-value', text: titleCase(work.muscleGroup) });
   const catRow = editRow('Category', catVal, () => optionSheet({
-    title: 'Category', options: db.MUSCLE_GROUPS.map((g) => ({ value: g, label: titleCase(g) })),
+    title: 'Category', options: sortByText(db.MUSCLE_GROUPS).map((g) => ({ value: g, label: titleCase(g) })),
     current: work.muscleGroup, onPick: (v) => { work.muscleGroup = v; catVal.textContent = titleCase(v); },
   }));
 
@@ -276,7 +276,7 @@ async function createCustomSheet() {
 
   const equipVal = h('span', { class: 'sheet-row-value', text: titleCase(work.equipment) });
   const equipRow = editRow('Equipment', equipVal, () => optionSheet({
-    title: 'Equipment', options: db.EQUIPMENT.map((eq) => ({ value: eq, label: titleCase(eq) })),
+    title: 'Equipment', options: sortByText(db.EQUIPMENT).map((eq) => ({ value: eq, label: titleCase(eq) })),
     current: work.equipment, onPick: (v) => { work.equipment = v; equipVal.textContent = titleCase(v); },
   }));
 

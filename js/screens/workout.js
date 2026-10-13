@@ -34,7 +34,8 @@ import { normalizeExerciseType, blankSet } from '../exercise-types.js';
 import { getSetting } from '../settings.js';
 import { healthAvailable, saveWorkoutToHealth } from '../health.js';
 import { playOnce, playOut, stagger } from '../motion.js';
-import { swipeRow } from '../swipe.js';
+import { swipeRow, closeOpenSwipe } from '../swipe.js';
+import { dragReorder, isDragging } from '../drag-reorder.js';
 import { enhanceInput } from '../inputs.js';
 import { editExerciseSheet } from './picker.js';
 import { prSheet, progressSheet } from './exercise-insights.js';
@@ -96,16 +97,6 @@ async function mutateSet(id, changes) {
   const s = await getSet(id);
   if (s) return putSet({ ...s, ...changes });
 }
-/** Reorder an exercise entry by `dir` places and persist. */
-async function moveEntry(workout, entries, index, dir) {
-  const j = index + dir;
-  if (j < 0 || j >= entries.length) return false;
-  const next = entries.slice();
-  [next[index], next[j]] = [next[j], next[index]];
-  await saveEntries(workout, next);
-  return true;
-}
-
 /** Delete an exercise entry and every set it owns. */
 async function deleteEntry(workout, entries, index, exerciseId) {
   const next = entries.filter((_, k) => k !== index);
@@ -115,39 +106,91 @@ async function deleteEntry(workout, entries, index, exerciseId) {
 }
 
 /**
- * Long press an exercise card to pick it up: the card lifts into a selected
- * state and grows a small toolbar for moving it up/down or deleting it.
- * Anything else — a tap elsewhere, a route change, a re-render — drops it.
+ * Press and hold to pick something up, then drag it — one continuous gesture.
+ * After 450ms of holding still (the platform's own long-press) `begin` is
+ * called with the pointer that is still down, and drag-reorder.js takes over:
+ * the card follows the thumb, the others slide aside, and the new position is
+ * only committed when the finger lifts.
  *
- * Pointer events with a movement threshold, so a press that turns into a
- * scroll never selects. 450ms matches the platform's own long-press.
+ * A press that moves more than 8px before the hold completes was a scroll,
+ * not a hold, and never picks anything up. Controls inside the element keep
+ * their own behaviour.
  */
-function attachLongPressSelect(card, onSelect) {
+function attachHoldToDrag(el, begin) {
   let timer = null;
+  let pid = null;
   let startX = 0;
   let startY = 0;
+  let lastY = 0;
   const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
 
-  card.addEventListener('pointerdown', (e) => {
+  el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // Controls inside the card keep their own behaviour.
-    if (e.target.closest('button, input, label')) return;
+    if (e.target.closest('button, input, textarea, label')) return;
+    if (isDragging()) return;
+    pid = e.pointerId;
     startX = e.clientX;
     startY = e.clientY;
+    lastY = e.clientY;
     cancel();
     timer = setTimeout(() => {
       timer = null;
       if (navigator.vibrate) navigator.vibrate(12);
-      onSelect();
+      begin(pid, lastY);
     }, 450);
   });
-  card.addEventListener('pointermove', (e) => {
-    if (!timer) return;
+  el.addEventListener('pointermove', (e) => {
+    if (!timer || e.pointerId !== pid) return;
+    lastY = e.clientY;
     if (Math.abs(e.clientX - startX) > 8 || Math.abs(e.clientY - startY) > 8) cancel();
   });
   for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
-    card.addEventListener(ev, cancel);
+    el.addEventListener(ev, cancel);
   }
+  // A long press is also the browser's cue for a context menu, and opening
+  // one cancels the touch — which would drop the card the instant it was
+  // picked up. Text fields keep theirs (paste).
+  el.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('input, textarea')) return;
+    e.preventDefault();
+  });
+}
+
+/**
+ * Carry `item` (an exercise card's wrapper, or a whole superset block) within
+ * `container`. The DOM is the working copy while the finger is down; on
+ * release the workout's entry order is rebuilt from it and saved. Cards carry
+ * `data-entry-index` into the `entries` array this render was built from, so
+ * the saved order is always a permutation of exactly those entries.
+ */
+function startEntryDrag(item, container, workout, entries, pointerId, clientY) {
+  if (!item || !container) return;
+  closeOpenSwipe();
+  dragReorder({
+    pointerId,
+    clientY,
+    item,
+    container,
+    isItem: (el) => el.classList.contains('swipe-card') || el.classList.contains('superset'),
+    itemClass: 'ex-dragging',
+    containerClass: 'ex-drag-active',
+    bodyClass: 'ex-drag-on',
+    scale: 1.02,
+    onDrop: async (_order, moved) => {
+      if (!moved) return;
+      const scroll = document.querySelector('#s-workout .workout-scroll');
+      if (!scroll) return;
+      const next = [...scroll.querySelectorAll('.ex-card')]
+        .map((c) => entries[Number(c.dataset.entryIndex)])
+        .filter(Boolean);
+      if (next.length !== entries.length) { reRender(); return; } // never drop an entry on a bad read
+      const fresh = await getWorkout(workout.id);
+      if (fresh) await putWorkout({ ...fresh, entries: next });
+      // Let the card settle into its slot before the screen rebuilds itself
+      // (rebuilding refreshes every card's index); skip if another drag began.
+      setTimeout(() => { if (!isDragging()) reRender(); }, 440);
+    },
+  });
 }
 
 /** Renumber a single exercise's sets in a workout to stay 1-based contiguous. */
@@ -176,7 +219,6 @@ function setSummaryLine(s) {
 // ============================================================================
 export async function renderWorkoutScreen(workoutId) {
   renderTarget = workoutId ?? null;
-  clearEntrySelection(); // the selected card is about to be replaced
   stopElapsed(); // clear any prior ticker before this (re-)render installs one
   const isActive = workoutId == null;
   const screen = document.getElementById('s-workout');
@@ -235,10 +277,15 @@ export async function renderWorkoutScreen(workoutId) {
       const g = e.supersetGroup;
       const run = [];
       while (i < entries.length && entries[i].supersetGroup === g) { run.push({ entry: entries[i], index: i }); i++; }
-      children.push(h('div', { class: 'superset' },
-        h('div', { class: 'superset-label', text: 'Superset' }),
+      // Hold the label to carry the whole superset; hold a card inside it to
+      // reorder within the superset.
+      const label = h('div', { class: 'superset-label', text: 'Superset' });
+      const block = h('div', { class: 'superset' },
+        label,
         ...run.map((r) => buildEntryCard(r.entry, r.index, workout, entries, setsByEx, exMap, lastByEx, isActive)),
-      ));
+      );
+      attachHoldToDrag(label, (pid, y) => startEntryDrag(block, block.parentElement, workout, entries, pid, y));
+      children.push(block);
     } else {
       children.push(buildEntryCard(e, i, workout, entries, setsByEx, exMap, lastByEx, isActive));
       i++;
@@ -424,37 +471,7 @@ function metaRow(label, valueEl) {
   return h('div', { class: 'meta-row' }, h('span', { class: 'meta-label', text: label }), valueEl);
 }
 
-// ---- long-press selection --------------------------------------------------
-/** The card currently picked up, if any. Only ever one. */
-let selectedCard = null;
-
-function clearEntrySelection() {
-  if (!selectedCard) return;
-  selectedCard.classList.remove('ex-selected');
-  const bar = selectedCard.querySelector('.ex-select-bar');
-  if (bar) bar.hidden = true;
-  selectedCard = null;
-  document.removeEventListener('pointerdown', onOutsidePointer, true);
-}
-
-function onOutsidePointer(e) {
-  if (!selectedCard) return;
-  if (e.target instanceof Node && selectedCard.contains(e.target)) return;
-  clearEntrySelection();
-}
-
-function selectEntryCard(card) {
-  clearEntrySelection();
-  selectedCard = card;
-  card.classList.add('ex-selected');
-  const bar = card.querySelector('.ex-select-bar');
-  if (bar) bar.hidden = false;
-  playOnce(card, 'anim-badge-pop');
-  document.addEventListener('pointerdown', onOutsidePointer, true);
-}
-
 function confirmDeleteEntry(workout, entries, index, entry, name) {
-  clearEntrySelection();
   confirmSheet({
     title: 'Delete exercise?',
     message: `Removes ${name} and its sets from this workout.`,
@@ -473,39 +490,23 @@ function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, lastByE
   const exSets = setsByEx.get(entry.exerciseId) || [];
   const refSets = lastByEx.get(entry.exerciseId) || null;
 
-  const card = h('div', { class: 'ex-card', 'data-exercise-id': entry.exerciseId });
-
-  // Long-press toolbar: shown only while this card is the selected one.
-  const selectBar = h('div', { class: 'ex-select-bar', hidden: true },
-    h('button', {
-      class: 'ex-select-btn', type: 'button', 'aria-label': 'Move up', 'data-action': 'entry-up',
-      onclick: async () => { if (await moveEntry(workout, entries, index, -1)) reRender(); },
-    }, Icon('up')),
-    h('button', {
-      class: 'ex-select-btn', type: 'button', 'aria-label': 'Move down', 'data-action': 'entry-down',
-      onclick: async () => { if (await moveEntry(workout, entries, index, 1)) reRender(); },
-    }, Icon('down')),
-    h('button', {
-      class: 'ex-select-btn danger', type: 'button', 'aria-label': 'Delete exercise', 'data-action': 'entry-delete',
-      onclick: () => confirmDeleteEntry(workout, entries, index, entry, name),
-    }, Icon('trash')),
-    h('button', {
-      class: 'ex-select-btn done', type: 'button', 'aria-label': 'Done', 'data-action': 'entry-done',
-      onclick: () => clearEntrySelection(),
-    }, Icon('check')),
-  );
+  const card = h('div', { class: 'ex-card', 'data-exercise-id': entry.exerciseId, 'data-entry-index': String(index) });
 
   card.append(h('div', { class: 'ex-card-head' },
     h('div', { class: 'ex-name', text: name }),
     refSets && refSets.fromPlan ? h('span', { class: 'ex-plan-chip', text: 'Plan', title: 'Placeholders are your plan targets' }) : null,
-    selectBar,
     h('button', {
       class: 'ex-menu', 'aria-label': 'Exercise menu', type: 'button',
       onclick: () => exerciseMenu(entry, index, workout, entries, exercise, isActive),
     }, Icon('dots')),
   ));
 
-  attachLongPressSelect(card, () => selectEntryCard(card));
+  // Press and hold, then drag: the card's wrapper is what moves (it is the
+  // direct child of the list — or of its superset block).
+  attachHoldToDrag(card, (pid, y) => {
+    const item = card.closest('.swipe-card') || card;
+    startEntryDrag(item, item.parentElement, workout, entries, pid, y);
+  });
   if (entry.note) card.append(h('div', { class: 'ex-note', text: entry.note }));
 
   for (const s of exSets) {
