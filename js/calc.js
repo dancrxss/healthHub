@@ -142,9 +142,31 @@ export function recentWorkoutsFrom(dataset, sinceDate) {
  * heaviest weight achieved AT THAT EXACT rep count (ties → earliest date).
  * bestE1RM: the single working set (any rep count) with the highest Epley
  * estimate, or null if no working sets.
+ *
+ * Added 13 Oct 2026 (additive — the two fields above are unchanged). byReps
+ * reads badly as a records list: a single low-rep grinder shows up as "the
+ * 3-rep record" and anything over 10 reps is missing. These are the records a
+ * lifter actually recognises, each one a real set that was logged:
+ * heaviest: the heaviest weight lifted, with the MOST reps done at it.
+ * bestSet:  the single set with the highest weight × reps.
+ * mostReps: the most reps in one set (ties → the heavier one).
+ * byWeight: for every weight used, the most reps done at it — heaviest first.
+ * Ties everywhere keep the earliest set.
+ *
+ * For exercises that are not rep-based (holds, carries, cardio) the fields
+ * above are empty, so three more records are taken over every non-warm-up set
+ * regardless of type: longest (durationSeconds), furthest (distanceM) and
+ * mostKcal — each null when that field was never logged.
  * @returns {{
  *   byReps: Array<{reps:number, weightKg:number, date:string, setId:string}>,
- *   bestE1RM: {value:number, weightKg:number, reps:number, date:string, setId:string}|null
+ *   bestE1RM: {value:number, weightKg:number, reps:number, date:string, setId:string}|null,
+ *   heaviest: {weightKg:number, reps:number, date:string, setId:string}|null,
+ *   bestSet: {loadKg:number, weightKg:number, reps:number, date:string, setId:string}|null,
+ *   mostReps: {reps:number, weightKg:number, date:string, setId:string}|null,
+ *   byWeight: Array<{weightKg:number, reps:number, date:string, setId:string}>,
+ *   longest: {durationSeconds:number, weightKg:number, date:string, setId:string}|null,
+ *   furthest: {distanceM:number, weightKg:number, date:string, setId:string}|null,
+ *   mostKcal: {kcal:number, date:string, setId:string}|null
  * }}
  */
 export function prsFrom(dataset, exerciseId) {
@@ -162,9 +184,22 @@ export function prsFrom(dataset, exerciseId) {
     });
 
   const byRepsMap = new Map(); // reps -> {reps, weightKg, date, setId}
+  const byWeightMap = new Map(); // weightKg -> {weightKg, reps, date, setId}
   let bestE1RM = null;
+  let heaviest = null;
+  let bestSet = null;
+  let mostReps = null;
   for (const { set, date } of working) {
     const reps = set.reps;
+    const w = Number(set.weightKg) || 0;
+    const here = { weightKg: w, reps, date, setId: set.id };
+    const atWeight = byWeightMap.get(w);
+    if (!atWeight || reps > atWeight.reps) byWeightMap.set(w, here);
+    if (!heaviest || w > heaviest.weightKg || (w === heaviest.weightKg && reps > heaviest.reps)) heaviest = here;
+    if (!bestSet || w * reps > bestSet.loadKg) bestSet = { loadKg: w * reps, ...here };
+    if (!mostReps || reps > mostReps.reps || (reps === mostReps.reps && w > mostReps.weightKg)) {
+      mostReps = { reps, weightKg: w, date, setId: set.id };
+    }
     if (reps >= 1 && reps <= 10) {
       const existing = byRepsMap.get(reps);
       // Strictly heavier wins; equal weight keeps the earlier (already-first) one.
@@ -180,7 +215,90 @@ export function prsFrom(dataset, exerciseId) {
   }
 
   const byReps = [...byRepsMap.values()].sort((a, b) => a.reps - b.reps);
-  return { byReps, bestE1RM };
+  const byWeight = [...byWeightMap.values()].sort((a, b) => b.weightKg - a.weightKg);
+
+  // Type-agnostic records (time / distance / kcal), over every non-warm-up set.
+  let longest = null;
+  let furthest = null;
+  let mostKcal = null;
+  const anySets = (dataset.sets || [])
+    .filter((s) => s.exerciseId === exerciseId && s.isWarmup !== true)
+    .map((s) => ({ set: s, date: (workouts.get(s.workoutId) || {}).date || '' }))
+    .sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return a.set.setNumber - b.set.setNumber;
+    });
+  for (const { set, date } of anySets) {
+    const dur = Number(set.durationSeconds) || 0;
+    const dist = Number(set.distanceM) || 0;
+    const kcal = Number(set.kcal) || 0;
+    const w = Number(set.weightKg) || 0;
+    if (dur > 0 && (!longest || dur > longest.durationSeconds)) longest = { durationSeconds: dur, weightKg: w, date, setId: set.id };
+    if (dist > 0 && (!furthest || dist > furthest.distanceM)) furthest = { distanceM: dist, weightKg: w, date, setId: set.id };
+    if (kcal > 0 && (!mostKcal || kcal > mostKcal.kcal)) mostKcal = { kcal, date, setId: set.id };
+  }
+
+  return { byReps, bestE1RM, heaviest, bestSet, mostReps, byWeight, longest, furthest, mostKcal };
+}
+
+/** A set row the user has actually filled in (not an untouched blank). */
+function isLoggedSet(s) {
+  return (Number(s.reps) || 0) > 0 || (Number(s.weightKg) || 0) > 0
+    || (Number(s.durationSeconds) || 0) > 0 || (Number(s.distanceM) || 0) > 0
+    || (Number(s.kcal) || 0) > 0;
+}
+
+/**
+ * Session-by-session progress for one exercise: ONE point per finished
+ * workout, taken from that session's TOP SET — the first working set done
+ * (lowest setNumber; warm-ups and untouched blank rows skipped). Later sets
+ * are ignored on purpose: sessions differ in how many sets they have, so the
+ * first working set is the like-for-like comparison.
+ *
+ * Works for every exercise type — a field the type does not log is null.
+ * loadKg = weightKg × reps (null without reps); e1rm is Epley (null without
+ * reps). Cardio sets are included here: this is a progress view, not a
+ * PR/volume calculation.
+ *
+ * @returns {Array<{workoutId:string, date:string, t:number, setId:string,
+ *   weightKg:number, reps:number, loadKg:number|null, e1rm:number|null,
+ *   durationSeconds:number|null, distanceM:number|null, kcal:number|null}>}
+ *   oldest first (by workout start)
+ */
+export function topSetSeriesFrom(dataset, exerciseId) {
+  const workouts = workoutIndex(dataset);
+  const firstByWorkout = new Map(); // workoutId -> first logged working set
+  for (const s of dataset.sets || []) {
+    if (s.exerciseId !== exerciseId || s.isWarmup === true || !isLoggedSet(s)) continue;
+    const w = workouts.get(s.workoutId);
+    if (!w || w.finishedAt == null) continue;
+    const cur = firstByWorkout.get(s.workoutId);
+    if (!cur || s.setNumber < cur.setNumber) firstByWorkout.set(s.workoutId, s);
+  }
+  const pos = (n) => ((Number(n) || 0) > 0 ? Number(n) : null);
+  const out = [];
+  for (const [workoutId, s] of firstByWorkout) {
+    const w = workouts.get(workoutId);
+    const started = w.startedAt ? new Date(w.startedAt).getTime() : NaN;
+    const t = Number.isFinite(started) ? started : new Date(`${w.date}T00:00:00`).getTime();
+    const weightKg = Number(s.weightKg) || 0;
+    const reps = Number(s.reps) || 0;
+    out.push({
+      workoutId,
+      date: w.date,
+      t,
+      setId: s.id,
+      weightKg,
+      reps,
+      loadKg: reps >= 1 ? weightKg * reps : null,
+      e1rm: reps >= 1 ? epley1RM(weightKg, reps) : null,
+      durationSeconds: pos(s.durationSeconds),
+      distanceM: pos(s.distanceM),
+      kcal: pos(s.kcal),
+    });
+  }
+  out.sort((a, b) => (a.t !== b.t ? a.t - b.t : (a.setId < b.setId ? -1 : 1)));
+  return out;
 }
 
 /**

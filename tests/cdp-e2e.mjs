@@ -1051,6 +1051,75 @@ try {
   await poll('back on log after coach walk', `location.hash === '#/log'`);
   check('coach: tab hides again once the key is removed', await poll('coach tab hidden', `document.querySelector('#tabbar button[data-tab="coach"]').hidden === true`));
 
+  // --- 15g. Progress scatter, real Personal Records, DD/MM/YYYY dates -------
+  // Bench has several finished sessions by now. Progress = one dot per session
+  // (its first working set); PRs = real sets, not a "reps 1..10" table.
+  await evalJS(`(() => { location.hash = '#/stats/exercise/${BBP}'; return true; })()`);
+  await poll('exercise screen (progress walk)', `document.querySelector('#s-stats [data-stat-nav="progress"]') != null`);
+  const benchSessions = await evalJS(`(async () => (await (await import('./js/queries.js')).getTopSetSeries(${J(BBP)})).length)()`);
+  check('progress: bench has finished sessions to plot', benchSessions >= 2, `sessions=${benchSessions}`);
+  await clickSel('open progress', '#s-stats [data-stat-nav="progress"]');
+  check('progress: sheet opens with a scatter — one dot per session',
+    await poll('scatter dots', `document.querySelectorAll('#sheet-root [data-sheet="progress"] .progress-chart svg circle').length === ${benchSessions}`),
+    `dots=${await count('#sheet-root [data-sheet="progress"] .progress-chart svg circle')} sessions=${benchSessions}`);
+  check('progress: no connecting line is drawn between sessions',
+    await evalJS(`[...document.querySelectorAll('#sheet-root .progress-chart svg path')].every((el) => el.getAttribute('stroke-width') !== '2')`));
+  check('progress: Y-axis options for a weight/reps exercise are Weight, Load, Reps, Est. 1RM',
+    await evalJS(`JSON.stringify([...document.querySelectorAll('#sheet-root [data-action="progress-metric"]')].map((b) => b.dataset.metric)) === '["weight","load","reps","e1rm"]'`));
+  const statBefore = await evalJS(`document.querySelector('#sheet-root .progress-stat-val').textContent`);
+  await clickSel('switch Y axis to load', '#sheet-root [data-action="progress-metric"][data-metric="load"]');
+  check('progress: switching the Y axis redraws and persists the choice',
+    await poll('load selected', `document.querySelector('#sheet-root [data-metric="load"]').classList.contains('on')
+      && localStorage.getItem('progress.metric.weight_reps') === 'load'
+      && document.querySelectorAll('#sheet-root .progress-chart svg circle').length === ${benchSessions}`),
+    `stat before=${statBefore} after=${await evalJS(`document.querySelector('#sheet-root .progress-stat-val').textContent`)}`);
+  check('progress: Latest / Best tiles carry DD/MM/YYYY dates',
+    await evalJS(`[...document.querySelectorAll('#sheet-root .progress-stat-sub')].slice(0, 2).every((el) => /^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(el.textContent))`),
+    await evalJS(`[...document.querySelectorAll('#sheet-root .progress-stat-sub')].map((el) => el.textContent).join(' | ')`));
+  await evalJS(`(() => { localStorage.removeItem('progress.metric.weight_reps'); document.querySelector('#sheet-root .sheet-x').click(); return true; })()`);
+  await poll('progress sheet closed', `document.querySelector('#sheet-root [data-sheet="progress"]') == null`);
+
+  await clickSel('open personal records', '#s-stats [data-stat-nav="prs"]');
+  await poll('pr sheet', `document.querySelector('#sheet-root [data-sheet="prs"] .pr-best-val') != null`);
+  const prView = await evalJS(`(async () => {
+    const prs = await (await import('./js/queries.js')).getPRs(${J(BBP)});
+    const sheet = document.querySelector('#sheet-root [data-sheet="prs"]');
+    return {
+      hero: sheet.querySelector('.pr-best-val').textContent,
+      heroLabel: sheet.querySelector('.pr-best-label').textContent,
+      heroDate: sheet.querySelector('.pr-best-sub').textContent,
+      head: [...sheet.querySelectorAll('.pr-row.pr-head span')].map((el) => el.textContent).join('|'),
+      rows: sheet.querySelectorAll('.pr-row:not(.pr-head)').length,
+      weights: prs.byWeight.filter((r) => r.weightKg > 0).length,
+      heaviest: prs.heaviest,
+      recs: [...sheet.querySelectorAll('.pr-rec-label')].map((el) => el.textContent).join('|'),
+    };
+  })()`);
+  check('prs: headline is the heaviest real set (weight × reps), dated DD/MM/YYYY',
+    prView.heroLabel === 'Heaviest set' && prView.hero.includes('×') && prView.hero.endsWith(String(prView.heaviest.reps))
+      && /^\d{2}\/\d{2}\/\d{4}$/.test(prView.heroDate), JSON.stringify(prView));
+  check('prs: table is "most reps at each weight", one row per weight — not a reps 1..10 list',
+    prView.head === 'Weight|Reps|Date' && prView.rows === prView.weights && prView.rows >= 1, JSON.stringify(prView));
+  check('prs: named records are listed', prView.recs.includes('Best set') && prView.recs.includes('Best estimated 1RM'), prView.recs);
+  await evalJS(`(() => { document.querySelector('#sheet-root .sheet-x').click(); return true; })()`);
+  await poll('pr sheet closed', `document.querySelector('#sheet-root [data-sheet="prs"]') == null`);
+
+  // The workout screen's exercise ⋯ menu offers Progress too.
+  await evalJS(`(async () => {
+    const q = await import('./js/queries.js');
+    const last = await q.getLastSession(${J(BBP)});
+    location.hash = '#/workout/' + last.workout.id;
+    return true;
+  })()`);
+  await poll('past workout with bench', `location.hash.startsWith('#/workout/') && document.querySelector('.ex-card[data-exercise-id=${J(BBP)}] .ex-menu') != null`);
+  check('dates: the workout header date is DD/MM/YYYY', await evalJS(`/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(document.querySelector('#s-workout .w-date').textContent)`),
+    await evalJS(`document.querySelector('#s-workout .w-date').textContent`));
+  await clickSel('exercise menu (progress)', `.ex-card[data-exercise-id="${BBP}"] .ex-menu`);
+  await clickSel('menu → Progress', '#sheet-root [data-action="exercise-progress"]');
+  check('progress: opens from the exercise ⋯ menu', await poll('progress via menu', `document.querySelectorAll('#sheet-root [data-sheet="progress"] .progress-chart svg circle').length >= 2`));
+  await evalJS(`(() => { document.querySelector('#sheet-root [data-sheet="progress"] .sheet-x').click(); location.hash = '#/log'; return true; })()`);
+  await poll('back on log after progress walk', `location.hash === '#/log'`);
+
   // --- 16. No uncaught exceptions / console errors across the whole walk ---
   check('pwa: no uncaught exceptions or console errors during the walk', jsErrors.length === 0, jsErrors.join(' | '));
 } catch (err) {

@@ -358,10 +358,13 @@ function normalise(spec) {
     points.push({
       t: num(p.t) ? p.t : null,
       label: p.label == null ? '' : String(p.label),
+      // Optional readout text for this point (falls back to `label`), so a
+      // dot can say "13/10/2026 · 60 kg × 8" while the axis stays short.
+      tip: p.tip == null ? '' : String(p.tip),
       value: p.value,
     });
   }
-  const type = s.type === 'bar' || s.type === 'pie' ? s.type : 'line';
+  const type = s.type === 'bar' || s.type === 'pie' || s.type === 'scatter' ? s.type : 'line';
   return {
     type,
     points,
@@ -369,6 +372,7 @@ function normalise(spec) {
     unit: s.unit == null ? '' : String(s.unit),
     yFormat: typeof s.yFormat === 'function' ? s.yFormat : null,
     trend: !!s.trend,
+    xTickFormat: typeof s.xTickFormat === 'function' ? s.xTickFormat : null,
     horizontal: !!s.horizontal,
     interactive: !!s.interactive,
   };
@@ -384,13 +388,17 @@ function normalise(spec) {
  * @param {HTMLElement} container  emptied and repopulated; the returned handle
  *   re-uses it. The caller owns sizing via CSS.
  * @param {{
- *   type: 'line'|'bar'|'pie',
- *   points: Array<{t: number|null, label: string, value: number}>,
+ *   type: 'line'|'bar'|'pie'|'scatter',
+ *     // scatter: a time series drawn as unconnected dots (one per session)
+ *   points: Array<{t: number|null, label: string, value: number, tip?: string}>,
  *     // time series: t = bucket epoch ms (ascending), label = short axis text
  *     // pie: t null, label = slice name, value = slice size
  *   unit: string,                    // 'kg' | 'reps' | 'min' | '' …
  *   yFormat?: (v: number) => string, // default: compact number + unit
- *   trend?: boolean,                 // line only — dashed regression overlay
+ *   trend?: boolean,                 // line/scatter — dashed regression overlay
+ *   xTickFormat?: (t: number) => string, // time axis: evenly spaced ticks
+ *     // labelled from the time itself, instead of labels borrowed from data
+ *     // points (which bunch up wherever the data is dense)
  *   horizontal?: boolean,            // bar only — horizontal bars, swapped axes
  *   interactive?: boolean,           // pinch zoom / pan / double-tap reset
  * }} spec
@@ -619,6 +627,7 @@ export function renderChart(container, spec) {
     const pts = cfg.points;
     const n = pts.length;
     const isBar = cfg.type === 'bar';
+    const isScatter = cfg.type === 'scatter';
     const M = { top: 14, right: 48, bottom: 26, left: 12 };
     const plotL = M.left;
     const plotT = M.top;
@@ -639,6 +648,7 @@ export function renderChart(container, spec) {
     let xs;
     let domLo;
     let domHi;
+    let timeAxis = false; // x is real time (not an index fallback)
     if (isBar) {
       xs = pts.map((_, i) => i);
       domLo = -0.5;
@@ -651,10 +661,20 @@ export function renderChart(container, spec) {
         xs = pts.map((p) => p.t);
         domLo = tLo;
         domHi = tHi;
+        timeAxis = true;
       } else {
         xs = pts.map((_, i) => i);
         domLo = 0;
         domHi = Math.max(1e-6, n - 1);
+      }
+      if (isScatter) {
+        // Dots need breathing room: a lone point sits in the middle, and the
+        // first/last dots are never half-clipped by the plot edge.
+        if (n === 1) { domLo = xs[0] - 1; domHi = xs[0] + 1; } else {
+          const pad = (domHi - domLo) * 0.04;
+          domLo -= pad;
+          domHi += pad;
+        }
       }
     }
     const domSpan = domHi - domLo;
@@ -699,6 +719,12 @@ export function renderChart(container, spec) {
       vMin = Math.min(vMin, 0);
       vMax = Math.max(vMax, 0);
     }
+    if (isScatter) {
+      // Same breathing room vertically, so the top and bottom dots are whole.
+      const padY = (vMax - vMin) * 0.08 || Math.max(1, Math.abs(vMax) * 0.1);
+      vMax += padY;
+      vMin = vMin >= 0 ? Math.max(0, vMin - padY) : vMin - padY;
+    }
     const scale = niceScale(vMin, vMax, 5);
     const ySpan = scale.max - scale.min || 1;
     const yOf = (v) => plotB - ((v - scale.min) / ySpan) * plotH;
@@ -722,8 +748,22 @@ export function renderChart(container, spec) {
     }
 
     // --- x labels + subtle vertical gridlines ----------------------------
-    const labelSource = idx.map((i) => ({ x: xOf(xs[i]), label: pts[i].label }));
-    const xLabels = pickXLabels(labelSource, plotL, plotR);
+    let xLabels;
+    if (cfg.xTickFormat && timeAxis) {
+      // Evenly spaced ticks across the visible window, each centred in its own
+      // band so the outer labels never spill past the plot.
+      const sample = String(cfg.xTickFormat(visLo) || '');
+      const k = Math.max(2, Math.min(5, Math.floor(plotW / (textWidth(sample, 11) + 18))));
+      xLabels = [];
+      for (let j = 0; j < k; j++) {
+        const tv = visLo + ((j + 0.5) / k) * visSpan;
+        const label = String(cfg.xTickFormat(tv) || '');
+        if (label) xLabels.push({ x: xOf(tv), label });
+      }
+    } else {
+      const labelSource = idx.map((i) => ({ x: xOf(xs[i]), label: pts[i].label }));
+      xLabels = pickXLabels(labelSource, plotL, plotR);
+    }
     for (const lab of xLabels) {
       el('line', {
         x1: lab.x, y1: plotT, x2: lab.x, y2: plotB,
@@ -770,7 +810,7 @@ export function renderChart(container, spec) {
           bar.style.animation = `bar-grow var(--dur-enter) var(--ease-settle) ${Math.min(barSeq * 25, 400)}ms both`;
           barSeq += 1;
         }
-        hits.push({ i, x: cx, y: vy, label: pts[i].label, value: v });
+        hits.push({ i, x: cx, y: vy, label: pts[i].label, tip: pts[i].tip, value: v });
       }
       if (reveal) markRevealed();
     } else {
@@ -784,7 +824,18 @@ export function renderChart(container, spec) {
         const py = yOf(pts[i].value);
         if (num(px) && num(py)) coords.push({ i, x: px, y: py });
       }
-      if (coords.length === 1) {
+      if (isScatter) {
+        // One dot per point, no connecting line — sessions are separate
+        // observations, and a line would imply a path between them.
+        const r = coords.length > 120 ? 2.5 : coords.length > 50 ? 3 : 4;
+        for (const c of coords) {
+          el('circle', {
+            cx: c.x.toFixed(2), cy: c.y.toFixed(2), r,
+            fill: theme.accent, 'fill-opacity': 0.85,
+            stroke: theme.bg, 'stroke-width': 1,
+          }, gSeries);
+        }
+      } else if (coords.length === 1) {
         el('circle', {
           cx: coords[0].x, cy: coords[0].y, r: 4, fill: theme.accent,
         }, gSeries);
@@ -812,7 +863,7 @@ export function renderChart(container, spec) {
       }
       for (const c of coords) {
         if (c.i >= firstVis && c.i <= lastVis) {
-          hits.push({ i: c.i, x: c.x, y: c.y, label: pts[c.i].label, value: pts[c.i].value });
+          hits.push({ i: c.i, x: c.x, y: c.y, label: pts[c.i].label, tip: pts[c.i].tip, value: pts[c.i].value });
         }
       }
 
@@ -839,6 +890,7 @@ export function renderChart(container, spec) {
 
     geom = {
       kind: isBar ? 'bar' : 'line',
+      pick2d: isScatter,
       plotL, plotR, plotT, plotB, plotW, plotH,
       theme, hits,
       interactive: !!cfg.interactive,
@@ -1044,13 +1096,15 @@ export function renderChart(container, spec) {
     let best = null;
     let bestD = Infinity;
     for (const h of geom.hits) {
-      const d = Math.abs(h[along] - at);
+      // Scatter dots are picked by true distance — two sessions can share a
+      // column, and the finger should select the dot it is actually on.
+      const d = geom.pick2d ? Math.hypot(h.x - px, h.y - py) : Math.abs(h[along] - at);
       if (d < bestD) { bestD = d; best = h; }
     }
     if (!best) return;
 
     const fmt = cfg.yFormat || withUnit(cfg.unit);
-    const line1 = best.label ? String(best.label) : '';
+    const line1 = best.tip ? String(best.tip) : (best.label ? String(best.label) : '');
     const line2 = fmt(best.value);
 
     // Guide + highlighted point.

@@ -24,6 +24,7 @@ import {
   getExercise, getWorkout, MUSCLE_GROUPS,
 } from '../db.js';
 import { getPRs } from '../queries.js';
+import { prSheet, progressSheet, prRecordNodes, prHeadline } from './exercise-insights.js';
 import { renderChart } from '../charts.js';
 import {
   OVERALL_METRICS, EXERCISE_METRICS, CATEGORY_METRICS,
@@ -37,7 +38,7 @@ import {
   sheetRow, optionSheet, confirmSheet, formatWeight, formatDate, getUnits,
   kgToDisplay, mmss, trimNum, setScreenCleanup,
 } from '../ui.js';
-import { uid } from '../util.js';
+import { uid, formatDMY } from '../util.js';
 import { playOnce, playOut, stagger, flip, springHome, motionOK } from '../motion.js';
 import { healthAvailable, getHealthSummary, onHealthUpdate } from '../health.js';
 
@@ -527,26 +528,13 @@ function buildPrsModule(card, spec, ctx) {
           : 'Log some sets to see personal records here.',
       }));
     } else {
-      const { byReps, bestE1RM } = await getPRs(selected.id);
-      if (!bestE1RM) {
+      const prs = await getPRs(selected.id);
+      const nodes = prRecordNodes(prs);
+      if (!nodes.length) {
         body.push(h('p', { class: 'stat-empty muted', text: 'No working sets logged for this exercise yet.' }));
       } else {
-        headline.textContent = formatWeight(bestE1RM.value);
-        body.push(h('div', { class: 'pr-headline' },
-          h('span', {
-            class: 'pr-headline-val',
-            text: `${formatWeight(bestE1RM.weightKg)} × ${bestE1RM.reps} → e1RM ${formatWeight(bestE1RM.value)}`,
-          }),
-        ));
-        body.push(h('div', { class: 'pr-table' },
-          h('div', { class: 'pr-row pr-head' },
-            h('span', { text: 'Reps' }), h('span', { text: 'Best' }), h('span', { text: 'Date' })),
-          ...byReps.map((r) => h('div', { class: 'pr-row' },
-            h('span', { text: String(r.reps) }),
-            h('span', { text: formatWeight(r.weightKg) }),
-            h('span', { text: formatDate(r.date) }),
-          )),
-        ));
+        headline.textContent = prHeadline(prs);
+        body.push(...nodes);
       }
     }
 
@@ -987,9 +975,7 @@ function hmm(totalSeconds) {
   return `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')}`;
 }
 function shortDayLabel(iso) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return formatDMY(iso);
 }
 
 function healthMetricCard(title, value, atIso) {
@@ -1136,8 +1122,12 @@ async function renderExerciseDetail(screen, exerciseId) {
     onClick: () => go(`#/stats/exercise/${exerciseId}/chart/${m.id}`),
   }));
   rows.push(navRow({
+    label: 'Progress', sub: 'Top set per session', attrs: { 'data-stat-nav': 'progress' },
+    onClick: () => progressSheet(exercise),
+  }));
+  rows.push(navRow({
     label: 'Personal Records', attrs: { 'data-stat-nav': 'prs' },
-    onClick: () => exercisePrSheet(exercise),
+    onClick: () => prSheet(exercise),
   }));
   rows.push(navRow({
     label: 'History', attrs: { 'data-stat-nav': 'history' },
@@ -1148,33 +1138,6 @@ async function renderExerciseDetail(screen, exerciseId) {
     backHeader(exercise.name, '#/stats/exercises'),
     h('div', { class: 'stats-body' }, h('div', { class: 'tab-card stats-nav-card' }, ...rows)),
   ));
-}
-
-async function exercisePrSheet(exercise) {
-  const { byReps, bestE1RM } = await getPRs(exercise.id);
-  const body = [sheetHeader(exercise.name, { onClose: () => closeSheet() })];
-  if (!bestE1RM) {
-    body.push(h('p', { class: 'sheet-message muted', text: 'No working sets logged yet.' }));
-  } else {
-    body.push(h('div', { class: 'pr-best' },
-      h('div', { class: 'pr-best-label', text: 'Best estimated 1RM' }),
-      h('div', { class: 'pr-best-val', text: formatWeight(bestE1RM.value) }),
-      h('div', {
-        class: 'pr-best-sub',
-        text: `${formatWeight(bestE1RM.weightKg)} × ${bestE1RM.reps} · ${formatDate(bestE1RM.date)}`,
-      }),
-    ));
-    body.push(h('div', { class: 'pr-table' },
-      h('div', { class: 'pr-row pr-head' },
-        h('span', { text: 'Reps' }), h('span', { text: 'Best' }), h('span', { text: 'Date' })),
-      ...byReps.map((r) => h('div', { class: 'pr-row' },
-        h('span', { text: String(r.reps) }),
-        h('span', { text: formatWeight(r.weightKg) }),
-        h('span', { text: formatDate(r.date) }),
-      )),
-    ));
-  }
-  openSheet(h('div', {}, ...body));
 }
 
 /** One line per set: "60 kg × 8", "12 reps", "5:00 · 1,200 m". */

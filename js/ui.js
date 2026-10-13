@@ -13,7 +13,7 @@ import {
 } from './db.js';
 import { seedIfEmpty } from './seed.js';
 import * as timer from './timer.js';
-import { uid, nowISO, todayISO } from './util.js';
+import { uid, nowISO, todayISO, formatDMY, formatHM } from './util.js';
 import { EXERCISE_TYPE_GROUPS, blankSet } from './exercise-types.js';
 import { playOnce, motionOK } from './motion.js';
 import { closeOpenSwipe } from './swipe.js';
@@ -194,17 +194,15 @@ export function formatElapsed(ms) {
   const pad = (n) => String(n).padStart(2, '0');
   return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`;
 }
+/** "21/07/2026" — every date in the app is DD/MM/YYYY (util.formatDMY). */
 export function formatDate(iso) {
-  const d = new Date(iso.length <= 10 ? iso + 'T00:00:00' : iso);
-  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  return formatDMY(iso) || '—';
 }
-/** "Tue 21 Jul at 16:39" */
+/** "21/07/2026 16:39" */
 export function formatDateTime(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  const date = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  return `${date} at ${time}`;
+  const date = formatDMY(iso);
+  return date ? `${date} ${formatHM(iso)}` : '—';
 }
 
 /** Display name for a workout: its own name, else derived from start hour. */

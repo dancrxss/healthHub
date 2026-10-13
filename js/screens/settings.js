@@ -11,6 +11,7 @@
 // ============================================================================
 
 import * as timer from '../timer.js';
+import { formatDMY } from '../util.js';
 import { getActiveAdapter } from '../sync.js';
 import { getSetting, setSetting } from '../settings.js';
 import {
@@ -31,13 +32,10 @@ import { userMessageFor } from '../coach-api.js';
 
 const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const num = (n) => Number(n || 0).toLocaleString('en-GB');
-/** "6 Mar 2022" — the import preview needs the year, so formatDate won't do. */
+/** "06/03/2022" — DD/MM/YYYY like every other date in the app. */
 function importDate(iso) {
   if (!iso) return '—';
-  const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
-  return Number.isNaN(d.getTime())
-    ? iso
-    : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return formatDMY(iso) || iso;
 }
 /** Coarse relative time for the Apple Health status line: "just now", "5 min
  * ago", "3 hr ago", "2d ago", falling back to a plain date past a week. */

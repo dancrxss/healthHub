@@ -12,9 +12,11 @@ import {
   lastSessionFrom,
   recentWorkoutsFrom,
   prsFrom,
+  topSetSeriesFrom,
   weeklyVolumeFrom,
   trainingFrequencyFrom,
 } from '../js/calc.js';
+import { formatDMY, formatHM } from '../js/util.js';
 
 let passed = 0;
 function check(name, fn) {
@@ -287,6 +289,158 @@ check('recentWorkoutsFrom: cardio set appears in the session listing', () => {
   const res = recentWorkoutsFrom(cardioDS, '0000');
   assert.equal(res.length, 1);
   assert.deepEqual(res[0].sets.map((s) => s.id), ['cs1', 'cs2']); // ordered by exerciseId
+});
+
+// ---------------------------------------------------------------------------
+// prsFrom — real records (13 Oct 2026). The bug this guards: the old PR table
+// was "heaviest at exactly N reps", so one 8 kg x 3 grinder read as "the
+// record" while the genuine best set (14 kg x 12) was not shown at all.
+// ---------------------------------------------------------------------------
+
+const curlDS = (() => {
+  const ex = [{ id: 'ex-sdc', name: 'Seated Dumbbell Curl', muscleGroup: 'biceps', equipment: 'dumbbell', exerciseType: 'weight_reps' }];
+  const w = (id, date, finished = true) => ({ id, date, startedAt: `${date}T17:00:00`, finishedAt: finished ? `${date}T18:00:00` : null });
+  const ws = [w('c1', '2024-11-18'), w('c2', '2026-04-14'), w('c3', '2026-04-23'), w('c4', '2026-05-13'), w('c5', '2026-07-28'), w('c6', '2026-08-01', false)];
+  const st = (id, workoutId, setNumber, weightKg, reps, extra = {}) => ({ id, workoutId, exerciseId: 'ex-sdc', setNumber, weightKg, reps, isWarmup: false, ...extra });
+  const ss = [
+    st('c1a', 'c1', 1, 8, 8), st('c1b', 'c1', 2, 8, 3),                       // the 3-rep grinder
+    st('c2a', 'c2', 1, 12, 12), st('c2b', 'c2', 2, 12, 8),
+    st('c3w', 'c3', 1, 6, 15, { isWarmup: true }),                            // warm-up first: NOT the top set
+    st('c3a', 'c3', 2, 14, 12), st('c3b', 'c3', 3, 14, 9), st('c3c', 'c3', 4, 14, 6),
+    st('c4z', 'c4', 1, 0, 0),                                                 // untouched blank row: skipped
+    st('c4a', 'c4', 2, 14, 7), st('c4b', 'c4', 3, 14, 5),
+    st('c5a', 'c5', 1, 10, 8), st('c5b', 'c5', 2, 10, 6),
+    st('c6a', 'c6', 1, 20, 20),                                               // unfinished workout
+  ];
+  return { workouts: ws, sets: ss, exercises: ex };
+})();
+
+check('prsFrom: heaviest is the heaviest weight with the MOST reps done at it', () => {
+  const res = prsFrom({ ...curlDS, sets: curlDS.sets.filter((s) => s.workoutId !== 'c6') }, 'ex-sdc');
+  assert.deepEqual(res.heaviest, { weightKg: 14, reps: 12, date: '2026-04-23', setId: 'c3a' });
+});
+
+check('prsFrom: bestSet is the highest weight x reps, mostReps the most reps (heavier wins a tie)', () => {
+  const res = prsFrom({ ...curlDS, sets: curlDS.sets.filter((s) => s.workoutId !== 'c6') }, 'ex-sdc');
+  assert.deepEqual(res.bestSet, { loadKg: 168, weightKg: 14, reps: 12, date: '2026-04-23', setId: 'c3a' });
+  assert.deepEqual(res.mostReps, { reps: 12, weightKg: 14, date: '2026-04-23', setId: 'c3a' }); // 12 kg x 12 ties on reps, loses on weight
+});
+
+check('prsFrom: byWeight lists the most reps at each weight, heaviest first — real sets only', () => {
+  const res = prsFrom({ ...curlDS, sets: curlDS.sets.filter((s) => s.workoutId !== 'c6') }, 'ex-sdc');
+  assert.deepEqual(res.byWeight.map((r) => [r.weightKg, r.reps, r.date]), [
+    [14, 12, '2026-04-23'], [12, 12, '2026-04-14'], [10, 8, '2026-07-28'], [8, 8, '2024-11-18'],
+  ]);
+  assert.ok(!res.byWeight.some((r) => r.weightKg === 6), 'warm-up weight must not appear');
+  assert.ok(!res.byWeight.some((r) => r.weightKg === 8 && r.reps === 3), 'the 3-rep grinder is not the 8 kg record');
+});
+
+check('prsFrom: byReps / bestE1RM keep their original contract alongside the new fields', () => {
+  const res = prsFrom(dataset, 'ex-bench');
+  assert.deepEqual(res.byReps.map((r) => r.reps), [1, 3, 5]);
+  assert.equal(res.heaviest.weightKg, 105);
+  assert.equal(res.heaviest.reps, 1);
+  assert.equal(res.mostReps.reps, 5);
+});
+
+check('prsFrom: no working sets -> every record null/empty', () => {
+  const res = prsFrom(dataset, 'ex-curl');
+  assert.equal(res.heaviest, null);
+  assert.equal(res.bestSet, null);
+  assert.equal(res.mostReps, null);
+  assert.deepEqual(res.byWeight, []);
+  assert.equal(res.longest, null);
+  assert.equal(res.furthest, null);
+  assert.equal(res.mostKcal, null);
+});
+
+check('prsFrom: time / distance / kcal records for non-rep exercises', () => {
+  const ds = {
+    workouts: [
+      { id: 'k1', date: '2026-06-01', startedAt: '2026-06-01T07:00:00', finishedAt: '2026-06-01T08:00:00' },
+      { id: 'k2', date: '2026-06-08', startedAt: '2026-06-08T07:00:00', finishedAt: '2026-06-08T08:00:00' },
+    ],
+    sets: [
+      { id: 'k1a', workoutId: 'k1', exerciseId: 'ex-run', setNumber: 1, setType: 'cardio', weightKg: 0, reps: 0, durationSeconds: 1500, distanceM: 5000, kcal: 400, isWarmup: false },
+      { id: 'k2a', workoutId: 'k2', exerciseId: 'ex-run', setNumber: 1, setType: 'cardio', weightKg: 0, reps: 0, durationSeconds: 1800, distanceM: 4800, kcal: 380, isWarmup: false },
+    ],
+    exercises: [],
+  };
+  const res = prsFrom(ds, 'ex-run');
+  assert.equal(res.heaviest, null); // cardio never produces a lifting record
+  assert.deepEqual([res.longest.durationSeconds, res.longest.date], [1800, '2026-06-08']);
+  assert.deepEqual([res.furthest.distanceM, res.furthest.date], [5000, '2026-06-01']);
+  assert.deepEqual([res.mostKcal.kcal, res.mostKcal.date], [400, '2026-06-01']);
+});
+
+// ---------------------------------------------------------------------------
+// topSetSeriesFrom — one point per finished session, from the first working set
+// ---------------------------------------------------------------------------
+
+check('topSetSeriesFrom: one point per FINISHED session, oldest first', () => {
+  const res = topSetSeriesFrom(curlDS, 'ex-sdc');
+  assert.deepEqual(res.map((p) => p.workoutId), ['c1', 'c2', 'c3', 'c4', 'c5']); // c6 unfinished
+  assert.ok(res.every((p, i) => i === 0 || p.t > res[i - 1].t));
+});
+
+check('topSetSeriesFrom: the top set is the first WORKING set — warm-ups and blank rows skipped', () => {
+  const res = topSetSeriesFrom(curlDS, 'ex-sdc');
+  const byW = Object.fromEntries(res.map((p) => [p.workoutId, p]));
+  assert.equal(byW.c1.setId, 'c1a');   // 8 kg x 8, not the later 8 kg x 3
+  assert.equal(byW.c3.setId, 'c3a');   // warm-up was set 1
+  assert.equal(byW.c4.setId, 'c4a');   // blank row was set 1
+});
+
+check('topSetSeriesFrom: weight is the logged weight, load is weight x reps of that one set', () => {
+  const res = topSetSeriesFrom(curlDS, 'ex-sdc');
+  assert.deepEqual(res.map((p) => [p.weightKg, p.reps, p.loadKg]), [
+    [8, 8, 64], [12, 12, 144], [14, 12, 168], [14, 7, 98], [10, 8, 80],
+  ]);
+  assert.ok(Math.abs(res[2].e1rm - 14 * (1 + 12 / 30)) < 1e-9);
+  assert.equal(res[0].durationSeconds, null);
+});
+
+check('topSetSeriesFrom: cardio and timed sets carry time / distance / kcal, no load', () => {
+  const ds = {
+    workouts: [{ id: 'k1', date: '2026-06-01', startedAt: '2026-06-01T07:00:00', finishedAt: '2026-06-01T08:00:00' }],
+    sets: [
+      { id: 'k1a', workoutId: 'k1', exerciseId: 'ex-run', setNumber: 1, setType: 'cardio', weightKg: 0, reps: 0, durationSeconds: 1500, distanceM: 5000, kcal: 400, isWarmup: false },
+      { id: 'k1b', workoutId: 'k1', exerciseId: 'ex-run', setNumber: 2, setType: 'cardio', weightKg: 0, reps: 0, durationSeconds: 600, distanceM: 2000, kcal: 150, isWarmup: false },
+    ],
+    exercises: [],
+  };
+  const res = topSetSeriesFrom(ds, 'ex-run');
+  assert.equal(res.length, 1);
+  assert.deepEqual([res[0].durationSeconds, res[0].distanceM, res[0].kcal, res[0].loadKg, res[0].e1rm], [1500, 5000, 400, null, null]);
+});
+
+check('topSetSeriesFrom: unknown exercise -> []', () => {
+  assert.deepEqual(topSetSeriesFrom(curlDS, 'nope'), []);
+});
+
+// ---------------------------------------------------------------------------
+// util date display — DD/MM/YYYY everywhere
+// ---------------------------------------------------------------------------
+
+check('formatDMY: ISO date -> DD/MM/YYYY with no day slip', () => {
+  assert.equal(formatDMY('2026-04-23'), '23/04/2026');
+  assert.equal(formatDMY('2026-01-05'), '05/01/2026');
+  assert.equal(formatDMY('2025-12-31'), '31/12/2025');
+});
+
+check('formatDMY: datetime, epoch ms and Date all work; junk -> empty', () => {
+  assert.equal(formatDMY('2026-07-28T17:10:00'), '28/07/2026');
+  assert.equal(formatDMY(new Date(2026, 9, 13)), '13/10/2026');
+  assert.equal(formatDMY(new Date(2026, 9, 13).getTime()), '13/10/2026');
+  assert.equal(formatDMY(''), '');
+  assert.equal(formatDMY(null), '');
+  assert.equal(formatDMY('not a date'), '');
+});
+
+check('formatHM: 24-hour local time', () => {
+  assert.equal(formatHM('2026-07-28T07:05:00'), '07:05');
+  assert.equal(formatHM('2026-07-28T17:10:00'), '17:10');
+  assert.equal(formatHM(null), '');
 });
 
 console.log(`\nAll ${passed} assertions passed.`);

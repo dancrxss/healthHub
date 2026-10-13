@@ -39,7 +39,7 @@ import {
   unitLabel, trimNum, formatDate, currentWorkout, setScreenCleanup,
   startPlannedWorkout, requestBottomScroll,
 } from '../ui.js';
-import { todayISO } from '../util.js';
+import { todayISO, formatDMY } from '../util.js';
 import { stagger } from '../motion.js';
 import { normalizeExerciseType } from '../exercise-types.js';
 import {
@@ -156,12 +156,9 @@ function ensureCoachSubscription() {
 // ----------------------------------------------------------------------------
 const titleCase = (s) => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : '');
 
-/** "2 Sep" — the plan footer wants the date without the weekday. */
+/** "02/09/2026" — DD/MM/YYYY like every other date in the app. */
 function shortDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso.length <= 10 ? `${iso}T00:00:00` : iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return formatDMY(iso) || '—';
 }
 
 /** Volume: display units, thousands separated, e.g. "1,680 kg". */

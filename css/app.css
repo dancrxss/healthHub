@@ -635,6 +635,33 @@ body.resume-active .rest-bar { bottom: calc(var(--tabbar-h) + var(--safe-bottom)
 .pr-row:last-child { border-bottom: 0; }
 .pr-row.pr-head { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 .pr-row span:last-child { color: var(--muted); }
+/* Named records: what it is + the set that earned it, figure on the right. */
+.pr-recs { margin-bottom: 4px; }
+.pr-rec {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.pr-rec:last-child { border-bottom: 0; }
+.pr-rec-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pr-rec-label { font-size: 15px; }
+.pr-rec-sub { font-size: 13px; color: var(--muted); }
+.pr-rec-val { font-size: 17px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+.pr-section { margin-top: 14px; }
+
+/* Progress sheet: scatter of the top set per session. */
+.progress-sheet .progress-seg { display: flex; margin: 2px 0 12px; }
+.progress-sheet .progress-seg .seg-btn { flex: 1 1 0; min-height: 40px; padding: 8px 4px; font-size: 13.5px; }
+.progress-chart { position: relative; width: 100%; height: clamp(220px, 38svh, 300px); margin-bottom: 12px; }
+.progress-chart[hidden], .progress-empty[hidden] { display: none; }
+.progress-stats { display: flex; gap: 8px; margin: 2px 0 10px; }
+.progress-stat {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  background: var(--card); border-radius: 12px; padding: 10px 10px;
+}
+.progress-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.progress-stat-val { font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-stat-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-hint { font-size: 12.5px; line-height: 1.4; margin: 0 2px 4px; }
 
 /* ----------------------------------------------------------------------------
    Picker screen

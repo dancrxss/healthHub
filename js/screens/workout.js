@@ -19,7 +19,7 @@ import {
 import { planRefSets, projectedSessions } from '../coach-engine.js';
 import { nowISO, todayISO } from '../util.js';
 import { onWorkoutFinished } from '../coach.js';
-import { getPRs, getLastSession } from '../queries.js';
+import { getLastSession } from '../queries.js';
 import * as timer from '../timer.js';
 import {
   h, Icon, go, setCurrent,
@@ -37,6 +37,7 @@ import { playOnce, playOut, stagger } from '../motion.js';
 import { swipeRow } from '../swipe.js';
 import { enhanceInput } from '../inputs.js';
 import { editExerciseSheet } from './picker.js';
+import { prSheet, progressSheet } from './exercise-insights.js';
 
 // The screen re-renders itself after every structural mutation; renderTarget
 // remembers which workout (null = the active one) so re-renders resolve the
@@ -531,8 +532,8 @@ function buildEntryCard(entry, index, workout, entries, setsByEx, exMap, lastByE
     addBtn,
     h('div', { class: 'ex-icons' },
       h('button', { class: 'ex-icon', 'aria-label': 'History', type: 'button', onclick: () => historySheet(exercise, entry) }, Icon('history')),
-      h('button', { class: 'ex-icon', 'aria-label': 'Personal records', type: 'button', onclick: () => prSheet(exercise) }, Icon('bars')),
-      h('button', { class: 'ex-icon', 'aria-label': 'Personal records', type: 'button', onclick: () => prSheet(exercise) }, Icon('star')),
+      h('button', { class: 'ex-icon', 'aria-label': 'Progress', 'data-action': 'card-progress', type: 'button', onclick: () => progressSheet(exercise) }, Icon('bars')),
+      h('button', { class: 'ex-icon', 'aria-label': 'Personal records', 'data-action': 'card-prs', type: 'button', onclick: () => prSheet(exercise) }, Icon('star')),
     ),
   ));
 
@@ -873,7 +874,8 @@ function exerciseMenu(entry, index, workout, entries, exercise, isActive) {
 
   const info = [
     sheetRow({ label: 'History', icon: Icon('history'), onClick: () => { closeSheet(); historySheet(exercise, entry); } }),
-    sheetRow({ label: 'Personal Records', icon: Icon('bars'), onClick: () => { closeSheet(); prSheet(exercise); } }),
+    sheetRow({ label: 'Progress', icon: Icon('bars'), action: 'exercise-progress', onClick: () => { closeSheet(); progressSheet(exercise); } }),
+    sheetRow({ label: 'Personal Records', icon: Icon('star'), action: 'exercise-prs', onClick: () => { closeSheet(); prSheet(exercise); } }),
   ];
 
   openSheet(h('div', {},
@@ -885,7 +887,7 @@ function exerciseMenu(entry, index, workout, entries, exercise, isActive) {
   ));
 }
 
-// ---- history & PR sheets ---------------------------------------------------
+// ---- history sheet (PRs and Progress live in exercise-insights.js) ----------
 async function historySheet(exercise, entry) {
   const title = exercise ? exercise.name : 'History';
   if (!exercise) { openSheet(h('div', {}, sheetHeader('History', { onClose: () => closeSheet() }), emptyNote('No history yet.'))); return; }
@@ -907,31 +909,6 @@ async function historySheet(exercise, entry) {
       ...wSets.map((s) => h('div', { class: 'sheet-history-set' },
         h('span', { class: 'shs-badge', text: s.isWarmup ? 'W' : String(s.setNumber) }),
         h('span', { text: setSummaryLine(s) }),
-      )),
-    ));
-  }
-  openSheet(h('div', {}, ...body));
-}
-
-async function prSheet(exercise) {
-  if (!exercise) { openSheet(h('div', {}, sheetHeader('Personal Records', { onClose: () => closeSheet() }), emptyNote('No records yet.'))); return; }
-  const { byReps, bestE1RM } = await getPRs(exercise.id);
-  const body = [sheetHeader(exercise.name, { onClose: () => closeSheet() })];
-
-  if (!bestE1RM) {
-    body.push(emptyNote('No records yet.'));
-  } else {
-    body.push(h('div', { class: 'pr-best' },
-      h('div', { class: 'pr-best-label', text: 'Best estimated 1RM' }),
-      h('div', { class: 'pr-best-val', text: formatWeight(bestE1RM.value) }),
-      h('div', { class: 'pr-best-sub', text: `${formatWeight(bestE1RM.weightKg)} × ${bestE1RM.reps} · ${formatDate(bestE1RM.date)}` }),
-    ));
-    body.push(h('div', { class: 'pr-table' },
-      h('div', { class: 'pr-row pr-head' }, h('span', { text: 'Reps' }), h('span', { text: 'Best' }), h('span', { text: 'Date' })),
-      ...byReps.map((r) => h('div', { class: 'pr-row' },
-        h('span', { text: String(r.reps) }),
-        h('span', { text: formatWeight(r.weightKg) }),
-        h('span', { text: formatDate(r.date) }),
       )),
     ));
   }

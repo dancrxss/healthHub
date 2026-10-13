@@ -23,7 +23,7 @@
 // ============================================================================
 
 import { epley1RM } from './calc.js';
-import { todayISO } from './util.js';
+import { todayISO, formatDMY } from './util.js';
 import { listWorkouts, listSetsForWorkout, listExercises } from './db.js';
 
 // Metric catalogues. `unit` is a display hint ('kg' converts per the user's
@@ -68,7 +68,6 @@ export const CATEGORY_METRICS = [
 
 // ---- internal helpers (pure unless noted) ----
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const GROUP_BYS = ['day', 'week', 'month', 'year'];
 const CATALOGUES = { overall: OVERALL_METRICS, exercise: EXERCISE_METRICS, category: CATEGORY_METRICS };
 
@@ -115,18 +114,18 @@ function bucketStart(isoDate, groupBy) {
 }
 
 /**
- * Axis text for a bucket start — ALWAYS a real date, never a week number:
- * day '6 Mar' | week '3 Aug' (the Monday it begins, per bucketStart) |
- * month 'Mar 2026' | year '2026'. A week number tells you nothing at a
- * glance; the date it starts on does.
+ * Axis text for a bucket start — ALWAYS a real date, never a week number, and
+ * always numeric UK order (13 Oct 2026: DD/MM/YYYY app-wide):
+ * day '06/03/2026' | week '03/08/2026' (the Monday it begins, per
+ * bucketStart) | month '03/2026' | year '2026'.
  */
 function bucketLabel(t, groupBy) {
   const date = new Date(t);
   if (groupBy === 'year') return String(date.getFullYear());
-  if (groupBy === 'month') return `${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
-  // week buckets start on their Monday, so the same day/month form reads as
-  // "week beginning 3 Aug".
-  return `${date.getDate()} ${MONTHS[date.getMonth()]}`;
+  if (groupBy === 'month') return `${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+  // week buckets start on their Monday, so the plain date reads as
+  // "week beginning 03/08/2026".
+  return formatDMY(date);
 }
 
 /** The next bucket start after t (calendar arithmetic, so DST-safe). */
@@ -347,8 +346,8 @@ function zeroFill(points, groupBy) {
  * no qualifying data are OMITTED except 'workouts'-style counts where a gap
  * genuinely means zero — then include zero buckets between the first and last
  * non-empty bucket so lines don't lie. Points ascend by t (bucket start, epoch
- * ms, local). label is short axis text, always a real date — '6 Mar' (day),
- * '3 Aug' (week, its Monday), 'Mar 2026' (month), '2026' (year).
+ * ms, local). label is short axis text, always a real date — '06/03/2026'
+ * (day), '03/08/2026' (week, its Monday), '03/2026' (month), '2026' (year).
  *
  * range: trailing window ending today — '3m' | '6m' | '1y' | 'all'.
  *

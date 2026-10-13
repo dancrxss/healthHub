@@ -15,6 +15,7 @@ import {
   lastSessionFrom,
   recentWorkoutsFrom,
   prsFrom,
+  topSetSeriesFrom,
   weeklyVolumeFrom,
   trainingFrequencyFrom,
 } from './calc.js';
@@ -62,6 +63,19 @@ export async function getPRs(exerciseId) {
   const workoutIds = [...new Set(sets.map((s) => s.workoutId))];
   const workouts = (await Promise.all(workoutIds.map((id) => getWorkout(id)))).filter(Boolean);
   return prsFrom({ workouts, sets, exercises: [] }, exerciseId);
+}
+
+/**
+ * One point per finished session for an exercise, from its top (first
+ * working) set — the data behind the Progress chart. Shape per calc.js
+ * topSetSeriesFrom. Added 13 Oct 2026; the five original queries are unchanged.
+ * @param {string} exerciseId
+ */
+export async function getTopSetSeries(exerciseId) {
+  const sets = await listSetsForExercise(exerciseId);
+  const workoutIds = [...new Set(sets.map((s) => s.workoutId))];
+  const workouts = (await Promise.all(workoutIds.map((id) => getWorkout(id)))).filter(Boolean);
+  return topSetSeriesFrom({ workouts, sets, exercises: [] }, exerciseId);
 }
 
 /**

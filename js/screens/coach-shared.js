@@ -9,6 +9,7 @@
 // through textContent / the h() `text` prop — never innerHTML.
 // ============================================================================
 
+import { formatDMY, formatHM } from '../util.js';
 import {
   h, Icon, openSheet, closeSheet, sheetHeader, sheetGroup, formatWeight,
 } from '../ui.js';
@@ -24,12 +25,12 @@ import { playOnce, motionOK } from '../motion.js';
 const numOrNull = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 const trimNum = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100));
 
-/** "16:39" today, "3 Aug, 16:39" otherwise — the chat time-divider label. */
+/** "16:39" today, "03/08/2026 16:39" otherwise — the chat time-divider label. */
 function chatTimeLabel(iso) {
   const d = new Date(iso);
-  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const time = formatHM(d);
   if (d.toDateString() === new Date().toDateString()) return time;
-  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, ${time}`;
+  return `${formatDMY(d)} ${time}`;
 }
 
 /**

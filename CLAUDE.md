@@ -332,7 +332,14 @@ App Store pivot (see "Direction change" below).*
   - The derived query layer (`getLastSession`, `getRecentWorkouts`, `getPRs`,
     `getWeeklyVolume`, `getTrainingFrequency`) is no longer an MCP contract
     (MCP cancelled 31 Jul 2026) but stays a **stable internal API** — flag any
-    signature change before making it.
+    signature change before making it. **13 Oct 2026 (additive, flagged to
+    Dan):** `getPRs` also returns `heaviest`, `bestSet`, `mostReps`, `byWeight`,
+    `longest`, `furthest`, `mostKcal` (its `byReps`/`bestE1RM` are unchanged),
+    and `getTopSetSeries(exerciseId)` joins the layer for the Progress chart.
+  - **A session's "top set" is its first working set** (lowest set number,
+    warm-ups and blank rows skipped) — Dan's definition, used by Progress.
+  - **Dates display as DD/MM/YYYY** everywhere (`util.formatDMY`); date-times
+    as `DD/MM/YYYY HH:MM`. Storage stays ISO.
   - Warmup sets (`isWarmup`) are **excluded** from PR and volume calculations
     (cardio sets likewise).
   - 1RM estimate uses Epley: `w × (1 + reps/30)`.
